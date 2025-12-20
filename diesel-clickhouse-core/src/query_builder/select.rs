@@ -375,7 +375,7 @@ impl IsEmpty for OffsetClause {
 impl<F, S, W, O, L, Of, G, H, DB> QueryFragment<DB> for SelectStatement<F, S, W, O, L, Of, G, H>
 where
     F: QueryFragment<DB>,
-    S: QueryFragment<DB>,
+    S: QueryFragment<DB> + IsEmpty,
     W: QueryFragment<DB> + IsEmpty,
     O: QueryFragment<DB> + IsEmpty,
     L: QueryFragment<DB> + IsEmpty,
@@ -388,7 +388,7 @@ where
         pass.push_sql("SELECT ");
 
         // Select clause (default to *)
-        if std::mem::size_of::<S>() == 0 {
+        if self.select.is_empty() {
             pass.push_sql("*");
         } else {
             self.select.walk_ast(pass.reborrow())?;

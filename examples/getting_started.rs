@@ -152,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
     ).fetch_optional().await?;
     println!("Unknown user: {:?}", maybe_user);
 
-    // JOIN - users with their posts (NEW!)
+    // JOIN - users with their posts (one row per post)
     #[derive(Debug, Clone, Row, Deserialize)]
     struct UserWithPost {
         user_name: String,
@@ -165,9 +165,35 @@ async fn main() -> anyhow::Result<()> {
             .inner_join_on(posts::table, users::id.eq(posts::user_id))
             .filter(users::active.eq(true))
     ).fetch_all().await?;
-    println!("Users with posts:");
+    println!("Users with posts (flat):");
     for uwp in &users_with_posts {
         println!("  {} wrote: {}", uwp.user_name, uwp.post_title);
+    }
+
+    // JOIN with groupArray - accumulate posts per user (NEW!)
+    #[derive(Debug, Clone, Row, Deserialize)]
+    struct UserWithPosts {
+        user_id: u64,
+        user_name: String,
+        post_titles: Vec<String>,  // All posts collected into array
+        post_count: u64,
+    }
+
+    let users_with_all_posts: Vec<UserWithPosts> = conn.query(
+        users::table
+            .select((
+                users::id,
+                users::name,
+                group_array(posts::title),  // Accumulate titles into array
+                count(posts::id),           // Count posts
+            ))
+            .inner_join_on(posts::table, users::id.eq(posts::user_id))
+            .filter(users::active.eq(true))
+            .group_by((users::id, users::name))
+    ).fetch_all().await?;
+    println!("\nUsers with all their posts (grouped):");
+    for u in &users_with_all_posts {
+        println!("  {} ({} posts): {:?}", u.user_name, u.post_count, u.post_titles);
     }
 
     // UPDATE
@@ -236,6 +262,18 @@ fn demo_mode() {
         .left_join_on(posts::table, users::id.eq(posts::user_id))
         .filter(users::age.gt(18));
     println!("LEFT JOIN:\n  {}\n", left_join.to_sql_string());
+
+    // JOIN with groupArray - one-to-many accumulation (NEW!)
+    let grouped_join = users::table
+        .select((
+            users::id,
+            users::name,
+            group_array(posts::title),
+            count(posts::id),
+        ))
+        .inner_join_on(posts::table, users::id.eq(posts::user_id))
+        .group_by((users::id, users::name));
+    println!("JOIN + GROUP BY + groupArray:\n  {}\n", grouped_join.to_sql_string());
 
     // ClickHouse-specific
     println!("FINAL:\n  {}\n", users::table.final_().to_sql_string());
