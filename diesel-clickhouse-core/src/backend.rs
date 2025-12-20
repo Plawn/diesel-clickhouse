@@ -31,12 +31,69 @@ pub trait Backend: Sized + Send + Sync + Debug + Clone + Copy + 'static {
     fn name() -> &'static str;
 }
 
+/// Trait for values that can be bound as query parameters.
+pub trait BindValue {
+    /// The ClickHouse type name for this value.
+    fn type_name(&self) -> &'static str;
+
+    /// Serialize the value to bytes.
+    fn to_bytes(&self) -> Vec<u8>;
+
+    /// Serialize the value to SQL literal string.
+    fn to_sql_literal(&self) -> String;
+}
+
+// Implement BindValue for common types
+macro_rules! impl_bind_value_int {
+    ($($t:ty => $name:literal),*) => {
+        $(
+            impl BindValue for $t {
+                fn type_name(&self) -> &'static str { $name }
+                fn to_bytes(&self) -> Vec<u8> { self.to_le_bytes().to_vec() }
+                fn to_sql_literal(&self) -> String { self.to_string() }
+            }
+        )*
+    };
+}
+
+impl_bind_value_int!(
+    u8 => "UInt8", u16 => "UInt16", u32 => "UInt32", u64 => "UInt64",
+    i8 => "Int8", i16 => "Int16", i32 => "Int32", i64 => "Int64",
+    f32 => "Float32", f64 => "Float64"
+);
+
+impl BindValue for bool {
+    fn type_name(&self) -> &'static str { "Bool" }
+    fn to_bytes(&self) -> Vec<u8> { vec![if *self { 1 } else { 0 }] }
+    fn to_sql_literal(&self) -> String { if *self { "true" } else { "false" }.to_string() }
+}
+
+impl BindValue for str {
+    fn type_name(&self) -> &'static str { "String" }
+    fn to_bytes(&self) -> Vec<u8> { self.as_bytes().to_vec() }
+    fn to_sql_literal(&self) -> String {
+        format!("'{}'", self.replace('\'', "''"))
+    }
+}
+
+impl BindValue for String {
+    fn type_name(&self) -> &'static str { "String" }
+    fn to_bytes(&self) -> Vec<u8> { self.as_bytes().to_vec() }
+    fn to_sql_literal(&self) -> String {
+        format!("'{}'", self.replace('\'', "''"))
+    }
+}
+
+impl<T: BindValue> BindValue for &T {
+    fn type_name(&self) -> &'static str { (*self).type_name() }
+    fn to_bytes(&self) -> Vec<u8> { (*self).to_bytes() }
+    fn to_sql_literal(&self) -> String { (*self).to_sql_literal() }
+}
+
 /// Trait for collecting bound parameters.
 pub trait BindCollector<'a, DB: Backend>: Default {
     /// Push a bound value.
-    fn push_bound_value<T>(&mut self, value: &'a T) -> Result<(), crate::result::Error>
-    where
-        T: ?Sized;
+    fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error>;
 
     /// Get the collected bindings.
     fn bindings(&self) -> &[BoundValue<'a>];
@@ -49,6 +106,22 @@ pub struct BoundValue<'a> {
     pub bytes: std::borrow::Cow<'a, [u8]>,
     /// The ClickHouse type name.
     pub type_name: &'static str,
+    /// SQL literal representation.
+    pub sql_literal: String,
+    /// Phantom lifetime.
+    _phantom: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> BoundValue<'a> {
+    /// Create a new bound value.
+    pub fn new<T: BindValue>(value: &T) -> Self {
+        Self {
+            bytes: std::borrow::Cow::Owned(value.to_bytes()),
+            type_name: value.type_name(),
+            sql_literal: value.to_sql_literal(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
 }
 
 /// Trait for building SQL query strings.
@@ -109,13 +182,9 @@ pub struct HttpBindCollector<'a> {
 }
 
 impl<'a> BindCollector<'a, HttpBackend> for HttpBindCollector<'a> {
-    fn push_bound_value<T>(&mut self, _value: &'a T) -> Result<(), crate::result::Error>
-    where
-        T: ?Sized,
-    {
-        // HTTP backend typically uses inline values or query parameters
-        // Full implementation would serialize the value here
-        todo!("Implement value binding for HTTP backend")
+    fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
+        self.bindings.push(BoundValue::new(value));
+        Ok(())
     }
 
     fn bindings(&self) -> &[BoundValue<'a>] {
@@ -205,12 +274,9 @@ pub struct NativeBindCollector<'a> {
 }
 
 impl<'a> BindCollector<'a, NativeBackend> for NativeBindCollector<'a> {
-    fn push_bound_value<T>(&mut self, _value: &'a T) -> Result<(), crate::result::Error>
-    where
-        T: ?Sized,
-    {
-        // Native backend uses binary protocol for parameters
-        todo!("Implement value binding for Native backend")
+    fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
+        self.bindings.push(BoundValue::new(value));
+        Ok(())
     }
 
     fn bindings(&self) -> &[BoundValue<'a>] {
@@ -292,11 +358,9 @@ pub struct GenericBindCollector<'a> {
 }
 
 impl<'a> BindCollector<'a, ClickHouse> for GenericBindCollector<'a> {
-    fn push_bound_value<T>(&mut self, _value: &'a T) -> Result<(), crate::result::Error>
-    where
-        T: ?Sized,
-    {
-        todo!("Implement generic value binding")
+    fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
+        self.bindings.push(BoundValue::new(value));
+        Ok(())
     }
 
     fn bindings(&self) -> &[BoundValue<'a>] {

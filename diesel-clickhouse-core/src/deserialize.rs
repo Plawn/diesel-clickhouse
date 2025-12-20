@@ -62,16 +62,55 @@ impl FromRow for String {
 // Tuple FromRow implementations
 // =============================================================================
 
+/// A row wrapper that exposes a single column at a given index.
+struct IndexedColumnRow<'a> {
+    row: &'a dyn Row,
+    index: usize,
+}
+
+impl<'a> Row for IndexedColumnRow<'a> {
+    fn column_count(&self) -> usize {
+        1
+    }
+
+    fn get_by_index(&self, index: usize) -> Option<&[u8]> {
+        if index == 0 {
+            self.row.get_by_index(self.index)
+        } else {
+            None
+        }
+    }
+
+    fn get_by_name(&self, name: &str) -> Option<&[u8]> {
+        // For indexed access, we check if the name matches the column at our index
+        if self.row.column_name(self.index) == Some(name) {
+            self.row.get_by_index(self.index)
+        } else {
+            None
+        }
+    }
+
+    fn column_name(&self, index: usize) -> Option<&str> {
+        if index == 0 {
+            self.row.column_name(self.index)
+        } else {
+            None
+        }
+    }
+}
+
 macro_rules! impl_from_row_tuple {
     ($(($idx:tt, $T:ident)),+) => {
         impl<$($T: FromRow),+> FromRow for ($($T,)+) {
             fn from_row(row: &dyn Row) -> QueryResult<Self> {
-                // This is a simplified implementation
-                // Full implementation would deserialize each column
-                $(
-                    let _bytes = row.get_by_index($idx);
-                )+
-                todo!("Implement tuple deserialization")
+                Ok((
+                    $(
+                        {
+                            let indexed_row = IndexedColumnRow { row, index: $idx };
+                            $T::from_row(&indexed_row)?
+                        },
+                    )+
+                ))
             }
         }
     };
@@ -82,6 +121,9 @@ impl_from_row_tuple!((0, A), (1, B));
 impl_from_row_tuple!((0, A), (1, B), (2, C));
 impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D));
 impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E));
+impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F));
+impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G));
+impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H));
 
 // =============================================================================
 // Option FromRow

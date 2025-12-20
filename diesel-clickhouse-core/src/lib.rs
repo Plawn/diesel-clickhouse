@@ -23,13 +23,13 @@ pub mod serialize;
 pub use diesel_clickhouse_types as types;
 
 // Re-export core items
-pub use backend::{Backend, HttpBackend, NativeBackend};
+pub use backend::{Backend, HttpBackend, NativeBackend, BindValue};
 pub use result::{Error, QueryResult};
 pub use expression::{Expression, SelectableExpression, AppearsOnTable, BoxableExpression};
 pub use query_source::{Table, Column, QuerySource};
 pub use query_builder::{QueryFragment, AstPass, update, delete, UpdateStatement, DeleteStatement, AsChangeset, Assign, Assignments};
 pub use backend::QueryBuilder;
-pub use query_dsl::{QueryDsl, ClickHouseQueryDsl, RunQueryDsl};
+pub use query_dsl::{QueryDsl, ClickHouseQueryDsl, RunQueryDsl, FindStatement};
 pub use connection::AsyncConnection;
 pub use deserialize::FromRow;
 pub use serialize::ToRow;

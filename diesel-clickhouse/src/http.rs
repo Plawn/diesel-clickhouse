@@ -25,7 +25,6 @@
 
 use async_trait::async_trait;
 use clickhouse::Client;
-use serde::{Deserialize, Serialize};
 
 use crate::core::backend::{ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
 use crate::core::connection::AsyncConnection;
@@ -204,152 +203,80 @@ pub trait ExecuteMut: QueryFragment<ClickHouse> + Send + Sync + Sized {
 
 impl<T: QueryFragment<ClickHouse> + Send + Sync> ExecuteMut for T {}
 
+/// Extension trait for inserting into tables.
+#[async_trait]
+pub trait InsertDsl: crate::Table + Send + Sync + Sized {
+    /// Create an inserter for this table.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::http::InsertDsl;
+    ///
+    /// let mut inserter = users::table.inserter::<NewUser>(&conn).await?;
+    /// inserter.write(&user).await?;
+    /// inserter.end().await?;
+    /// ```
+    async fn inserter<T: clickhouse::Row>(self, conn: &ClickHouseConnection) -> Result<clickhouse::insert::Insert<T>, clickhouse::error::Error> {
+        conn.client.insert(Self::table_name()).await
+    }
+}
+
+impl<T: crate::Table + Send + Sync> InsertDsl for T {}
+
 // =============================================================================
-// Fluent Query Execution Macros
+// Query Execution Methods
 // =============================================================================
 
-/// Load all results from a query.
-///
-/// This macro provides a convenient way to execute a SELECT query and load all results.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use diesel_clickhouse::{load, prelude::*};
-///
-/// let users: Vec<User> = load!(
-///     users::table.filter(users::active.eq(true)),
-///     &conn
-/// )?;
-/// ```
-#[macro_export]
-macro_rules! load {
-    ($query:expr, $conn:expr) => {{
-        let sql = $crate::http::ToSql::to_sql_string(&$query);
-        $conn
-            .client()
-            .query(&sql)
-            .fetch_all()
-            .await
-            .map_err(|e| $crate::Error::QueryError(e.to_string()))
-    }};
-}
+impl ClickHouseConnection {
+    /// Create a query from a QueryFragment and return a clickhouse Query.
+    ///
+    /// This allows using the diesel-style query builder with clickhouse's fetch methods.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let users: Vec<User> = conn.query(
+    ///     users::table.filter(users::active.eq(true))
+    /// ).fetch_all().await?;
+    /// ```
+    pub fn query<Q>(&self, query: Q) -> clickhouse::query::Query
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        let sql = build_sql(&query);
+        self.client.query(&sql)
+    }
 
-/// Load the first result from a query.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let user: User = first!(
-///     users::table.filter(users::id.eq(1)),
-///     &conn
-/// )?;
-/// ```
-#[macro_export]
-macro_rules! first {
-    ($query:expr, $conn:expr) => {{
-        let sql = $crate::http::ToSql::to_sql_string(&$query);
-        $conn
-            .client()
-            .query(&sql)
-            .fetch_one()
-            .await
-            .map_err(|e| $crate::Error::QueryError(e.to_string()))
-    }};
-}
+    /// Create an inserter for a table.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut inserter = conn.inserter::<NewUser, _>(users::table).await?;
+    /// inserter.write(&user1).await?;
+    /// inserter.write(&user2).await?;
+    /// inserter.end().await?;
+    /// ```
+    pub async fn inserter<T, Tab>(&self, _table: Tab) -> Result<clickhouse::insert::Insert<T>, clickhouse::error::Error>
+    where
+        T: clickhouse::Row,
+        Tab: crate::Table,
+    {
+        self.client.insert(Tab::table_name()).await
+    }
 
-/// Load an optional result from a query.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let user: Option<User> = get_optional!(
-///     users::table.filter(users::id.eq(1)),
-///     &conn
-/// )?;
-/// ```
-#[macro_export]
-macro_rules! get_optional {
-    ($query:expr, $conn:expr) => {{
-        let sql = $crate::http::ToSql::to_sql_string(&$query);
-        $conn
-            .client()
-            .query(&sql)
-            .fetch_optional()
-            .await
-            .map_err(|e| $crate::Error::QueryError(e.to_string()))
-    }};
-}
-
-/// Execute a query without returning results.
-///
-/// Useful for UPDATE/DELETE statements.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// execute!(
-///     diesel_clickhouse::update(users::table)
-///         .filter(users::id.eq(1))
-///         .set(users::name.eq("New Name")),
-///     &conn
-/// )?;
-/// ```
-#[macro_export]
-macro_rules! execute {
-    ($query:expr, $conn:expr) => {{
-        let sql = $crate::http::ToSql::to_sql_string(&$query);
-        $conn.execute_raw(&sql).await
-    }};
-}
-
-/// Insert rows into a table.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// // Using the table from schema with explicit row type (required)
-/// let count = insert!(NewUser => users::table, &new_users, &conn)?;
-/// ```
-#[macro_export]
-macro_rules! insert {
-    // Version with explicit row type and table from schema
-    ($row_type:ty => $table:expr, $rows:expr, $conn:expr) => {{
-        async {
-            use $crate::Table;
-            let rows: &[$row_type] = $rows;
-            if rows.is_empty() {
-                return Ok::<_, $crate::Error>(0usize);
-            }
-
-            // Helper function to get table name from type
-            fn get_table_name<T: Table>(_: &T) -> &'static str {
-                T::table_name()
-            }
-            let table_name = get_table_name(&$table);
-
-            let mut insert = $conn
-                .client()
-                .insert::<$row_type>(table_name)
-                .await
-                .map_err(|e| $crate::Error::QueryError(e.to_string()))?;
-
-            for row in rows {
-                insert
-                    .write(row)
-                    .await
-                    .map_err(|e| $crate::Error::QueryError(e.to_string()))?;
-            }
-
-            insert
-                .end()
-                .await
-                .map_err(|e| $crate::Error::QueryError(e.to_string()))?;
-
-            Ok(rows.len())
-        }
-        .await
-    }};
+    /// Insert rows into a table using raw SQL values.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.insert_raw("users", "(1, 'alice'), (2, 'bob')").await?;
+    /// ```
+    pub async fn insert_raw(&self, table_name: &str, sql_values: &str) -> QueryResult<()> {
+        let sql = format!("INSERT INTO {} VALUES {}", table_name, sql_values);
+        self.execute_raw(&sql).await
+    }
 }
 
 #[cfg(test)]

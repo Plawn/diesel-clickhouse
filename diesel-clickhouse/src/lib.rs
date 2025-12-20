@@ -149,6 +149,10 @@ pub mod prelude {
         TextExpressionMethods,
         OrderExpressionMethods,
     };
+
+    // HTTP execution traits
+    #[cfg(feature = "http")]
+    pub use crate::http::{ExecuteMut, InsertDsl, ToSql};
 }
 
 /// DSL helpers and functions.

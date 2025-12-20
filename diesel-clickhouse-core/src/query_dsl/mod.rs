@@ -2,8 +2,9 @@
 
 use crate::expression::Expression;
 use crate::query_source::{Table, QuerySource};
-use crate::query_builder::{SelectStatement, ClickHouseQueryExt, Final, Prewhere, Sample};
+use crate::query_builder::{SelectStatement, ClickHouseQueryExt, Final, Prewhere, Sample, QueryFragment};
 use crate::result::QueryResult;
+use crate::backend::Backend;
 
 /// The main query DSL trait for building SELECT statements.
 pub trait QueryDsl: Sized {
@@ -60,13 +61,58 @@ pub trait QueryDsl: Sized {
     }
 
     /// Find a single record by primary key.
-    fn find<PK>(self, _pk: PK) -> SelectStatement<Self, (), (), (), crate::query_builder::LimitClause>
+    ///
+    /// This creates a filter on the primary key columns and limits to 1 result.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // For a table with primary key `id`:
+    /// users::table.find(42)  // SELECT * FROM users WHERE id = 42 LIMIT 1
+    /// ```
+    fn find<PK>(self, pk: PK) -> FindStatement<Self, Self::PrimaryKey, PK>
     where
         Self: Table,
-        PK: Expression,
     {
-        // TODO: Implement proper primary key lookup filter
-        SelectStatement::new(self).limit(1)
+        FindStatement {
+            table: self,
+            primary_key: Self::primary_key(),
+            pk_value: pk,
+        }
+    }
+}
+
+/// A SELECT statement filtered by primary key.
+#[derive(Debug, Clone, Copy)]
+pub struct FindStatement<T, PKCol, PK> {
+    table: T,
+    primary_key: PKCol,
+    pk_value: PK,
+}
+
+impl<T, PKCol, PK> Expression for FindStatement<T, PKCol, PK>
+where
+    T: Table,
+{
+    type SqlType = T::AllColumnsSqlType;
+}
+
+impl<T, PKCol, PK, DB> QueryFragment<DB> for FindStatement<T, PKCol, PK>
+where
+    T: Table + QueryFragment<DB>,
+    PKCol: QueryFragment<DB>,
+    PK: QueryFragment<DB>,
+    DB: Backend,
+{
+    fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> QueryResult<()> {
+        pass.push_sql("SELECT * FROM ");
+        self.table.walk_ast(pass.reborrow())?;
+        pass.push_sql(" WHERE ");
+        self.primary_key.walk_ast(pass.reborrow())?;
+        pass.push_sql(" = ");
+        self.pk_value.walk_ast(pass.reborrow())?;
+        pass.push_sql(" LIMIT 1");
+        Ok(())
     }
 }
 

@@ -6,7 +6,7 @@
 use clickhouse::Row;
 use serde::{Deserialize, Serialize};
 
-use diesel_clickhouse::http::{ClickHouseConnection, ExecuteMut, ToSql};
+use diesel_clickhouse::http::ClickHouseConnection;
 use diesel_clickhouse::prelude::*;
 use diesel_clickhouse::update;
 
@@ -75,37 +75,38 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    // INSERT
+    // INSERT - fluent API with table
     let new_users = vec![
         NewUser { id: 1, name: "Alice".into(), email: "alice@example.com".into(), age: 30, active: true },
         NewUser { id: 2, name: "Bob".into(), email: "bob@example.com".into(), age: 25, active: true },
         NewUser { id: 3, name: "Charlie".into(), email: "charlie@example.com".into(), age: 35, active: false },
     ];
-    diesel_clickhouse::insert!(NewUser => users::table, &new_users, &conn)?;
+    let mut inserter = users::table.inserter::<NewUser>(&conn).await?;
+    for row in &new_users {
+        inserter.write(row).await?;
+    }
+    inserter.end().await?;
 
     // SELECT with filters
-    let active_users: Vec<User> = diesel_clickhouse::load!(
+    let active_users: Vec<User> = conn.query(
         users::table
             .filter(users::active.eq(true))
             .and_filter(users::age.gt(25))
             .order_by(users::age.desc())
-            .limit(10),
-        &conn
-    )?;
+            .limit(10)
+    ).fetch_all().await?;
     println!("Active users over 25: {:?}", active_users.iter().map(|u| &u.name).collect::<Vec<_>>());
 
     // SELECT first
-    let alice: User = diesel_clickhouse::first!(
-        users::table.filter(users::name.eq("Alice")),
-        &conn
-    )?;
+    let alice: User = conn.query(
+        users::table.filter(users::name.eq("Alice"))
+    ).fetch_one().await?;
     println!("Found: {} ({})", alice.name, alice.email);
 
     // SELECT optional
-    let maybe_user: Option<User> = diesel_clickhouse::get_optional!(
-        users::table.filter(users::name.eq("Unknown")),
-        &conn
-    )?;
+    let maybe_user: Option<User> = conn.query(
+        users::table.filter(users::name.eq("Unknown"))
+    ).fetch_optional().await?;
     println!("Unknown user: {:?}", maybe_user);
 
     // UPDATE
