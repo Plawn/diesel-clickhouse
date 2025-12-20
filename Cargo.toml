@@ -1,0 +1,101 @@
+[workspace]
+resolver = "2"
+members = [
+    "diesel-clickhouse",
+    "diesel-clickhouse-core",
+    "diesel-clickhouse-types",
+    "diesel-clickhouse-derive",
+    "diesel-clickhouse-migrations",
+    "diesel-clickhouse-cli",
+]
+
+# Examples use the main crate
+[[example]]
+name = "basic_queries"
+path = "examples/basic_queries.rs"
+
+[[example]]
+name = "advanced_queries"
+path = "examples/advanced_queries.rs"
+
+[[example]]
+name = "migrations"
+path = "examples/migrations.rs"
+
+[[example]]
+name = "complex_types"
+path = "examples/complex_types.rs"
+
+[[example]]
+name = "query_builder"
+path = "examples/query_builder.rs"
+
+[[example]]
+name = "getting_started"
+path = "examples/getting_started.rs"
+
+# Dependencies for examples (workspace root package)
+[package]
+name = "diesel-clickhouse-examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+diesel-clickhouse = { path = "diesel-clickhouse" }
+diesel-clickhouse-core = { path = "diesel-clickhouse-core" }
+diesel-clickhouse-migrations = { path = "diesel-clickhouse-migrations" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+clickhouse = { version = "0.14", features = ["lz4", "time"] }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+url = "2"
+time = { version = "0.3", features = ["formatting", "macros"] }
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/diesel-clickhouse"
+description = "A type-safe, Diesel-inspired ORM for ClickHouse"
+keywords = ["clickhouse", "orm", "database", "sql", "async"]
+categories = ["database", "asynchronous"]
+
+[workspace.dependencies]
+# Internal crates
+diesel-clickhouse-core = { path = "diesel-clickhouse-core" }
+diesel-clickhouse-types = { path = "diesel-clickhouse-types" }
+diesel-clickhouse-derive = { path = "diesel-clickhouse-derive" }
+diesel-clickhouse-migrations = { path = "diesel-clickhouse-migrations" }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+async-trait = "0.1"
+
+# Error handling
+thiserror = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+
+# Proc macro utilities
+syn = { version = "2", features = ["full", "parsing", "printing"] }
+quote = "1"
+proc-macro2 = "1"
+
+# Optional: DateTime
+chrono = { version = "0.4", features = ["serde"] }
+
+# Optional: UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# ClickHouse client
+clickhouse = { version = "0.14", default-features = false, features = ["lz4"] }
+
+# Test dependencies (for integration tests)
+tempfile = "3"
+reqwest = { version = "0.11", features = ["blocking"] }

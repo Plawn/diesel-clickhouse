@@ -1,0 +1,45 @@
+[package]
+name = "diesel-clickhouse-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI tool for diesel-clickhouse migrations"
+keywords = ["clickhouse", "migrations", "cli", "database"]
+categories = ["command-line-utilities", "database"]
+
+[[bin]]
+name = "diesel-clickhouse"
+path = "src/main.rs"
+
+[dependencies]
+diesel-clickhouse-migrations.workspace = true
+diesel-clickhouse-core.workspace = true
+
+# Async runtime
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
+async-trait.workspace = true
+
+# CLI parsing
+clap = { version = "4", features = ["derive", "env"] }
+
+# Error handling
+thiserror.workspace = true
+anyhow = "1"
+
+# Configuration
+toml = "0.8"
+serde.workspace = true
+
+# Colored output
+colored = "2"
+
+# Date/time
+chrono.workspace = true
+
+# Environment variables
+dotenvy = "0.15"
+
+# HTTP client for ClickHouse
+reqwest = { version = "0.12", features = ["json"] }
+url = "2"

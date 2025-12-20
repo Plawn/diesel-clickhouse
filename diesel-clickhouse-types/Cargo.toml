@@ -1,0 +1,21 @@
+[package]
+name = "diesel-clickhouse-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SQL type system for diesel-clickhouse"
+
+[features]
+default = ["chrono"]
+chrono = ["dep:chrono"]
+time = ["dep:time"]
+uuid = ["dep:uuid"]
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+
+# Optional
+chrono = { workspace = true, optional = true }
+time = { version = "0.3", optional = true }
+uuid = { workspace = true, optional = true }

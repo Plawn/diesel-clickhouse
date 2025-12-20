@@ -1,0 +1,35 @@
+[package]
+name = "diesel-clickhouse-migrations"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Migration system for diesel-clickhouse"
+keywords = ["clickhouse", "migrations", "database", "schema"]
+categories = ["database"]
+
+[dependencies]
+diesel-clickhouse-core.workspace = true
+diesel-clickhouse-types.workspace = true
+
+# Async runtime
+tokio.workspace = true
+async-trait.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+
+# Date/time for migration timestamps
+chrono.workspace = true
+
+# File system operations
+walkdir = "2"
+
+# For embed_migrations macro
+include_dir = "0.7"
+
+[dev-dependencies]
+tempfile = "3"

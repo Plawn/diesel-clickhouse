@@ -1,0 +1,18 @@
+[package]
+name = "diesel-clickhouse-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core traits and types for diesel-clickhouse"
+
+[features]
+default = ["chrono"]
+chrono = ["diesel-clickhouse-types/chrono"]
+time = ["diesel-clickhouse-types/time"]
+uuid = ["diesel-clickhouse-types/uuid"]
+
+[dependencies]
+diesel-clickhouse-types.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+serde.workspace = true
