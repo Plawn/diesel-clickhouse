@@ -50,6 +50,7 @@ pub struct NewUser {
     pub active: bool,
 }
 
+
 /// For inserting new posts
 #[derive(Debug, Clone, Row, Serialize, diesel_clickhouse::Insertable)]
 #[diesel_clickhouse(table = posts)]
@@ -88,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Create table
+    // Create tables
     conn.execute_raw(
         "CREATE TABLE IF NOT EXISTS users (
             id UInt64, name String, email String, age UInt8,
@@ -97,7 +98,15 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    // INSERT - fluent API with table
+    conn.execute_raw(
+        "CREATE TABLE IF NOT EXISTS posts (
+            id UInt64, user_id UInt64, title String, content String,
+            created_at DateTime DEFAULT now()
+        ) ENGINE = MergeTree() ORDER BY (id, created_at)",
+    )
+    .await?;
+
+    // INSERT users - fluent API with table
     let new_users = vec![
         NewUser { id: 1, name: "Alice".into(), email: "alice@example.com".into(), age: 30, active: true },
         NewUser { id: 2, name: "Bob".into(), email: "bob@example.com".into(), age: 25, active: true },
@@ -105,6 +114,18 @@ async fn main() -> anyhow::Result<()> {
     ];
     let mut inserter = users::table.inserter::<NewUser>(&conn).await?;
     for row in &new_users {
+        inserter.write(row).await?;
+    }
+    inserter.end().await?;
+
+    // INSERT posts
+    let new_posts = vec![
+        NewPost { id: 1, user_id: 1, title: "Hello World".into(), content: "My first post".into() },
+        NewPost { id: 2, user_id: 1, title: "Rust is great".into(), content: "I love Rust".into() },
+        NewPost { id: 3, user_id: 2, title: "ClickHouse tips".into(), content: "Fast analytics".into() },
+    ];
+    let mut inserter = posts::table.inserter::<NewPost>(&conn).await?;
+    for row in &new_posts {
         inserter.write(row).await?;
     }
     inserter.end().await?;
@@ -131,6 +152,24 @@ async fn main() -> anyhow::Result<()> {
     ).fetch_optional().await?;
     println!("Unknown user: {:?}", maybe_user);
 
+    // JOIN - users with their posts (NEW!)
+    #[derive(Debug, Clone, Row, Deserialize)]
+    struct UserWithPost {
+        user_name: String,
+        post_title: String,
+    }
+
+    let users_with_posts: Vec<UserWithPost> = conn.query(
+        users::table
+            .select((users::name, posts::title))
+            .inner_join_on(posts::table, users::id.eq(posts::user_id))
+            .filter(users::active.eq(true))
+    ).fetch_all().await?;
+    println!("Users with posts:");
+    for uwp in &users_with_posts {
+        println!("  {} wrote: {}", uwp.user_name, uwp.post_title);
+    }
+
     // UPDATE
     update(users::table)
         .filter(users::id.eq(1u64))
@@ -139,6 +178,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Cleanup
+    conn.execute_raw("TRUNCATE TABLE posts").await?;
     conn.execute_raw("TRUNCATE TABLE users").await?;
     println!("Done!");
 

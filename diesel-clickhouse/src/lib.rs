@@ -115,7 +115,7 @@ pub use core::backend::{Backend, HttpBackend, NativeBackend, ClickHouse};
 pub use core::result::{Error, QueryResult};
 pub use core::expression::{Expression, SelectableExpression, ExpressionMethods};
 pub use core::query_source::{Table, Column, QuerySource};
-pub use core::query_builder::{QueryFragment, insert_into, update, delete, UpdateStatement, DeleteStatement, AsChangeset, Assign, Assignments};
+pub use core::query_builder::{QueryFragment, insert_into, update, delete, UpdateStatement, DeleteStatement, AsChangeset, Assign, Assignments, Insertable as InsertableTrait};
 pub use core::query_dsl::{QueryDsl, ClickHouseQueryDsl, RunQueryDsl};
 pub use core::connection::AsyncConnection;
 pub use core::deserialize::FromRow;
