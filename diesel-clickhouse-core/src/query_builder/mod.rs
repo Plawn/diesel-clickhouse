@@ -66,7 +66,7 @@ impl<DB: Backend> QueryFragment<DB> for String {
 macro_rules! impl_query_fragment_tuple {
     ($($T:ident),+) => {
         impl<DB: Backend, $($T: QueryFragment<DB>),+> QueryFragment<DB> for ($($T,)+) {
-            #[allow(non_snake_case)]
+            #[allow(non_snake_case, unused_assignments)]
             fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
                 let ($($T,)+) = self;
                 let mut first = true;

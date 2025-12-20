@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use diesel_clickhouse::http::ClickHouseConnection;
 use diesel_clickhouse::prelude::*;
-use diesel_clickhouse::update;
+use diesel_clickhouse::{update, insert_into};
 
 // =============================================================================
-// 1. Define your table schema
+// 1. Define your table schemas
 // =============================================================================
 
 diesel_clickhouse::table! {
@@ -25,17 +25,39 @@ diesel_clickhouse::table! {
     }
 }
 
+diesel_clickhouse::table! {
+    posts (id, created_at) {
+        id -> UInt64,
+        user_id -> UInt64,
+        title -> CHString,
+        content -> CHString,
+        created_at -> DateTime,
+    }
+}
+
 // =============================================================================
 // 2. Define your row types
 // =============================================================================
 
-#[derive(Debug, Clone, Row, Serialize)]
+/// For inserting new users - derives Insertable for SQL generation
+#[derive(Debug, Clone, Row, Serialize, diesel_clickhouse::Insertable)]
+#[diesel_clickhouse(table = users)]
 pub struct NewUser {
     pub id: u64,
     pub name: String,
     pub email: String,
     pub age: u8,
     pub active: bool,
+}
+
+/// For inserting new posts
+#[derive(Debug, Clone, Row, Serialize, diesel_clickhouse::Insertable)]
+#[diesel_clickhouse(table = posts)]
+pub struct NewPost {
+    pub id: u64,
+    pub user_id: u64,
+    pub title: String,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Row, Deserialize)]
@@ -134,13 +156,48 @@ fn demo_mode() {
         .limit(10);
     println!("SELECT:\n  {}\n", select.to_sql_string());
 
+    // INSERT - single row (NEW!)
+    let new_user = NewUser {
+        id: 1,
+        name: "Alice".into(),
+        email: "alice@example.com".into(),
+        age: 30,
+        active: true,
+    };
+    let insert_one = insert_into(users::table).values(&new_user);
+    println!("INSERT (single):\n  {}\n", insert_one.to_sql_string());
+
+    // INSERT - multiple rows (NEW!)
+    let new_users = vec![
+        NewUser { id: 2, name: "Bob".into(), email: "bob@example.com".into(), age: 25, active: true },
+        NewUser { id: 3, name: "Charlie".into(), email: "charlie@example.com".into(), age: 35, active: false },
+    ];
+    let insert_batch = insert_into(users::table).values(new_users.as_slice());
+    println!("INSERT (batch):\n  {}\n", insert_batch.to_sql_string());
+
     // UPDATE
     let upd = update(users::table)
         .filter(users::id.eq(1u64))
         .set(users::name.eq("New Name"));
     println!("UPDATE:\n  {}\n", upd.to_sql_string());
 
+    // JOIN - inner join with custom ON clause (NEW!)
+    // Use .select() to start a SelectStatement, then add join
+    let join_query = users::table
+        .select(users::star)
+        .inner_join_on(posts::table, users::id.eq(posts::user_id))
+        .filter(users::active.eq(true))
+        .limit(10);
+    println!("INNER JOIN:\n  {}\n", join_query.to_sql_string());
+
+    // JOIN - left join (NEW!)
+    let left_join = users::table
+        .select(users::star)
+        .left_join_on(posts::table, users::id.eq(posts::user_id))
+        .filter(users::age.gt(18));
+    println!("LEFT JOIN:\n  {}\n", left_join.to_sql_string());
+
     // ClickHouse-specific
-    println!("FINAL:\n  SELECT * FROM {}\n", users::table.final_().to_sql_string());
-    println!("SAMPLE:\n  SELECT * FROM {}", users::table.sample(0.1).to_sql_string());
+    println!("FINAL:\n  {}\n", users::table.final_().to_sql_string());
+    println!("SAMPLE:\n  {}", users::table.sample(0.1).to_sql_string());
 }

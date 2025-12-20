@@ -106,9 +106,9 @@ pub enum Compression {
     Zstd,
 }
 
-/// A pool of connections.
-#[cfg(feature = "pool")]
-pub struct ConnectionPool<C: AsyncConnection> {
+/// A pool of connections (planned feature).
+#[allow(dead_code)]
+struct ConnectionPool<C: AsyncConnection> {
     _conn: std::marker::PhantomData<C>,
 }
 

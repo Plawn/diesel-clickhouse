@@ -10,6 +10,7 @@ use syn::{
 };
 
 /// Parse a table definition.
+#[allow(dead_code)]
 struct TableDefinition {
     attrs: Vec<TableAttribute>,
     name: Ident,
@@ -17,6 +18,7 @@ struct TableDefinition {
     columns: Vec<ColumnDefinition>,
 }
 
+#[allow(dead_code)]
 struct TableAttribute {
     name: Ident,
     value: Option<TokenStream2>,

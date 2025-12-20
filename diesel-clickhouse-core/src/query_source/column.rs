@@ -68,6 +68,7 @@ impl<T: Table, ST: SqlType, DB: Backend> QueryFragment<DB> for ColumnRef<T, ST> 
 
 /// A fully qualified column reference (table.column).
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct QualifiedColumn<T: Table, C: Column<Table = T>> {
     table: T,
     column: C,

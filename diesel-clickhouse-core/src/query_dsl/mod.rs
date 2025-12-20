@@ -171,6 +171,7 @@ pub trait RunQueryDsl<Conn>: Sized {
 }
 
 /// Extension trait for first_or method.
+#[allow(async_fn_in_trait)]
 pub trait FirstOr<Conn>: RunQueryDsl<Conn> {
     /// Get the first result or a default value.
     async fn first_or<U>(self, conn: &mut Conn, default: U) -> QueryResult<U>

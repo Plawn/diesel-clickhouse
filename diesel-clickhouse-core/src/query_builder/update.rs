@@ -190,6 +190,7 @@ pub struct Assignments<T>(pub T);
 macro_rules! impl_assignments_tuple {
     ($(($idx:tt, $T:ident)),+) => {
         impl<DB: Backend, $($T: QueryFragment<DB>),+> QueryFragment<DB> for Assignments<($($T,)+)> {
+            #[allow(unused_assignments)]
             fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
                 let mut first = true;
                 $(
@@ -260,6 +261,7 @@ impl<T: Table> UpdateTarget<T> {
 }
 
 /// A filtered update target.
+#[allow(dead_code)]
 pub struct FilteredUpdateTarget<T, P> {
     table: T,
     filter: P,

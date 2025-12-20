@@ -241,6 +241,7 @@ impl<T, DB: Backend> QueryFragment<DB> for Star<T> {
 
 /// An expression with an alias (AS clause).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Aliased<E, A> {
     expression: E,
     alias: A,

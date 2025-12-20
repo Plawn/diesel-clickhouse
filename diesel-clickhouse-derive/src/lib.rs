@@ -95,6 +95,10 @@ pub fn derive_queryable(input: TokenStream) -> TokenStream {
 ///     user_id: u32,
 ///     event_type: String,
 /// }
+///
+/// // Usage:
+/// let query = insert_into(events::table).values(&new_event);
+/// // Generates: INSERT INTO events (id, user_id, event_type) VALUES (1, 42, 'hello')
 /// ```
 #[proc_macro_derive(Insertable, attributes(diesel_clickhouse, column_name))]
 pub fn derive_insertable(input: TokenStream) -> TokenStream {
@@ -120,9 +124,24 @@ pub fn derive_insertable(input: TokenStream) -> TokenStream {
         .collect();
 
     let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
+    let _field_count = field_names.len();
 
     let column_count = column_names.len();
     let column_names_array = &column_names;
+
+    // Generate the write_value implementation that outputs SQL literals
+    let write_fields = field_names.iter().enumerate().map(|(i, field_name)| {
+        if i > 0 {
+            quote! {
+                pass.push_sql(", ");
+                diesel_clickhouse::serialize::write_sql_value(&self.#field_name, pass);
+            }
+        } else {
+            quote! {
+                diesel_clickhouse::serialize::write_sql_value(&self.#field_name, pass);
+            }
+        }
+    });
 
     let expanded = quote! {
         impl #impl_generics diesel_clickhouse::serialize::ToRow for #name #ty_generics #where_clause {
@@ -133,21 +152,21 @@ pub fn derive_insertable(input: TokenStream) -> TokenStream {
 
             fn to_row_bytes(&self, out: &mut Vec<u8>) -> diesel_clickhouse::result::QueryResult<()> {
                 #(
-                    diesel_clickhouse::serialize::ToSql::to_sql(&self.#field_names, out)?;
+                    diesel_clickhouse::serialize::write_sql_bytes(&self.#field_names, out);
                 )*
                 Ok(())
             }
         }
 
         impl #impl_generics diesel_clickhouse::query_builder::Insertable<#table_path::table> for #name #ty_generics #where_clause {
-            type Values = Self;
-
             fn column_names() -> &'static [&'static str] {
-                <Self as diesel_clickhouse::serialize::ToRow>::column_names()
+                static COLUMNS: [&str; #column_count] = [#(#column_names_array),*];
+                &COLUMNS
             }
 
-            fn values(self) -> Self::Values {
-                self
+            fn write_value<DB: diesel_clickhouse::backend::Backend>(&self, pass: &mut diesel_clickhouse::query_builder::AstPass<'_, '_, DB>) -> diesel_clickhouse::result::QueryResult<()> {
+                #(#write_fields)*
+                Ok(())
             }
         }
     };

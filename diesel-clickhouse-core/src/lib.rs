@@ -39,7 +39,7 @@ pub mod prelude {
     pub use super::backend::{Backend, HttpBackend, NativeBackend};
     pub use super::result::{Error, QueryResult};
     pub use super::expression::{Expression, SelectableExpression, ExpressionMethods};
-    pub use super::query_source::{Table, Column, QuerySource};
+    pub use super::query_source::{Table, Column, QuerySource, JoinDsl, ArrayJoinDsl};
     pub use super::query_dsl::{QueryDsl, ClickHouseQueryDsl, RunQueryDsl};
     pub use super::connection::AsyncConnection;
     pub use super::deserialize::FromRow;

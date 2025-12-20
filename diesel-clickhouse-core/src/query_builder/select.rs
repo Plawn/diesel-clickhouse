@@ -1,8 +1,8 @@
 //! SELECT statement builder.
 
-
 use crate::backend::Backend;
 use crate::expression::Expression;
+use crate::query_source::{Join, Inner, Left, Right, JoinTo, ArrayJoin};
 use crate::result::QueryResult;
 use super::{QueryFragment, AstPass};
 
@@ -149,6 +149,160 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             having: predicate,
         }
     }
+
+    /// Create an INNER JOIN with another table.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// users::table
+    ///     .inner_join(posts::table)
+    ///     .select((users::id, posts::title))
+    /// ```
+    pub fn inner_join<R>(self, rhs: R) -> SelectStatement<Join<F, R, Inner, <F as JoinTo<R>>::OnClause>, S, W, O, L, Of, G, H>
+    where
+        F: JoinTo<R>,
+    {
+        let on = self.from.on_clause();
+        SelectStatement {
+            from: Join::new(self.from, rhs, on),
+            select: self.select,
+            where_clause: self.where_clause,
+            order_by: self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            group_by: self.group_by,
+            having: self.having,
+        }
+    }
+
+    /// Create a LEFT JOIN with another table.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// users::table
+    ///     .left_join(posts::table)
+    ///     .select((users::id, posts::title.nullable()))
+    /// ```
+    pub fn left_join<R>(self, rhs: R) -> SelectStatement<Join<F, R, Left, <F as JoinTo<R>>::OnClause>, S, W, O, L, Of, G, H>
+    where
+        F: JoinTo<R>,
+    {
+        let on = self.from.on_clause();
+        SelectStatement {
+            from: Join::new(self.from, rhs, on),
+            select: self.select,
+            where_clause: self.where_clause,
+            order_by: self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            group_by: self.group_by,
+            having: self.having,
+        }
+    }
+
+    /// Create a RIGHT JOIN with another table.
+    pub fn right_join<R>(self, rhs: R) -> SelectStatement<Join<F, R, Right, <F as JoinTo<R>>::OnClause>, S, W, O, L, Of, G, H>
+    where
+        F: JoinTo<R>,
+    {
+        let on = self.from.on_clause();
+        SelectStatement {
+            from: Join::new(self.from, rhs, on),
+            select: self.select,
+            where_clause: self.where_clause,
+            order_by: self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            group_by: self.group_by,
+            having: self.having,
+        }
+    }
+
+    /// Create an INNER JOIN with a custom ON clause.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// users::table
+    ///     .inner_join_on(posts::table, users::id.eq(posts::user_id))
+    ///     .select((users::id, posts::title))
+    /// ```
+    pub fn inner_join_on<R, On>(self, rhs: R, on: On) -> SelectStatement<Join<F, R, Inner, On>, S, W, O, L, Of, G, H>
+    where
+        On: Expression,
+    {
+        SelectStatement {
+            from: Join::new(self.from, rhs, on),
+            select: self.select,
+            where_clause: self.where_clause,
+            order_by: self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            group_by: self.group_by,
+            having: self.having,
+        }
+    }
+
+    /// Create a LEFT JOIN with a custom ON clause.
+    pub fn left_join_on<R, On>(self, rhs: R, on: On) -> SelectStatement<Join<F, R, Left, On>, S, W, O, L, Of, G, H>
+    where
+        On: Expression,
+    {
+        SelectStatement {
+            from: Join::new(self.from, rhs, on),
+            select: self.select,
+            where_clause: self.where_clause,
+            order_by: self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            group_by: self.group_by,
+            having: self.having,
+        }
+    }
+
+    /// Create an ARRAY JOIN (ClickHouse-specific).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// events::table
+    ///     .array_join(events::tags)
+    ///     .select((events::id, events::tags))
+    /// ```
+    pub fn array_join<A>(self, array: A) -> SelectStatement<ArrayJoin<F, A>, S, W, O, L, Of, G, H>
+    where
+        A: Expression,
+    {
+        SelectStatement {
+            from: ArrayJoin::new(self.from, array),
+            select: self.select,
+            where_clause: self.where_clause,
+            order_by: self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            group_by: self.group_by,
+            having: self.having,
+        }
+    }
+
+    /// Create a LEFT ARRAY JOIN (includes rows with empty arrays).
+    pub fn left_array_join<A>(self, array: A) -> SelectStatement<ArrayJoin<F, A>, S, W, O, L, Of, G, H>
+    where
+        A: Expression,
+    {
+        SelectStatement {
+            from: ArrayJoin::left(self.from, array),
+            select: self.select,
+            where_clause: self.where_clause,
+            order_by: self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            group_by: self.group_by,
+            having: self.having,
+        }
+    }
 }
 
 // Specialized impl for adding to an existing WHERE clause
@@ -292,5 +446,138 @@ impl<DB: Backend> QueryFragment<DB> for OffsetClause {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         pass.push_sql(&format!(" OFFSET {}", self.0));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{HttpBackend, HttpQueryBuilder, HttpBindCollector, QueryBuilder as _};
+    use crate::expression::{Expression, SelectableExpression, AppearsOnTable};
+    use crate::query_source::Table;
+    use diesel_clickhouse_types::UInt64;
+
+    // Simple column for testing
+    #[derive(Debug, Clone, Copy)]
+    struct IdColumn;
+
+    impl Expression for IdColumn {
+        type SqlType = UInt64;
+    }
+    impl<T> SelectableExpression<T> for IdColumn {}
+    impl<T> AppearsOnTable<T> for IdColumn {}
+
+    impl<DB: Backend> QueryFragment<DB> for IdColumn {
+        fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+            pass.push_identifier("id");
+            Ok(())
+        }
+    }
+
+    // Test table: users
+    #[derive(Debug, Clone, Copy)]
+    struct UsersTable;
+
+    impl Table for UsersTable {
+        type PrimaryKey = IdColumn;
+        type AllColumnsSqlType = UInt64;
+        type AllColumns = IdColumn;
+
+        fn table_name() -> &'static str { "users" }
+        fn primary_key() -> Self::PrimaryKey { IdColumn }
+        fn all_columns() -> Self::AllColumns { IdColumn }
+    }
+
+    impl crate::query_source::QuerySource for UsersTable {
+        type FromClause = Self;
+        type DefaultSelection = IdColumn;
+        fn from_clause(&self) -> Self::FromClause { *self }
+        fn default_selection(&self) -> Self::DefaultSelection { IdColumn }
+    }
+
+    impl<DB: Backend> QueryFragment<DB> for UsersTable {
+        fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+            pass.push_identifier("users");
+            Ok(())
+        }
+    }
+
+    // Test table: posts
+    #[derive(Debug, Clone, Copy)]
+    struct PostsTable;
+
+    impl Table for PostsTable {
+        type PrimaryKey = IdColumn;
+        type AllColumnsSqlType = UInt64;
+        type AllColumns = IdColumn;
+
+        fn table_name() -> &'static str { "posts" }
+        fn primary_key() -> Self::PrimaryKey { IdColumn }
+        fn all_columns() -> Self::AllColumns { IdColumn }
+    }
+
+    impl crate::query_source::QuerySource for PostsTable {
+        type FromClause = Self;
+        type DefaultSelection = IdColumn;
+        fn from_clause(&self) -> Self::FromClause { *self }
+        fn default_selection(&self) -> Self::DefaultSelection { IdColumn }
+    }
+
+    impl<DB: Backend> QueryFragment<DB> for PostsTable {
+        fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+            pass.push_identifier("posts");
+            Ok(())
+        }
+    }
+
+    // Simple join condition
+    #[derive(Debug, Clone, Copy)]
+    struct JoinCondition;
+
+    impl Expression for JoinCondition {
+        type SqlType = diesel_clickhouse_types::Bool;
+    }
+
+    impl<DB: Backend> QueryFragment<DB> for JoinCondition {
+        fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+            pass.push_sql("users.id = posts.user_id");
+            Ok(())
+        }
+    }
+
+    fn to_sql<T: QueryFragment<HttpBackend>>(fragment: &T) -> String {
+        let mut builder = HttpQueryBuilder::default();
+        let mut collector = HttpBindCollector::default();
+        let pass = AstPass::<HttpBackend>::new(&mut builder, &mut collector);
+        fragment.walk_ast(pass).unwrap();
+        builder.finish()
+    }
+
+    #[test]
+    fn test_inner_join_on() {
+        let stmt = SelectStatement::new(UsersTable)
+            .inner_join_on(PostsTable, JoinCondition);
+        let sql = to_sql(&stmt);
+
+        assert_eq!(sql, "SELECT * FROM `users` INNER JOIN `posts` ON users.id = posts.user_id");
+    }
+
+    #[test]
+    fn test_left_join_on() {
+        let stmt = SelectStatement::new(UsersTable)
+            .left_join_on(PostsTable, JoinCondition);
+        let sql = to_sql(&stmt);
+
+        assert_eq!(sql, "SELECT * FROM `users` LEFT JOIN `posts` ON users.id = posts.user_id");
+    }
+
+    #[test]
+    fn test_join_with_filter() {
+        let stmt = SelectStatement::new(UsersTable)
+            .inner_join_on(PostsTable, JoinCondition)
+            .filter(IdColumn);
+        let sql = to_sql(&stmt);
+
+        assert_eq!(sql, "SELECT * FROM `users` INNER JOIN `posts` ON users.id = posts.user_id WHERE `id`");
     }
 }
