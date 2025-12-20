@@ -1,0 +1,3 @@
+- gestion des migrations en entier
+- gestion du cli en entier
+- ajout de la doc sur les multiples backend (natif et http)

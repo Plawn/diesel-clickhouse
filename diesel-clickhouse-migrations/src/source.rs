@@ -159,15 +159,19 @@ impl MigrationSource for EmbeddedMigrations {
                     continue;
                 }
 
-                let up_sql = dir
-                    .get_file("up.sql")
-                    .and_then(|f| f.contents_utf8())
-                    .unwrap_or("");
+                // Find up.sql and down.sql in this directory's files
+                let mut up_sql = "";
+                let mut down_sql = "";
 
-                let down_sql = dir
-                    .get_file("down.sql")
-                    .and_then(|f| f.contents_utf8())
-                    .unwrap_or("");
+                for file in dir.files() {
+                    if let Some(name) = file.path().file_name().and_then(|n| n.to_str()) {
+                        match name {
+                            "up.sql" => up_sql = file.contents_utf8().unwrap_or(""),
+                            "down.sql" => down_sql = file.contents_utf8().unwrap_or(""),
+                            _ => {}
+                        }
+                    }
+                }
 
                 if let Some(migration) = Migration::from_parts(dir_name, up_sql, down_sql) {
                     migrations.push(migration);

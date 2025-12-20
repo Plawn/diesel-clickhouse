@@ -432,6 +432,7 @@ dependencies = [
  "diesel-clickhouse",
  "diesel-clickhouse-core",
  "diesel-clickhouse-migrations",
+ "include_dir",
  "serde",
  "serde_json",
  "time",
