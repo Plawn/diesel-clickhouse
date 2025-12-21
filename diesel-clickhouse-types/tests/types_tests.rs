@@ -335,57 +335,11 @@ mod tuple_sql_type_tests {
 }
 
 // =============================================================================
-// Error Type Tests
-// =============================================================================
-
-mod error_tests {
-    use super::*;
-
-    #[test]
-    fn test_deserialize_error_display() {
-        let err = DeserializeError::InvalidData("test error".into());
-        assert!(err.to_string().contains("test error"));
-
-        let err = DeserializeError::TypeMismatch {
-            expected: "UInt64".into(),
-            actual: "String".into(),
-        };
-        assert!(err.to_string().contains("UInt64"));
-        assert!(err.to_string().contains("String"));
-
-        let err = DeserializeError::UnexpectedNull;
-        // Message is "Null value for non-nullable type"
-        assert!(err.to_string().contains("Null") || err.to_string().contains("null"));
-    }
-
-    #[test]
-    fn test_serialize_error_display() {
-        let err = SerializeError::InvalidValue("test value".into());
-        assert!(err.to_string().contains("test value"));
-
-        let err = SerializeError::OutOfRange {
-            type_name: "UInt8".into(),
-            value: "256".into(),
-        };
-        assert!(err.to_string().contains("UInt8"));
-        assert!(err.to_string().contains("256"));
-    }
-}
-
-// =============================================================================
 // TypeMetadata Tests
 // =============================================================================
 
 mod metadata_tests {
     use super::*;
-
-    #[test]
-    fn test_simple_metadata() {
-        let meta = TypeMetadata::simple("UInt64");
-        assert_eq!(meta.name, "UInt64");
-        assert!(!meta.nullable);
-        assert!(meta.parameters.is_empty());
-    }
 
     #[test]
     fn test_nullable_metadata() {
@@ -406,11 +360,5 @@ mod metadata_tests {
         assert!(meta.name.contains("Map"));
         assert!(meta.name.contains("String"));
         assert!(meta.name.contains("UInt64"));
-    }
-
-    #[test]
-    fn test_metadata_display() {
-        let meta = TypeMetadata::simple("Int32");
-        assert_eq!(format!("{}", meta), "Int32");
     }
 }

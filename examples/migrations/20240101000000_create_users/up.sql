@@ -2,6 +2,8 @@ CREATE TABLE IF NOT EXISTS users (
     id UInt64,
     name String,
     email String,
+    age UInt8,
+    active Bool DEFAULT true,
     created_at DateTime DEFAULT now()
 ) ENGINE = MergeTree()
 ORDER BY (id, created_at)

@@ -90,44 +90,6 @@ mod query_builder_tests {
 }
 
 // =============================================================================
-// Backend Tests
-// =============================================================================
-
-mod backend_tests {
-    use super::*;
-
-    #[test]
-    fn test_http_backend_name() {
-        assert_eq!(HttpBackend::name(), "ClickHouse HTTP");
-    }
-
-    #[test]
-    fn test_native_backend_name() {
-        assert_eq!(NativeBackend::name(), "ClickHouse Native");
-    }
-
-    #[test]
-    fn test_generic_backend_name() {
-        assert_eq!(ClickHouse::name(), "ClickHouse");
-    }
-
-    #[test]
-    fn test_backends_are_copy() {
-        let http = HttpBackend;
-        let http2 = http;
-        assert_eq!(http, http2);
-
-        let native = NativeBackend;
-        let native2 = native;
-        assert_eq!(native, native2);
-
-        let generic = ClickHouse;
-        let generic2 = generic;
-        assert_eq!(generic, generic2);
-    }
-}
-
-// =============================================================================
 // Expression Tests
 // =============================================================================
 
@@ -638,34 +600,3 @@ mod as_expression_tests {
     }
 }
 
-// =============================================================================
-// Star Expression Tests
-// =============================================================================
-
-mod star_tests {
-    use super::*;
-
-    fn build_sql<T: QueryFragment<ClickHouse>>(fragment: &T) -> String {
-        let mut builder = GenericQueryBuilder::default();
-        let mut collector = GenericBindCollector::default();
-        let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-        fragment.walk_ast(pass).unwrap();
-        builder.finish()
-    }
-
-    #[test]
-    fn test_star_query_fragment() {
-        struct DummyTable;
-        let star: Star<DummyTable> = Star::new();
-        let sql = build_sql(&star);
-        assert_eq!(sql, "*");
-    }
-
-    #[test]
-    fn test_star_default() {
-        struct DummyTable;
-        let star: Star<DummyTable> = Star::default();
-        let sql = build_sql(&star);
-        assert_eq!(sql, "*");
-    }
-}

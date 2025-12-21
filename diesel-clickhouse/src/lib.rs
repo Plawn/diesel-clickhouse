@@ -153,6 +153,14 @@ pub mod prelude {
     // HTTP execution traits
     #[cfg(feature = "http")]
     pub use crate::http::{ExecuteMut, InsertDsl, ToSql};
+
+    // Native execution traits
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    pub use crate::native::ToSql;
+
+    // Unified connection
+    #[cfg(any(feature = "http", feature = "native"))]
+    pub use crate::Connection;
 }
 
 /// DSL helpers and functions.
@@ -196,8 +204,82 @@ pub mod backend {
 }
 
 /// HTTP connection module.
+///
+/// Uses ClickHouse's HTTP interface (port 8123).
+/// This is the default backend and is easier to use in most environments.
 #[cfg(feature = "http")]
 pub mod http;
 
 #[cfg(feature = "http")]
 pub use http::ClickHouseConnection;
+
+/// Native protocol connection module.
+///
+/// Uses ClickHouse's native binary protocol (port 9000/9440 for TLS).
+/// This is faster than HTTP but requires direct TCP connectivity.
+///
+/// # Features
+///
+/// - `native` - Enable the native backend
+/// - `native-tls-native` - Enable TLS support (uses rustls)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::native::{NativeConnection, NativeConnectionOptions};
+///
+/// // Plain TCP connection (port 9000)
+/// let conn = NativeConnection::establish("localhost:9000", Default::default()).await?;
+///
+/// // With TLS (port 9440)
+/// #[cfg(feature = "native-tls-native")]
+/// {
+///     use diesel_clickhouse::native::TlsConfig;
+///     let tls = TlsConfig::new()?;
+///     let conn = NativeConnection::establish_tls(
+///         "localhost:9440",
+///         "localhost",
+///         tls,
+///         Default::default(),
+///     ).await?;
+/// }
+/// ```
+#[cfg(feature = "native")]
+pub mod native;
+
+#[cfg(feature = "native")]
+pub use native::NativeConnection;
+
+/// Unified connection interface.
+///
+/// Provides a single API that works with both HTTP and Native backends.
+/// The backend is selected automatically based on the URL scheme.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::Connection;
+///
+/// // HTTP backend
+/// let conn = Connection::establish("http://localhost:8123/default").await?;
+///
+/// // Native backend
+/// let conn = Connection::establish("tcp://localhost:9000/default").await?;
+///
+/// // Same API for both
+/// conn.execute("CREATE TABLE test (id UInt64) ENGINE = Memory").await?;
+/// conn.insert_values("test", "(1), (2), (3)").await?;
+/// ```
+#[cfg(any(feature = "http", feature = "native"))]
+mod unified;
+
+#[cfg(any(feature = "http", feature = "native"))]
+pub use unified::Connection;
+
+/// Migrations module.
+///
+/// Re-exports from diesel-clickhouse-migrations when the `migrations` feature is enabled.
+#[cfg(feature = "migrations")]
+pub mod migrations {
+    pub use diesel_clickhouse_migrations::*;
+}

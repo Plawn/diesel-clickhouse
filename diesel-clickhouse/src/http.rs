@@ -279,6 +279,57 @@ impl ClickHouseConnection {
     }
 }
 
+// =============================================================================
+// Migration Support
+// =============================================================================
+
+#[cfg(feature = "migrations")]
+mod migration_impl {
+    use super::*;
+    use diesel_clickhouse_migrations::{MigrationConnection, MigrationError, Result as MigrationResult};
+
+    #[async_trait]
+    impl MigrationConnection for ClickHouseConnection {
+        async fn execute(&mut self, sql: &str) -> MigrationResult<()> {
+            self.execute_raw(sql).await.map_err(|e| MigrationError::SqlError {
+                migration: "".to_string(),
+                message: e.to_string(),
+            })
+        }
+
+        async fn query_exists(&mut self, sql: &str) -> MigrationResult<bool> {
+            let result: Option<u8> = self.client.query(sql).fetch_optional().await
+                .map_err(|e| MigrationError::SqlError {
+                    migration: "".to_string(),
+                    message: e.to_string(),
+                })?;
+            Ok(result.is_some())
+        }
+
+        async fn query_scalar_string(&mut self, sql: &str) -> MigrationResult<Option<String>> {
+            let result: Option<String> = self.client.query(sql).fetch_optional().await
+                .map_err(|e| MigrationError::SqlError {
+                    migration: "".to_string(),
+                    message: e.to_string(),
+                })?;
+            Ok(result)
+        }
+
+        async fn query_versions(&mut self, sql: &str) -> MigrationResult<Vec<String>> {
+            let versions: Vec<String> = self.client.query(sql).fetch_all().await
+                .map_err(|e| MigrationError::SqlError {
+                    migration: "".to_string(),
+                    message: e.to_string(),
+                })?;
+            Ok(versions)
+        }
+
+        fn database_name(&self) -> &str {
+            &self.database
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

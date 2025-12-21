@@ -1,5 +1,8 @@
 //! Getting started with diesel-clickhouse.
 //!
+//! This example uses the HTTP backend directly. For a unified API that works
+//! with both HTTP and Native backends, see the `unified_connection` example.
+//!
 //! Run with: cargo run --example getting_started
 //! Prerequisites: docker-compose up -d
 
@@ -9,6 +12,16 @@ use serde::{Deserialize, Serialize};
 use diesel_clickhouse::http::ClickHouseConnection;
 use diesel_clickhouse::prelude::*;
 use diesel_clickhouse::{update, insert_into};
+use diesel_clickhouse::migrations::{EmbeddedMigrations, MigrationHarness, MigrationSource};
+use include_dir::include_dir;
+
+// =============================================================================
+// Embed migrations from the migrations folder at compile time
+// =============================================================================
+
+static MIGRATIONS: EmbeddedMigrations = EmbeddedMigrations::new(
+    include_dir!("$CARGO_MANIFEST_DIR/examples/migrations")
+);
 
 // =============================================================================
 // 1. Define your table schemas
@@ -81,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
     let url = std::env::var("CLICKHOUSE_URL")
         .unwrap_or_else(|_| "http://localhost:8123/test_db".to_string());
 
-    let conn = match ClickHouseConnection::new(&url).await {
+    let mut conn = match ClickHouseConnection::new(&url).await {
         Ok(conn) => conn,
         Err(e) => {
             eprintln!("Connection failed: {} (run: docker-compose up -d)\n", e);
@@ -89,22 +102,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Create tables
-    conn.execute_raw(
-        "CREATE TABLE IF NOT EXISTS users (
-            id UInt64, name String, email String, age UInt8,
-            active Bool DEFAULT true, created_at DateTime DEFAULT now()
-        ) ENGINE = MergeTree() ORDER BY (id, created_at)",
-    )
-    .await?;
-
-    conn.execute_raw(
-        "CREATE TABLE IF NOT EXISTS posts (
-            id UInt64, user_id UInt64, title String, content String,
-            created_at DateTime DEFAULT now()
-        ) ENGINE = MergeTree() ORDER BY (id, created_at)",
-    )
-    .await?;
+    // Run migrations - simple one-liner!
+    println!("Running migrations...");
+    let applied = conn.run_pending_migrations(&MIGRATIONS).await?;
+    println!("Applied {} migrations", applied.len());
 
     // INSERT users - fluent API with table
     let new_users = vec![
@@ -213,6 +214,13 @@ async fn main() -> anyhow::Result<()> {
 
 fn demo_mode() {
     println!("=== Demo Mode (SQL Generation) ===\n");
+
+    // Show embedded migrations
+    println!("=== Embedded Migrations ===");
+    for m in MIGRATIONS.migrations().unwrap() {
+        println!("  {} - {}", m.version, m.name);
+    }
+    println!();
 
     // SELECT
     let select = users::table

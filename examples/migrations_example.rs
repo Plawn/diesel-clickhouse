@@ -4,11 +4,11 @@
 //! Prerequisites: docker-compose up -d
 
 use diesel_clickhouse::http::ClickHouseConnection;
-use diesel_clickhouse_migrations::{
-    Migration, MigrationHarness, MigrationConnection, MigrationSource,
-    InMemoryMigrations, Result as MigrationResult,
+use diesel_clickhouse::migrations::{
+    Migration, MigrationHarness, MigrationSource,
+    InMemoryMigrations, EmbeddedMigrations,
 };
-use async_trait::async_trait;
+use include_dir::include_dir;
 
 // =============================================================================
 // Option 1: Embed migrations from files at compile time
@@ -16,9 +16,6 @@ use async_trait::async_trait;
 
 // This embeds all migrations from the examples/migrations/ directory at compile time.
 // The migrations are baked into the binary, no filesystem access needed at runtime.
-use diesel_clickhouse_migrations::EmbeddedMigrations;
-use include_dir::include_dir;
-
 static MIGRATIONS: EmbeddedMigrations = EmbeddedMigrations::new(
     include_dir!("$CARGO_MANIFEST_DIR/examples/migrations")
 );
@@ -38,6 +35,8 @@ fn create_in_memory_migrations() -> InMemoryMigrations {
                     id UInt64,
                     name String,
                     email String,
+                    age UInt8,
+                    active Bool DEFAULT true,
                     created_at DateTime DEFAULT now()
                 ) ENGINE = MergeTree()
                 ORDER BY (id, created_at)
@@ -55,7 +54,6 @@ fn create_in_memory_migrations() -> InMemoryMigrations {
                     user_id UInt64,
                     title String,
                     content String,
-                    published Bool DEFAULT false,
                     created_at DateTime DEFAULT now()
                 ) ENGINE = MergeTree()
                 ORDER BY (id, created_at)
@@ -63,88 +61,6 @@ fn create_in_memory_migrations() -> InMemoryMigrations {
             // down.sql
             "DROP TABLE IF EXISTS posts",
         ))
-        .with_migration(Migration::new(
-            "20240103000000",
-            "add_user_status",
-            // up.sql
-            r#"
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS status String DEFAULT 'active'
-            "#,
-            // down.sql
-            r#"
-                ALTER TABLE users DROP COLUMN IF EXISTS status
-            "#,
-        ))
-}
-
-// =============================================================================
-// Implement MigrationConnection for ClickHouseConnection
-// =============================================================================
-
-struct MigrationConn<'a> {
-    conn: &'a ClickHouseConnection,
-    database: String,
-}
-
-impl<'a> MigrationConn<'a> {
-    fn new(conn: &'a ClickHouseConnection, database: &str) -> Self {
-        Self {
-            conn,
-            database: database.to_string(),
-        }
-    }
-}
-
-#[async_trait]
-impl MigrationConnection for MigrationConn<'_> {
-    async fn execute(&mut self, sql: &str) -> MigrationResult<()> {
-        self.conn.execute_raw(sql).await
-            .map_err(|e| diesel_clickhouse_migrations::MigrationError::SqlError {
-                migration: "".to_string(),
-                message: e.to_string(),
-            })
-    }
-
-    async fn query_exists(&mut self, sql: &str) -> MigrationResult<bool> {
-        // For ClickHouse, we check if the query returns any rows
-        let result: Option<u8> = self.conn.client()
-            .query(sql)
-            .fetch_optional()
-            .await
-            .map_err(|e| diesel_clickhouse_migrations::MigrationError::SqlError {
-                migration: "".to_string(),
-                message: e.to_string(),
-            })?;
-        Ok(result.is_some())
-    }
-
-    async fn query_scalar_string(&mut self, sql: &str) -> MigrationResult<Option<String>> {
-        let result: Option<String> = self.conn.client()
-            .query(sql)
-            .fetch_optional()
-            .await
-            .map_err(|e| diesel_clickhouse_migrations::MigrationError::SqlError {
-                migration: "".to_string(),
-                message: e.to_string(),
-            })?;
-        Ok(result)
-    }
-
-    async fn query_versions(&mut self, sql: &str) -> MigrationResult<Vec<String>> {
-        let versions: Vec<String> = self.conn.client()
-            .query(sql)
-            .fetch_all()
-            .await
-            .map_err(|e| diesel_clickhouse_migrations::MigrationError::SqlError {
-                migration: "".to_string(),
-                message: e.to_string(),
-            })?;
-        Ok(versions)
-    }
-
-    fn database_name(&self) -> &str {
-        &self.database
-    }
 }
 
 // =============================================================================
@@ -158,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let url = std::env::var("CLICKHOUSE_URL")
         .unwrap_or_else(|_| "http://localhost:8123/test_db".to_string());
 
-    let conn = match ClickHouseConnection::new(&url).await {
+    let mut conn = match ClickHouseConnection::new(&url).await {
         Ok(conn) => conn,
         Err(e) => {
             eprintln!("Connection failed: {} (run: docker-compose up -d)\n", e);
@@ -172,16 +88,14 @@ async fn main() -> anyhow::Result<()> {
     // Option 2: Use in-memory migrations (shown here for demo)
     let migrations = create_in_memory_migrations();
 
-    let mut harness = MigrationConn::new(&conn, "test_db");
-
     // Setup migrations table
     println!("1. Setting up migrations table...");
-    harness.setup_migrations_table().await?;
+    conn.setup_migrations_table().await?;
     println!("   Done!\n");
 
     // Check pending migrations
     println!("2. Checking pending migrations...");
-    let pending = harness.pending_migrations(&migrations).await?;
+    let pending = conn.pending_migrations(&migrations).await?;
     println!("   {} migrations pending:", pending.len());
     for m in &pending {
         println!("   - {}", m.version);
@@ -190,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Run all pending migrations
     println!("3. Running pending migrations...");
-    let applied = harness.run_pending_migrations(&migrations).await?;
+    let applied = conn.run_pending_migrations(&migrations).await?;
     println!("   Applied {} migrations:", applied.len());
     for v in &applied {
         println!("   - {}", v);
@@ -199,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Check applied migrations
     println!("4. Checking applied migrations...");
-    let all_applied = harness.applied_migrations().await?;
+    let all_applied = conn.applied_migrations().await?;
     println!("   {} migrations applied:", all_applied.len());
     for v in &all_applied {
         println!("   - {}", v);
@@ -208,14 +122,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Get latest migration
     println!("5. Latest migration:");
-    if let Some(latest) = harness.latest_migration().await? {
+    if let Some(latest) = conn.latest_migration().await? {
         println!("   {}", latest);
     }
     println!();
 
     // Demo: Revert last migration
     println!("6. Reverting last migration...");
-    let reverted = harness.revert_migrations(&migrations, 1).await?;
+    let reverted = conn.revert_migrations(&migrations, 1).await?;
     println!("   Reverted {} migrations:", reverted.len());
     for v in &reverted {
         println!("   - {}", v);
@@ -224,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Demo: Redo last migration
     println!("7. Re-applying last migration...");
-    let reapplied = harness.run_pending_migrations(&migrations).await?;
+    let reapplied = conn.run_pending_migrations(&migrations).await?;
     println!("   Re-applied {} migrations:", reapplied.len());
     for v in &reapplied {
         println!("   - {}", v);
@@ -233,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Cleanup (optional - comment out to keep tables)
     println!("8. Cleaning up (reverting all migrations)...");
-    let reverted = harness.revert_migrations(&migrations, 10).await?;
+    let reverted = conn.revert_migrations(&migrations, 2).await?;
     println!("   Reverted {} migrations", reverted.len());
 
     // Drop migrations table

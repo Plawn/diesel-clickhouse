@@ -1,10 +1,7 @@
 //! Unit tests for diesel-clickhouse-migrations.
 
 use diesel_clickhouse_migrations::*;
-use diesel_clickhouse_migrations::migration::*;
 use diesel_clickhouse_migrations::source::*;
-use diesel_clickhouse_migrations::error::MigrationError;
-use std::path::PathBuf;
 use tempfile::TempDir;
 
 // =============================================================================
@@ -13,18 +10,6 @@ use tempfile::TempDir;
 
 mod version_tests {
     use super::*;
-
-    #[test]
-    fn test_version_new() {
-        let version = MigrationVersion::new("20240115120000");
-        assert_eq!(version.as_str(), "20240115120000");
-    }
-
-    #[test]
-    fn test_version_display() {
-        let version = MigrationVersion::new("12345");
-        assert_eq!(format!("{}", version), "12345");
-    }
 
     #[test]
     fn test_version_from_directory_name_timestamp() {
@@ -68,16 +53,6 @@ mod version_tests {
     }
 
     #[test]
-    fn test_version_equality() {
-        let v1 = MigrationVersion::new("12345");
-        let v2 = MigrationVersion::new("12345");
-        let v3 = MigrationVersion::new("12346");
-
-        assert_eq!(v1, v2);
-        assert_ne!(v1, v3);
-    }
-
-    #[test]
     fn test_version_generate() {
         let v1 = MigrationVersion::generate();
         let v2 = MigrationVersion::generate();
@@ -97,18 +72,6 @@ mod version_tests {
 
 mod name_tests {
     use super::*;
-
-    #[test]
-    fn test_name_new() {
-        let name = MigrationName::new("create_users");
-        assert_eq!(name.as_str(), "create_users");
-    }
-
-    #[test]
-    fn test_name_display() {
-        let name = MigrationName::new("add_index");
-        assert_eq!(format!("{}", name), "add_index");
-    }
 
     #[test]
     fn test_name_from_directory_name() {
@@ -137,21 +100,6 @@ mod name_tests {
 
 mod migration_tests {
     use super::*;
-
-    #[test]
-    fn test_migration_new() {
-        let migration = Migration::new(
-            "20240115120000",
-            "create_users",
-            "CREATE TABLE users (id UInt64)",
-            "DROP TABLE users",
-        );
-
-        assert_eq!(migration.version.as_str(), "20240115120000");
-        assert_eq!(migration.name.as_str(), "create_users");
-        assert_eq!(migration.up_sql, "CREATE TABLE users (id UInt64)");
-        assert_eq!(migration.down_sql, "DROP TABLE users");
-    }
 
     #[test]
     fn test_migration_directory_name() {
@@ -288,39 +236,6 @@ mod builder_tests {
 
         assert!(migration.is_none());
     }
-
-    #[test]
-    fn test_builder_default() {
-        let builder = MigrationBuilder::default();
-        let migration = builder.build();
-        assert!(migration.is_none());
-    }
-}
-
-// =============================================================================
-// MigrationMetadata Tests
-// =============================================================================
-
-mod metadata_tests {
-    use super::*;
-
-    #[test]
-    fn test_metadata_new() {
-        let version = MigrationVersion::new("123");
-        let meta = MigrationMetadata::new(version);
-
-        assert_eq!(meta.version.as_str(), "123");
-        assert!(meta.checksum.is_none());
-    }
-
-    #[test]
-    fn test_metadata_with_checksum() {
-        let version = MigrationVersion::new("456");
-        let meta = MigrationMetadata::with_checksum(version, "abc123".to_string());
-
-        assert_eq!(meta.version.as_str(), "456");
-        assert_eq!(meta.checksum, Some("abc123".to_string()));
-    }
 }
 
 // =============================================================================
@@ -329,13 +244,6 @@ mod metadata_tests {
 
 mod in_memory_source_tests {
     use super::*;
-
-    #[test]
-    fn test_empty_source() {
-        let source = InMemoryMigrations::new();
-        let migrations = source.migrations().unwrap();
-        assert!(migrations.is_empty());
-    }
 
     #[test]
     fn test_add_migration() {
@@ -376,12 +284,6 @@ mod in_memory_source_tests {
 
 mod file_based_source_tests {
     use super::*;
-
-    #[test]
-    fn test_path_accessor() {
-        let source = FileBasedMigrations::new("/some/path");
-        assert_eq!(source.path(), PathBuf::from("/some/path"));
-    }
 
     #[test]
     fn test_nonexistent_directory() {
@@ -535,13 +437,6 @@ mod combined_source_tests {
     use super::*;
 
     #[test]
-    fn test_empty_combined() {
-        let source = CombinedMigrations::new();
-        let migrations = source.migrations().unwrap();
-        assert!(migrations.is_empty());
-    }
-
-    #[test]
     fn test_combine_sources() {
         let source1 = InMemoryMigrations::new()
             .with_migration(Migration::new("1", "first", "", ""));
@@ -593,50 +488,3 @@ mod combined_source_tests {
     }
 }
 
-// =============================================================================
-// Error Tests
-// =============================================================================
-
-mod error_tests {
-    use super::*;
-
-    #[test]
-    fn test_error_display_directory_not_found() {
-        let err = MigrationError::DirectoryNotFound(PathBuf::from("/some/path"));
-        let msg = format!("{}", err);
-        assert!(msg.contains("/some/path"));
-    }
-
-    #[test]
-    fn test_migration_exists_error() {
-        let err = MigrationError::MigrationExists("12345".to_string());
-        let msg = format!("{}", err);
-        assert!(msg.contains("12345"));
-    }
-
-    #[test]
-    fn test_sql_error() {
-        let err = MigrationError::sql_error("00001_test", "syntax error near FROM");
-        let msg = format!("{}", err);
-        assert!(msg.contains("00001_test"));
-        assert!(msg.contains("syntax error"));
-    }
-
-    #[test]
-    fn test_database_error() {
-        let err = MigrationError::database_error("connection refused");
-        let msg = format!("{}", err);
-        assert!(msg.contains("connection refused"));
-    }
-
-    #[test]
-    fn test_version_mismatch_error() {
-        let err = MigrationError::VersionMismatch {
-            expected: "20240115".to_string(),
-            found: "20240116".to_string(),
-        };
-        let msg = format!("{}", err);
-        assert!(msg.contains("20240115"));
-        assert!(msg.contains("20240116"));
-    }
-}

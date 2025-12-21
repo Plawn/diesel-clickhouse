@@ -12,6 +12,10 @@ default = ["http", "chrono"]
 
 # Backends
 http = ["dep:clickhouse"]
+native = ["dep:clickhouse-rs"]
+
+# Migrations support
+migrations = ["dep:diesel-clickhouse-migrations"]
 
 # For integration tests
 integration = []
@@ -26,9 +30,12 @@ uuid = ["diesel-clickhouse-core/uuid", "dep:uuid"]
 # Connection pool
 pool = ["dep:deadpool"]
 
-# TLS
+# TLS for HTTP backend
 native-tls = ["clickhouse?/native-tls"]
 rustls-tls = ["clickhouse?/rustls-tls"]
+
+# TLS for native backend (via connection string: secure=true)
+native-tls-native = ["clickhouse-rs?/tls"]
 
 # Tracing
 tracing = ["dep:tracing"]
@@ -43,13 +50,27 @@ async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 
-# Optional
+# Optional - HTTP backend
 clickhouse = { workspace = true, optional = true, features = ["time"] }
+
+# Optional - Native backend
+clickhouse-rs = { version = "1.1.0-alpha.1", optional = true, default-features = false, features = ["tokio_io"] }
+
+# Serialization
+serde_json = "1"
+
+# HTTP client for unified fetch
+reqwest = { version = "0.11", default-features = false, features = ["json"] }
+
+# Optional - Other
 chrono = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 deadpool = { version = "0.10", optional = true }
 tracing = { version = "0.1", optional = true }
 url = "2"
+
+# Optional - Migrations
+diesel-clickhouse-migrations = { path = "../diesel-clickhouse-migrations", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

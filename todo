@@ -1,3 +1,8 @@
 - gestion des migrations en entier
 - gestion du cli en entier
 - ajout de la doc sur les multiples backend (natif et http)
+- mettre à jour le readme / doc
+- insertion mode batch
+- checker les examples
+  - supprimer ce qui a pas de sens
+  - supprimer les migrations qui servent à rien
