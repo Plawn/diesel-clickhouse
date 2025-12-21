@@ -8,32 +8,32 @@
 //! ```rust,ignore
 //! use diesel_clickhouse::prelude::*;
 //! use diesel_clickhouse::http::ClickHouseConnection;
-//! use clickhouse::Row;
-//! use serde::{Serialize, Deserialize};
 //!
-//! // Define your row type with clickhouse's Row derive
-//! #[derive(Row, Serialize, Deserialize)]
+//! // Define your row type with the unified Row derive
+//! #[derive(Debug, Row)]
 //! struct MyRow {
 //!     id: u64,
 //!     name: String,
 //! }
 //!
 //! // Use the connection
-//! let conn = ClickHouseConnection::establish("http://localhost:8123/mydb").await?;
-//! let rows: Vec<MyRow> = conn.fetch("SELECT id, name FROM my_table").await?;
+//! let conn = ClickHouseConnection::new("http://localhost:8123/mydb").await?;
+//! let rows: Vec<MyRow> = conn.load(my_table::table).await?;
 //! ```
 
 use async_trait::async_trait;
 use clickhouse::Client;
+use serde::de::DeserializeOwned;
 
 use crate::core::backend::{ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
-use crate::core::connection::AsyncConnection;
+use crate::core::connection::{AsyncConnection, ClickHouseConnection as ClickHouseConnectionTrait};
 use crate::core::deserialize::FromRow;
 use crate::core::query_builder::{AstPass, QueryFragment};
 use crate::core::result::{Error, QueryResult};
+use crate::core::row::ClickHouseRow as ClickHouseRowTrait;
 
-// Re-export clickhouse Row for convenience
-pub use clickhouse::Row as ClickHouseRow;
+// Re-export clickhouse Row for convenience (for users who need direct clickhouse crate access)
+pub use clickhouse::Row as NativeClickHouseRow;
 
 /// A connection to ClickHouse via HTTP.
 #[derive(Clone)]
@@ -276,6 +276,101 @@ impl ClickHouseConnection {
     pub async fn insert_raw(&self, table_name: &str, sql_values: &str) -> QueryResult<()> {
         let sql = format!("INSERT INTO {} VALUES {}", table_name, sql_values);
         self.execute_raw(&sql).await
+    }
+
+    /// Load rows from a raw SQL query using JSON format (for serde types).
+    ///
+    /// This method uses ClickHouse's JSONEachRow format to deserialize results
+    /// into any type that implements `serde::Deserialize`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[derive(Debug, Row)]
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
+    /// let users: Vec<User> = conn.load_json("SELECT id, name FROM users").await?;
+    /// ```
+    pub async fn load_json<T: DeserializeOwned + Send>(&self, sql: &str) -> QueryResult<Vec<T>> {
+        // Execute query and get bytes cursor with JSONEachRow format
+        let mut cursor = self.client
+            .query(sql)
+            .fetch_bytes("JSONEachRow")
+            .map_err(|e| Error::QueryError(e.to_string()))?;
+
+        // Collect all bytes using the cursor's iteration pattern
+        let mut all_bytes = Vec::new();
+        loop {
+            match cursor.next().await {
+                Ok(Some(chunk)) => {
+                    all_bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => return Err(Error::QueryError(e.to_string())),
+            }
+        }
+
+        // Parse JSONEachRow format: one JSON object per line
+        let text = String::from_utf8(all_bytes)
+            .map_err(|e| Error::DeserializationError(e.to_string()))?;
+
+        let mut results = Vec::new();
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let row: T = serde_json::from_str(line)
+                .map_err(|e| Error::DeserializationError(format!("Failed to parse JSON: {} - line: {}", e, line)))?;
+            results.push(row);
+        }
+
+        Ok(results)
+    }
+}
+
+// =============================================================================
+// Unified ClickHouseConnection Implementation
+// =============================================================================
+
+#[async_trait]
+impl ClickHouseConnectionTrait for ClickHouseConnection {
+    async fn establish(url: &str) -> QueryResult<Self> {
+        Self::new(url).await
+    }
+
+    async fn execute_raw(&self, sql: &str) -> QueryResult<()> {
+        ClickHouseConnection::execute_raw(self, sql).await
+    }
+
+    async fn execute_statement<Q>(&self, query: &Q) -> QueryResult<()>
+    where
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        let sql = build_sql(query);
+        self.execute_raw(&sql).await
+    }
+
+    async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: ClickHouseRowTrait,
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        let sql = build_sql(&query);
+        self.load_json(&sql).await
+    }
+
+    fn build_sql<Q>(&self, query: &Q) -> String
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        build_sql(query)
+    }
+
+    fn database(&self) -> &str {
+        &self.database
     }
 }
 

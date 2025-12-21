@@ -43,8 +43,8 @@ pub fn table(input: TokenStream) -> TokenStream {
 /// This derive macro generates implementations that work with both
 /// HTTP and Native backends:
 ///
-/// - Generates `serde::Deserialize` for serde-based deserialization
-/// - Generates `clickhouse::Row` when the `http` feature is enabled
+/// - Generates `serde::Deserialize` for serde-based deserialization (Native backend)
+/// - Generates `clickhouse::Row` for HTTP backend (when `http` feature is enabled)
 ///
 /// # Example
 ///
@@ -58,8 +58,8 @@ pub fn table(input: TokenStream) -> TokenStream {
 ///     email: Option<String>,
 /// }
 ///
-/// // Works with unified Connection
-/// let users: Vec<User> = conn.fetch_all(users::table).await?;
+/// // Works with unified Connection - both HTTP and Native
+/// let users: Vec<User> = conn.load(users::table.filter(users::active.eq(true))).await?;
 /// ```
 ///
 /// # Attributes
@@ -75,6 +75,19 @@ pub fn table(input: TokenStream) -> TokenStream {
 ///     name: String,
 /// }
 /// ```
+///
+/// # Generated Code
+///
+/// For a struct like:
+/// ```rust,ignore
+/// #[derive(Row)]
+/// struct User { id: u64, name: String }
+/// ```
+///
+/// The macro generates:
+/// - `impl serde::Serialize for User`
+/// - `impl serde::Deserialize for User`
+/// - `impl clickhouse::Row for User` (when http feature is enabled)
 #[proc_macro_derive(Row, attributes(column_name, serde))]
 pub fn derive_row(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -153,6 +166,7 @@ pub fn derive_row(input: TokenStream) -> TokenStream {
                 state.end()
             }
         }
+
     };
 
     TokenStream::from(expanded)

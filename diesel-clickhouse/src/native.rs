@@ -31,37 +31,32 @@
 //! # Usage
 //!
 //! ```rust,ignore
+//! use diesel_clickhouse::prelude::*;
 //! use diesel_clickhouse::native::NativeConnection;
+//!
+//! #[derive(Debug, Row)]
+//! struct User {
+//!     id: u64,
+//!     name: String,
+//! }
 //!
 //! // Plain TCP connection (port 9000)
 //! let conn = NativeConnection::establish("tcp://localhost:9000/default").await?;
 //!
-//! // With authentication
-//! let conn = NativeConnection::establish("tcp://user:pass@localhost:9000/mydb").await?;
-//!
-//! // With TLS (requires native-tls-native feature)
-//! let conn = NativeConnection::establish(
-//!     "tcp://user:pass@localhost:9440/mydb?secure=true"
-//! ).await?;
-//!
-//! // Execute queries
-//! conn.execute_raw("CREATE TABLE test (id UInt64) ENGINE = Memory").await?;
-//!
-//! // Insert data
-//! conn.insert_raw("test", vec![1u64, 2, 3]).await?;
-//!
-//! // Query data
-//! let block = conn.query_raw("SELECT * FROM test").await?;
+//! // Query using unified interface
+//! let users: Vec<User> = conn.load(users::table.filter(users::active.eq(true))).await?;
 //! ```
 
 use async_trait::async_trait;
 use clickhouse_rs::{Pool, ClientHandle, Block, types::Complex};
+use serde::de::DeserializeOwned;
 
 use crate::core::backend::{ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
-use crate::core::connection::AsyncConnection;
+use crate::core::connection::{AsyncConnection, ClickHouseConnection as ClickHouseConnectionTrait};
 use crate::core::deserialize::FromRow;
 use crate::core::query_builder::{AstPass, QueryFragment};
 use crate::core::result::{Error, QueryResult};
+use crate::core::row::ClickHouseRow as ClickHouseRowTrait;
 
 // Re-export clickhouse-rs types for convenience
 pub use clickhouse_rs::{Block as NativeBlock, row, types};
@@ -362,6 +357,236 @@ pub trait ExecuteMut: QueryFragment<ClickHouse> + Send + Sync + Sized {
 }
 
 impl<T: QueryFragment<ClickHouse> + Send + Sync> ExecuteMut for T {}
+
+// =============================================================================
+// Unified ClickHouseConnection Implementation
+// =============================================================================
+
+impl NativeConnection {
+    /// Load rows from a raw SQL query using JSON format (for serde types).
+    ///
+    /// This method queries ClickHouse and converts the Block to JSON for
+    /// serde-compatible deserialization.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[derive(Debug, Row)]
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
+    /// let users: Vec<User> = conn.load_json("SELECT id, name FROM users").await?;
+    /// ```
+    pub async fn load_json<T: DeserializeOwned + Send>(&self, sql: &str) -> QueryResult<Vec<T>> {
+        let block = self.query_raw(sql).await?;
+        block_to_vec(&block)
+    }
+}
+
+#[async_trait]
+impl ClickHouseConnectionTrait for NativeConnection {
+    async fn establish(url: &str) -> QueryResult<Self> {
+        Self::establish(url).await
+    }
+
+    async fn execute_raw(&self, sql: &str) -> QueryResult<()> {
+        NativeConnection::execute_raw(self, sql).await
+    }
+
+    async fn execute_statement<Q>(&self, query: &Q) -> QueryResult<()>
+    where
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        let sql = build_sql(query);
+        self.execute_raw(&sql).await
+    }
+
+    async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: ClickHouseRowTrait,
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        let sql = build_sql(&query);
+        self.load_json(&sql).await
+    }
+
+    fn build_sql<Q>(&self, query: &Q) -> String
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        build_sql(query)
+    }
+
+    fn database(&self) -> &str {
+        &self.database
+    }
+}
+
+/// Convert a native Block to a Vec of deserializable rows.
+fn block_to_vec<T: DeserializeOwned>(
+    block: &Block<Complex>,
+) -> QueryResult<Vec<T>> {
+    let mut results = Vec::new();
+
+    for row_idx in 0..block.row_count() {
+        let mut map = serde_json::Map::new();
+
+        for col_idx in 0..block.column_count() {
+            let col_name = block.columns()[col_idx].name();
+            let sql_type = block.columns()[col_idx].sql_type();
+
+            let value = extract_block_value(block, row_idx, col_idx, sql_type)?;
+            map.insert(col_name.to_string(), value);
+        }
+
+        let row: T = serde_json::from_value(serde_json::Value::Object(map))
+            .map_err(|e| Error::DeserializationError(e.to_string()))?;
+        results.push(row);
+    }
+
+    Ok(results)
+}
+
+/// Extract a value from a native Block cell.
+fn extract_block_value(
+    block: &Block<Complex>,
+    row: usize,
+    col: usize,
+    sql_type: clickhouse_rs::types::SqlType,
+) -> QueryResult<serde_json::Value> {
+    use clickhouse_rs::types::SqlType;
+
+    Ok(match sql_type {
+        SqlType::UInt8 => {
+            let v: u8 = block.get(row, col).map_err(ch_err)?;
+            serde_json::Value::Number(v.into())
+        }
+        SqlType::UInt16 => {
+            let v: u16 = block.get(row, col).map_err(ch_err)?;
+            serde_json::Value::Number(v.into())
+        }
+        SqlType::UInt32 => {
+            let v: u32 = block.get(row, col).map_err(ch_err)?;
+            serde_json::Value::Number(v.into())
+        }
+        SqlType::UInt64 => {
+            let v: u64 = block.get(row, col).map_err(ch_err)?;
+            serde_json::Value::Number(v.into())
+        }
+        SqlType::Int8 => {
+            let v: i8 = block.get(row, col).map_err(ch_err)?;
+            serde_json::Value::Number(v.into())
+        }
+        SqlType::Int16 => {
+            let v: i16 = block.get(row, col).map_err(ch_err)?;
+            serde_json::Value::Number(v.into())
+        }
+        SqlType::Int32 => {
+            let v: i32 = block.get(row, col).map_err(ch_err)?;
+            serde_json::Value::Number(v.into())
+        }
+        SqlType::Int64 => {
+            let v: i64 = block.get(row, col).map_err(ch_err)?;
+            serde_json::Value::Number(v.into())
+        }
+        SqlType::Float32 => {
+            let v: f32 = block.get(row, col).map_err(ch_err)?;
+            serde_json::Number::from_f64(v as f64)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null)
+        }
+        SqlType::Float64 => {
+            let v: f64 = block.get(row, col).map_err(ch_err)?;
+            serde_json::Number::from_f64(v)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null)
+        }
+        SqlType::String | SqlType::FixedString(_) => {
+            let v: String = block.get(row, col).map_err(ch_err)?;
+            serde_json::Value::String(v)
+        }
+        SqlType::Date => {
+            let days: u16 = block.get(row, col).map_err(ch_err)?;
+            let date = days_to_date_string(days as i32);
+            serde_json::Value::String(date)
+        }
+        SqlType::DateTime(_) => {
+            let secs: u32 = block.get(row, col).map_err(ch_err)?;
+            let datetime = secs_to_datetime_string(secs as i64);
+            serde_json::Value::String(datetime)
+        }
+        SqlType::Nullable(inner) => {
+            match inner {
+                SqlType::String | SqlType::FixedString(_) => {
+                    block.get::<Option<String>, _>(row, col)
+                        .map_err(ch_err)?
+                        .map(serde_json::Value::String)
+                        .unwrap_or(serde_json::Value::Null)
+                }
+                SqlType::UInt64 => {
+                    block.get::<Option<u64>, _>(row, col)
+                        .map_err(ch_err)?
+                        .map(|v| serde_json::Value::Number(v.into()))
+                        .unwrap_or(serde_json::Value::Null)
+                }
+                SqlType::Int64 => {
+                    block.get::<Option<i64>, _>(row, col)
+                        .map_err(ch_err)?
+                        .map(|v| serde_json::Value::Number(v.into()))
+                        .unwrap_or(serde_json::Value::Null)
+                }
+                _ => {
+                    block.get::<Option<String>, _>(row, col)
+                        .unwrap_or(None)
+                        .map(serde_json::Value::String)
+                        .unwrap_or(serde_json::Value::Null)
+                }
+            }
+        }
+        _ => {
+            let v: String = block.get(row, col).unwrap_or_default();
+            serde_json::Value::String(v)
+        }
+    })
+}
+
+/// Convert clickhouse-rs errors to our error type.
+fn ch_err(e: clickhouse_rs::errors::Error) -> Error {
+    Error::QueryError(e.to_string())
+}
+
+/// Convert days since epoch to ISO date string.
+fn days_to_date_string(days: i32) -> String {
+    const DAYS_IN_400_YEARS: i32 = 146097;
+
+    let days = days + 719468;
+
+    let era = if days >= 0 { days } else { days - 146096 } / DAYS_IN_400_YEARS;
+    let doe = days - era * DAYS_IN_400_YEARS;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+/// Convert seconds since epoch to ISO datetime string.
+fn secs_to_datetime_string(secs: i64) -> String {
+    let days = (secs / 86400) as i32;
+    let day_secs = (secs % 86400) as u32;
+    let hours = day_secs / 3600;
+    let mins = (day_secs % 3600) / 60;
+    let secs = day_secs % 60;
+
+    let date = days_to_date_string(days);
+    format!("{}T{:02}:{:02}:{:02}Z", date, hours, mins, secs)
+}
 
 #[cfg(test)]
 mod tests {

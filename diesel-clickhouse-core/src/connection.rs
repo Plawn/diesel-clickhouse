@@ -1,11 +1,221 @@
 //! Async connection traits for ClickHouse.
+//!
+//! This module provides the core connection abstraction for diesel-clickhouse:
+//!
+//! - [`ClickHouseConnection`] - The main unified connection trait that works with both backends
+//! - [`AsyncConnection`] - Lower-level async connection trait (for internal use)
+//!
+//! # Usage
+//!
+//! The recommended way to use connections is through the [`ClickHouseConnection`] trait:
+//!
+//! ```rust,ignore
+//! use diesel_clickhouse::prelude::*;
+//!
+//! #[derive(Debug, Row)]
+//! struct User {
+//!     id: u64,
+//!     name: String,
+//! }
+//!
+//! async fn get_users(conn: &impl ClickHouseConnection) -> QueryResult<Vec<User>> {
+//!     conn.load(users::table.filter(users::active.eq(true))).await
+//! }
+//! ```
 
-use crate::backend::Backend;
+use crate::backend::{Backend, ClickHouse};
 use crate::deserialize::FromRow;
 use crate::query_builder::QueryFragment;
 use crate::result::QueryResult;
+use crate::row::ClickHouseRow;
 
-/// Async connection trait for ClickHouse.
+// =============================================================================
+// Unified ClickHouse Connection Trait
+// =============================================================================
+
+/// Unified connection trait for ClickHouse that works with both HTTP and Native backends.
+///
+/// This is the main connection trait you should use in your application code.
+/// It provides a consistent API regardless of which backend is being used.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::prelude::*;
+///
+/// #[derive(Debug, Row)]
+/// struct User {
+///     id: u64,
+///     name: String,
+///     active: bool,
+/// }
+///
+/// async fn query_users(conn: &impl ClickHouseConnection) -> QueryResult<Vec<User>> {
+///     // This works with both HTTP and Native connections
+///     conn.load(
+///         users::table
+///             .filter(users::active.eq(true))
+///             .order_by(users::name.asc())
+///             .limit(100)
+///     ).await
+/// }
+///
+/// async fn insert_user(conn: &impl ClickHouseConnection, user: &NewUser) -> QueryResult<()> {
+///     conn.insert(insert_into(users::table).values(user)).await
+/// }
+/// ```
+///
+/// # Backend Differences
+///
+/// While this trait provides a unified API, there are some behavioral differences:
+///
+/// | Feature | HTTP Backend | Native Backend |
+/// |---------|--------------|----------------|
+/// | Connection | HTTP/HTTPS | TCP binary protocol |
+/// | Default Port | 8123 | 9000 (9440 for TLS) |
+/// | Serialization | serde + clickhouse Row | serde only |
+/// | Streaming | Via inserter | Via blocks |
+#[async_trait::async_trait]
+pub trait ClickHouseConnection: Send + Sync {
+    /// Establish a connection from a URL.
+    ///
+    /// The URL format determines the backend:
+    /// - `http://` or `https://` - HTTP backend
+    /// - `tcp://` - Native backend
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // HTTP connection
+    /// let conn = Connection::establish("http://localhost:8123/default").await?;
+    ///
+    /// // Native connection
+    /// let conn = Connection::establish("tcp://localhost:9000/default").await?;
+    /// ```
+    async fn establish(url: &str) -> QueryResult<Self>
+    where
+        Self: Sized;
+
+    /// Execute a raw SQL statement (no results).
+    ///
+    /// Use this for DDL statements (CREATE, ALTER, DROP) and other non-query operations.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.execute_raw("CREATE TABLE users (id UInt64, name String) ENGINE = MergeTree() ORDER BY id").await?;
+    /// ```
+    async fn execute_raw(&self, sql: &str) -> QueryResult<()>;
+
+    /// Execute a query fragment (INSERT, UPDATE, DELETE).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.execute_statement(&update(users::table).set(users::active.eq(false)).filter(users::id.eq(1))).await?;
+    /// ```
+    async fn execute_statement<Q>(&self, query: &Q) -> QueryResult<()>
+    where
+        Q: QueryFragment<ClickHouse> + Send + Sync;
+
+    /// Load rows from a query.
+    ///
+    /// This is the primary method for fetching data. The row type must implement
+    /// `ClickHouseRow` (which is automatically satisfied by `#[derive(Row)]`).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[derive(Debug, Row)]
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
+    /// let users: Vec<User> = conn.load(
+    ///     users::table.filter(users::active.eq(true))
+    /// ).await?;
+    /// ```
+    async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: ClickHouseRow,
+        Q: QueryFragment<ClickHouse> + Send + Sync;
+
+    /// Load a single row from a query.
+    ///
+    /// Returns an error if no rows are found.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user: User = conn.load_one(
+    ///     users::table.filter(users::id.eq(42))
+    /// ).await?;
+    /// ```
+    async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    where
+        T: ClickHouseRow,
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        self.load(query).await?.into_iter().next().ok_or(crate::result::Error::NotFound)
+    }
+
+    /// Load an optional single row from a query.
+    ///
+    /// Returns `None` if no rows are found.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user: Option<User> = conn.load_optional(
+    ///     users::table.filter(users::id.eq(42))
+    /// ).await?;
+    /// ```
+    async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
+    where
+        T: ClickHouseRow,
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        Ok(self.load(query).await?.into_iter().next())
+    }
+
+    /// Insert data using a query fragment.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.insert(insert_into(users::table).values(&new_user)).await?;
+    /// ```
+    async fn insert<Q>(&self, query: Q) -> QueryResult<()>
+    where
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        self.execute_statement(&query).await
+    }
+
+    /// Build SQL from a query fragment without executing.
+    ///
+    /// Useful for debugging or logging queries.
+    fn build_sql<Q>(&self, query: &Q) -> String
+    where
+        Q: QueryFragment<ClickHouse>;
+
+    /// Get the database name.
+    fn database(&self) -> &str;
+
+    /// Ping the connection to verify it's alive.
+    async fn ping(&self) -> QueryResult<()> {
+        self.execute_raw("SELECT 1").await
+    }
+}
+
+// =============================================================================
+// Legacy AsyncConnection Trait (for internal use)
+// =============================================================================
+
+/// Async connection trait for ClickHouse (legacy, for internal use).
+///
+/// Prefer using [`ClickHouseConnection`] in new code.
 #[async_trait::async_trait]
 pub trait AsyncConnection: Send + Sized {
     /// The backend type for this connection.

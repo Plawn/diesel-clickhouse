@@ -1,6 +1,7 @@
 //! # Unified Connection Example
 //!
-//! Demonstrates the unified `Connection` API that works with both HTTP and Native backends.
+//! Demonstrates the truly unified `Connection` API that works with both HTTP and Native backends.
+//! With `#[derive(Row)]`, you write ONE struct that works everywhere!
 //!
 //! ## Run with HTTP backend (default):
 //! ```bash
@@ -32,13 +33,12 @@ diesel_clickhouse::table! {
 }
 
 // =============================================================================
-// 2. Define Row Types
+// 2. Define Row Types - ONE derive works for BOTH backends!
 // =============================================================================
 
-/// For INSERT operations - used by query builder
-/// Works on both HTTP and Native backends
-#[derive(Debug, Clone)]
-#[derive(diesel_clickhouse::Insertable)]
+/// For INSERT operations - use Row + Insertable
+/// The Row derive generates serde::Serialize automatically
+#[derive(Debug, Clone, Row, diesel_clickhouse::Insertable)]
 #[diesel_clickhouse(table = events)]
 pub struct NewEvent {
     pub id: u64,
@@ -47,29 +47,10 @@ pub struct NewEvent {
     pub value: f64,
 }
 
-/// For HTTP streaming inserts - requires clickhouse::Row
-#[cfg(feature = "http")]
-#[derive(Debug, Clone, clickhouse::Row, serde::Serialize)]
-pub struct NewEventHttp {
-    pub id: u64,
-    pub user_id: u32,
-    pub event_type: String,
-    pub value: f64,
-}
-
-/// For FETCH operations on HTTP backend - requires clickhouse::Row
-#[cfg(feature = "http")]
-#[derive(Debug, Clone, clickhouse::Row, serde::Deserialize)]
-pub struct Event {
-    pub id: u64,
-    pub user_id: u32,
-    pub event_type: String,
-    pub value: f64,
-}
-
-/// For FETCH operations on Native backend - requires serde::Deserialize
-#[cfg(all(feature = "native", not(feature = "http")))]
-#[derive(Debug, Clone, serde::Deserialize)]
+/// For SELECT operations - just use Row
+/// The Row derive generates serde::Deserialize automatically
+/// This SAME struct works with both HTTP and Native backends!
+#[derive(Debug, Clone, Row)]
 pub struct Event {
     pub id: u64,
     pub user_id: u32,
@@ -104,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Database: {}\n", conn.database());
 
     // =========================================================================
-    // UNIFIED OPERATIONS (work on both backends)
+    // ALL OPERATIONS ARE NOW UNIFIED!
     // =========================================================================
 
     println!("--- Unified Operations ---\n");
@@ -152,68 +133,53 @@ async fn main() -> anyhow::Result<()> {
     println!("[OK] Build SQL: {}", sql);
 
     // =========================================================================
-    // FETCH OPERATIONS (backend-specific trait requirements)
+    // FETCH OPERATIONS - NOW UNIFIED with load()!
     // =========================================================================
 
-    println!("\n--- Fetch Operations ---\n");
+    println!("\n--- Unified Fetch Operations ---\n");
 
-    // fetch_all - returns Vec<T>
-    let all_events: Vec<Event> = conn.fetch_all(
+    // load() - returns Vec<T>, works on BOTH backends!
+    let all_events: Vec<Event> = conn.load(
         events::table.filter(events::user_id.eq(100u32))
     ).await?;
-    println!("[OK] fetch_all: {} rows", all_events.len());
+    println!("[OK] load: {} rows", all_events.len());
     for e in &all_events {
         println!("     {:?}", e);
     }
 
-    // fetch_one - returns T (error if no rows)
-    let first: Event = conn.fetch_one(
+    // load_one() - returns T (error if no rows)
+    let first: Event = conn.load_one(
         events::table.order_by(events::id.asc()).limit(1)
     ).await?;
-    println!("[OK] fetch_one: {:?}", first);
+    println!("[OK] load_one: {:?}", first);
 
-    // fetch_optional - returns Option<T>
-    let maybe: Option<Event> = conn.fetch_optional(
+    // load_optional() - returns Option<T>
+    let maybe: Option<Event> = conn.load_optional(
         events::table.filter(events::user_id.eq(999u32))
     ).await?;
-    println!("[OK] fetch_optional: {:?}", maybe);
-
-    // fetch_all_raw - raw SQL
-    let raw_results: Vec<Event> = conn.fetch_all_raw(
-        "SELECT id, user_id, event_type, value FROM events LIMIT 3"
-    ).await?;
-    println!("[OK] fetch_all_raw: {} rows", raw_results.len());
+    println!("[OK] load_optional: {:?}", maybe);
 
     // =========================================================================
-    // BACKEND-SPECIFIC ACCESS
+    // BACKEND-SPECIFIC ACCESS (for advanced use cases)
     // =========================================================================
 
-    println!("\n--- Backend-Specific Access ---\n");
+    println!("\n--- Backend-Specific Access (optional) ---\n");
 
     #[cfg(feature = "http")]
-    if let Some(http_conn) = conn.as_http() {
-        // Access clickhouse crate's Client directly for advanced operations
+    if let Some(_http_conn) = conn.as_http() {
+        // Access clickhouse crate's Client directly for streaming inserts
         println!("[HTTP] Direct client access available");
 
-        // Example: streaming inserter (more efficient for large batches)
-        let mut inserter = http_conn.client()
-            .insert::<NewEventHttp>("events")
-            .await?;
-
-        inserter.write(&NewEventHttp {
-            id: 100,
-            user_id: 999,
-            event_type: "streaming".into(),
-            value: 42.0,
-        }).await?;
-        inserter.end().await?;
-        println!("[HTTP] Streaming insert completed");
+        // For high-performance streaming inserts, you can still use clickhouse::Row
+        // But for normal use, the unified Row derive is recommended
+        println!("[HTTP] Use conn.load() for queries - works everywhere!");
     }
 
     #[cfg(feature = "native")]
     if let Some(_native_conn) = conn.as_native() {
         println!("[Native] Direct connection access available");
         // Access clickhouse-rs Block API for advanced operations
+        println!("[Native] Use conn.load() for queries - same API as HTTP!");
     }
 
     // =========================================================================
@@ -222,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
 
     conn.execute("TRUNCATE TABLE events").await?;
     println!("\n[OK] Table truncated");
-    println!("\nDone!");
+    println!("\nDone! The same code works with both HTTP and Native backends!");
 
     Ok(())
 }

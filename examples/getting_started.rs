@@ -1,16 +1,13 @@
 //! Getting started with diesel-clickhouse.
 //!
-//! This example uses the HTTP backend directly. For a unified API that works
-//! with both HTTP and Native backends, see the `unified_connection` example.
+//! This example demonstrates the unified API that works with both HTTP and Native backends.
+//! Just use `#[derive(Row)]` for your structs and the same code works everywhere!
 //!
 //! Run with: cargo run --example getting_started
 //! Prerequisites: docker-compose up -d
 
-use clickhouse::Row;
-use serde::{Deserialize, Serialize};
-
-use diesel_clickhouse::http::ClickHouseConnection;
 use diesel_clickhouse::prelude::*;
+use diesel_clickhouse::http::ClickHouseConnection;
 use diesel_clickhouse::{update, insert_into};
 use diesel_clickhouse::migrations::{EmbeddedMigrations, MigrationHarness, MigrationSource};
 use include_dir::include_dir;
@@ -49,11 +46,12 @@ diesel_clickhouse::table! {
 }
 
 // =============================================================================
-// 2. Define your row types
+// 2. Define your row types - use #[derive(Row)] for unified HTTP + Native support
 // =============================================================================
 
 /// For inserting new users - derives Insertable for SQL generation
-#[derive(Debug, Clone, Row, Serialize, diesel_clickhouse::Insertable)]
+/// Row generates serde::Serialize and serde::Deserialize automatically
+#[derive(Debug, Clone, Row, diesel_clickhouse::Insertable)]
 #[diesel_clickhouse(table = users)]
 pub struct NewUser {
     pub id: u64,
@@ -65,7 +63,7 @@ pub struct NewUser {
 
 
 /// For inserting new posts
-#[derive(Debug, Clone, Row, Serialize, diesel_clickhouse::Insertable)]
+#[derive(Debug, Clone, Row, diesel_clickhouse::Insertable)]
 #[diesel_clickhouse(table = posts)]
 pub struct NewPost {
     pub id: u64,
@@ -74,15 +72,16 @@ pub struct NewPost {
     pub content: String,
 }
 
-#[derive(Debug, Clone, Row, Deserialize)]
+/// For querying users - Row generates all needed traits
+#[derive(Debug, Clone, Row)]
 pub struct User {
     pub id: u64,
     pub name: String,
     pub email: String,
     pub age: u8,
     pub active: bool,
-    #[serde(with = "clickhouse::serde::time::datetime")]
-    pub created_at: time::OffsetDateTime,
+    // Note: For DateTime, you might need to use u32 or String depending on format
+    pub created_at: u32,  // Unix timestamp
 }
 
 // =============================================================================
@@ -107,72 +106,66 @@ async fn main() -> anyhow::Result<()> {
     let applied = conn.run_pending_migrations(&MIGRATIONS).await?;
     println!("Applied {} migrations", applied.len());
 
-    // INSERT users - fluent API with table
+    // INSERT users - using unified query builder API
     let new_users = vec![
         NewUser { id: 1, name: "Alice".into(), email: "alice@example.com".into(), age: 30, active: true },
         NewUser { id: 2, name: "Bob".into(), email: "bob@example.com".into(), age: 25, active: true },
         NewUser { id: 3, name: "Charlie".into(), email: "charlie@example.com".into(), age: 35, active: false },
     ];
-    let mut inserter = users::table.inserter::<NewUser>(&conn).await?;
-    for row in &new_users {
-        inserter.write(row).await?;
-    }
-    inserter.end().await?;
+    conn.execute_statement(&insert_into(users::table).values(new_users.as_slice())).await?;
+    println!("Inserted {} users", new_users.len());
 
-    // INSERT posts
+    // INSERT posts - same unified approach
     let new_posts = vec![
         NewPost { id: 1, user_id: 1, title: "Hello World".into(), content: "My first post".into() },
         NewPost { id: 2, user_id: 1, title: "Rust is great".into(), content: "I love Rust".into() },
         NewPost { id: 3, user_id: 2, title: "ClickHouse tips".into(), content: "Fast analytics".into() },
     ];
-    let mut inserter = posts::table.inserter::<NewPost>(&conn).await?;
-    for row in &new_posts {
-        inserter.write(row).await?;
-    }
-    inserter.end().await?;
+    conn.execute_statement(&insert_into(posts::table).values(new_posts.as_slice())).await?;
+    println!("Inserted {} posts", new_posts.len());
 
-    // SELECT with filters
-    let active_users: Vec<User> = conn.query(
+    // SELECT with filters - using unified load() method
+    let active_users: Vec<User> = conn.load(
         users::table
             .filter(users::active.eq(true))
             .and_filter(users::age.gt(25))
             .order_by(users::age.desc())
             .limit(10)
-    ).fetch_all().await?;
+    ).await?;
     println!("Active users over 25: {:?}", active_users.iter().map(|u| &u.name).collect::<Vec<_>>());
 
-    // SELECT first
-    let alice: User = conn.query(
+    // SELECT first - using unified load_one() method
+    let alice: User = conn.load_one(
         users::table.filter(users::name.eq("Alice"))
-    ).fetch_one().await?;
+    ).await?;
     println!("Found: {} ({})", alice.name, alice.email);
 
-    // SELECT optional
-    let maybe_user: Option<User> = conn.query(
+    // SELECT optional - using unified load_optional() method
+    let maybe_user: Option<User> = conn.load_optional(
         users::table.filter(users::name.eq("Unknown"))
-    ).fetch_optional().await?;
+    ).await?;
     println!("Unknown user: {:?}", maybe_user);
 
     // JOIN - users with their posts (one row per post)
-    #[derive(Debug, Clone, Row, Deserialize)]
+    #[derive(Debug, Clone, Row)]
     struct UserWithPost {
         user_name: String,
         post_title: String,
     }
 
-    let users_with_posts: Vec<UserWithPost> = conn.query(
+    let users_with_posts: Vec<UserWithPost> = conn.load(
         users::table
             .select((users::name, posts::title))
             .inner_join_on(posts::table, users::id.eq(posts::user_id))
             .filter(users::active.eq(true))
-    ).fetch_all().await?;
+    ).await?;
     println!("Users with posts (flat):");
     for uwp in &users_with_posts {
         println!("  {} wrote: {}", uwp.user_name, uwp.post_title);
     }
 
-    // JOIN with groupArray - accumulate posts per user (NEW!)
-    #[derive(Debug, Clone, Row, Deserialize)]
+    // JOIN with groupArray - accumulate posts per user
+    #[derive(Debug, Clone, Row)]
     struct UserWithPosts {
         user_id: u64,
         user_name: String,
@@ -180,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
         post_count: u64,
     }
 
-    let users_with_all_posts: Vec<UserWithPosts> = conn.query(
+    let users_with_all_posts: Vec<UserWithPosts> = conn.load(
         users::table
             .select((
                 users::id,
@@ -191,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
             .inner_join_on(posts::table, users::id.eq(posts::user_id))
             .filter(users::active.eq(true))
             .group_by((users::id, users::name))
-    ).fetch_all().await?;
+    ).await?;
     println!("\nUsers with all their posts (grouped):");
     for u in &users_with_all_posts {
         println!("  {} ({} posts): {:?}", u.user_name, u.post_count, u.post_titles);

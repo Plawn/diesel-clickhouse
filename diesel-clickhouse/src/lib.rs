@@ -122,8 +122,11 @@ pub use core::query_source::{Table, Column, QuerySource};
 pub use core::query_builder::{QueryFragment, insert_into, update, delete, UpdateStatement, DeleteStatement, AsChangeset, Assign, Assignments, Insertable as InsertableTrait};
 pub use core::query_dsl::{QueryDsl, ClickHouseQueryDsl, RunQueryDsl};
 pub use core::connection::AsyncConnection;
+// Re-export the unified connection trait with a cleaner name
+pub use core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
 pub use core::deserialize::FromRow;
 pub use core::serialize::ToRow;
+pub use core::row::{ClickHouseRow, InsertableRow, QueryableRow};
 
 /// Prelude module for common imports.
 ///
@@ -131,6 +134,10 @@ pub use core::serialize::ToRow;
 pub mod prelude {
     // Core traits
     pub use crate::core::prelude::*;
+
+    // Unified connection trait (renamed to avoid conflict with http::ClickHouseConnection)
+    pub use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
+    pub use crate::core::row::{ClickHouseRow, InsertableRow, QueryableRow};
 
     // Derive macros
     pub use crate::{table, Queryable, Insertable, Selectable, Row};

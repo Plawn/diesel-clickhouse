@@ -3,30 +3,6 @@
 //! The `Connection` enum provides a unified API for both HTTP and Native backends.
 //! The backend is selected automatically based on the URL scheme.
 //!
-//! ## What Works Uniformly (Both Backends)
-//!
-//! These operations work identically on both HTTP and Native:
-//!
-//! | Operation | Method | Description |
-//! |-----------|--------|-------------|
-//! | Connect | `Connection::establish(url)` | Auto-selects backend from URL |
-//! | Execute DDL | `conn.execute(sql)` | CREATE, ALTER, DROP, TRUNCATE |
-//! | Execute DML | `conn.execute_query(query)` | UPDATE, DELETE via query builder |
-//! | Insert raw | `conn.insert_values(table, values)` | Raw SQL VALUES |
-//! | Insert query | `conn.insert(query)` | Query builder INSERT |
-//! | Build SQL | `conn.build_sql(query)` | Get SQL string without executing |
-//! | Get database | `conn.database()` | Current database name |
-//! | Check backend | `conn.is_http()` / `conn.is_native()` | Identify connection type |
-//!
-//! ## What Differs By Backend (Fetch Operations)
-//!
-//! Fetching rows requires different trait bounds per backend:
-//!
-//! | Backend | Feature | Trait Required | Derive |
-//! |---------|---------|----------------|--------|
-//! | HTTP | `http` | `clickhouse::Row` | `#[derive(clickhouse::Row)]` |
-//! | Native | `native` | `serde::Deserialize` | `#[derive(serde::Deserialize)]` |
-//!
 //! ## Quick Start
 //!
 //! ```rust,ignore
@@ -43,9 +19,15 @@
 //!     }
 //! }
 //!
-//! // 2. Define row types
-//! #[derive(clickhouse::Row, serde::Serialize)]  // For HTTP insert
-//! #[derive(diesel_clickhouse::Insertable)]
+//! // 2. Define row types with unified #[derive(Row)]
+//! #[derive(Debug, Row)]
+//! struct User {
+//!     id: u64,
+//!     name: String,
+//!     active: bool,
+//! }
+//!
+//! #[derive(Row, Insertable)]
 //! #[diesel_clickhouse(table = users)]
 //! struct NewUser {
 //!     id: u64,
@@ -53,32 +35,22 @@
 //!     active: bool,
 //! }
 //!
-//! #[derive(Debug, clickhouse::Row, serde::Deserialize)]  // For HTTP fetch
-//! struct User {
-//!     id: u64,
-//!     name: String,
-//!     active: bool,
-//! }
-//!
-//! // 3. Use the connection
+//! // 3. Use the connection - same API for both HTTP and Native!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     // HTTP or Native - your choice!
 //!     let conn = Connection::establish("http://localhost:8123/default").await?;
+//!     // Or: Connection::establish("tcp://localhost:9000/default").await?;
 //!
-//!     // DDL - works on both backends
-//!     conn.execute("CREATE TABLE IF NOT EXISTS users (
-//!         id UInt64,
-//!         name String,
-//!         active Bool,
-//!         created_at DateTime DEFAULT now()
-//!     ) ENGINE = MergeTree() ORDER BY id").await?;
+//!     // DDL
+//!     conn.execute("CREATE TABLE IF NOT EXISTS users ...").await?;
 //!
-//!     // INSERT via query builder - works on both backends
+//!     // INSERT
 //!     let new_user = NewUser { id: 1, name: "Alice".into(), active: true };
 //!     conn.insert(insert_into(users::table).values(&new_user)).await?;
 //!
-//!     // FETCH - requires clickhouse::Row for HTTP
-//!     let users: Vec<User> = conn.fetch_all(
+//!     // QUERY - unified with #[derive(Row)]
+//!     let users: Vec<User> = conn.load(
 //!         users::table.filter(users::active.eq(true))
 //!     ).await?;
 //!
@@ -101,46 +73,16 @@
 //! ```rust,ignore
 //! // HTTP: Access clickhouse crate's Client directly
 //! if let Some(http_conn) = conn.as_http() {
-//!     // Use clickhouse crate's streaming inserter
-//!     let mut inserter = http_conn.client()
-//!         .inserter::<NewUser>("users")?
-//!         .with_max_entries(10_000);
+//!     let mut inserter = http_conn.client().inserter::<NewUser>("users")?;
 //!     inserter.write(&user)?;
 //!     inserter.end().await?;
 //! }
 //!
-//! // Native: Access clickhouse-rs connection directly
+//! // Native: Access clickhouse-rs Block API
 //! if let Some(native_conn) = conn.as_native() {
-//!     // Use clickhouse-rs Block API
 //!     let block = native_conn.query_raw("SELECT * FROM users").await?;
 //! }
 //! ```
-//!
-//! ## Feature Flags
-//!
-//! | Feature | Backend | Crate Used |
-//! |---------|---------|------------|
-//! | `http` (default) | HTTP | `clickhouse` |
-//! | `native` | Native TCP | `clickhouse-rs` |
-//! | `migrations` | Schema migrations | `diesel-clickhouse-migrations` |
-//!
-//! ## Limitations
-//!
-//! The unified `Connection` does NOT provide:
-//!
-//! - **Streaming inserts**: Use `conn.as_http().client().inserter()` for HTTP
-//! - **Block API**: Use `conn.as_native().query_raw()` for Native
-//! - **Connection pooling**: Implement at application level or use `deadpool`
-//! - **Transactions**: ClickHouse has limited transaction support
-//!
-//! ## Choosing a Backend
-//!
-//! | Use Case | Recommended Backend |
-//! |----------|---------------------|
-//! | Simple deployments | HTTP (easier firewall/proxy) |
-//! | High throughput inserts | HTTP with inserter |
-//! | Low latency queries | Native |
-//! | Cloud/managed ClickHouse | HTTP (often only option) |
 
 #[cfg(feature = "native")]
 use serde::de::DeserializeOwned;
@@ -148,6 +90,7 @@ use serde::de::DeserializeOwned;
 use crate::core::backend::ClickHouse;
 use crate::core::query_builder::QueryFragment;
 use crate::core::result::{Error, QueryResult};
+use crate::core::row::ClickHouseRow;
 
 /// A unified connection that works with both HTTP and Native backends.
 ///
@@ -343,6 +286,88 @@ impl Connection {
         Q: QueryFragment<ClickHouse>,
     {
         self.execute_query(query).await
+    }
+
+    // =========================================================================
+    // Unified Load Method (NEW - works with #[derive(Row)])
+    // =========================================================================
+
+    /// Load rows from a query using the unified Row trait.
+    ///
+    /// This is the recommended way to fetch data. The row type must implement
+    /// `ClickHouseRow`, which is automatically provided by `#[derive(Row)]`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::prelude::*;
+    ///
+    /// #[derive(Debug, Row)]
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
+    /// // Works with both HTTP and Native connections!
+    /// let users: Vec<User> = conn.load(
+    ///     users::table.filter(users::active.eq(true))
+    /// ).await?;
+    /// ```
+    pub async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: ClickHouseRow,
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        match self {
+            #[cfg(feature = "http")]
+            Connection::Http(conn) => {
+                use crate::core::connection::ClickHouseConnection;
+                conn.load(query).await
+            }
+            #[cfg(feature = "native")]
+            Connection::Native(conn) => {
+                use crate::core::connection::ClickHouseConnection;
+                conn.load(query).await
+            }
+        }
+    }
+
+    /// Load a single row from a query.
+    ///
+    /// Returns an error if no rows are found.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user: User = conn.load_one(
+    ///     users::table.filter(users::id.eq(42))
+    /// ).await?;
+    /// ```
+    pub async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    where
+        T: ClickHouseRow,
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        self.load(query).await?.into_iter().next().ok_or(Error::NotFound)
+    }
+
+    /// Load an optional single row from a query.
+    ///
+    /// Returns `None` if no rows are found.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user: Option<User> = conn.load_optional(
+    ///     users::table.filter(users::id.eq(42))
+    /// ).await?;
+    /// ```
+    pub async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
+    where
+        T: ClickHouseRow,
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        Ok(self.load(query).await?.into_iter().next())
     }
 
     /// Get the underlying HTTP connection (if HTTP backend).
