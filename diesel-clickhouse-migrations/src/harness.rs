@@ -1,26 +1,12 @@
 //! Migration harness for running migrations.
 
 use async_trait::async_trait;
+use diesel_clickhouse_core::escape::escape_sql_string_owned as escape_sql_string;
 
 use crate::error::{MigrationError, Result};
 use crate::migration::{Migration, MigrationVersion};
 use crate::source::MigrationSource;
 use crate::table::MigrationsTable;
-
-// =============================================================================
-// SQL Escaping Utilities
-// =============================================================================
-
-/// Escape a string value for use in SQL single-quoted strings.
-/// Escapes single quotes by doubling them.
-#[inline]
-fn escape_sql_string(s: &str) -> String {
-    if s.contains('\'') {
-        s.replace('\'', "''")
-    } else {
-        s.to_string()
-    }
-}
 
 /// A connection that can run migrations.
 #[async_trait]
@@ -307,7 +293,7 @@ impl<T: MigrationConnection + Send> MigrationHarness for T {}
 /// Handles:
 /// - Semicolon-separated statements
 /// - Comments (-- and /* */)
-/// - String literals
+/// - String literals (including escaped quotes like '' and "")
 fn split_sql_statements(sql: &str) -> Vec<String> {
     let mut statements = Vec::new();
     let mut current = String::new();
@@ -322,17 +308,19 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
         if !in_string && !in_comment && c == '/' && chars.peek() == Some(&'*') {
             in_block_comment = true;
             current.push(c);
-            // SAFETY: We just verified peek() == Some(&'*'), so next() will return Some('*')
-            #[allow(clippy::expect_used)] // Invariant: peek() == Some implies next() == Some
-            current.push(chars.next().unwrap_or_else(|| unreachable!("peek() returned Some")));
+            // Invariant: peek() == Some implies next() == Some
+            if let Some(next_c) = chars.next() {
+                current.push(next_c);
+            }
             continue;
         }
         if in_block_comment && c == '*' && chars.peek() == Some(&'/') {
             in_block_comment = false;
             current.push(c);
-            // SAFETY: We just verified peek() == Some(&'/'), so next() will return Some('/')
-            #[allow(clippy::unwrap_used)] // Invariant: peek() == Some implies next() == Some
-            current.push(chars.next().unwrap_or_else(|| unreachable!("peek() returned Some")));
+            // Invariant: peek() == Some implies next() == Some
+            if let Some(next_c) = chars.next() {
+                current.push(next_c);
+            }
             continue;
         }
         if in_block_comment {
@@ -354,7 +342,7 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
             continue;
         }
 
-        // Handle strings
+        // Handle strings (with support for escaped quotes like '' and "")
         if !in_string && (c == '\'' || c == '"') {
             in_string = true;
             string_char = c;
@@ -362,6 +350,16 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
             continue;
         }
         if in_string && c == string_char {
+            // Check for escaped quote ('' or "")
+            if chars.peek() == Some(&string_char) {
+                // This is an escaped quote, consume both and stay in string
+                current.push(c);
+                if let Some(next_c) = chars.next() {
+                    current.push(next_c);
+                }
+                continue;
+            }
+            // End of string
             in_string = false;
             current.push(c);
             continue;
@@ -429,5 +427,45 @@ mod tests {
         let statements = split_sql_statements(sql);
         assert_eq!(statements.len(), 2);
         assert!(statements[0].contains("hello; world"));
+    }
+
+    #[test]
+    fn test_split_sql_with_escaped_quotes() {
+        // Test escaped single quotes (O'Brien -> O''Brien in SQL)
+        let sql = r#"
+            INSERT INTO users VALUES (1, 'O''Brien');
+            INSERT INTO users VALUES (2, 'It''s a test');
+        "#;
+
+        let statements = split_sql_statements(sql);
+        assert_eq!(statements.len(), 2);
+        assert!(statements[0].contains("O''Brien"));
+        assert!(statements[1].contains("It''s a test"));
+    }
+
+    #[test]
+    fn test_split_sql_with_escaped_quotes_and_semicolon() {
+        // Edge case: escaped quote followed by semicolon inside string
+        let sql = r#"
+            INSERT INTO users VALUES (1, 'test'';more');
+            SELECT 1;
+        "#;
+
+        let statements = split_sql_statements(sql);
+        assert_eq!(statements.len(), 2);
+        assert!(statements[0].contains("test'';more"));
+    }
+
+    #[test]
+    fn test_split_sql_with_double_quotes() {
+        // Test escaped double quotes
+        let sql = r#"
+            INSERT INTO users VALUES (1, "say ""hello""");
+            SELECT 1;
+        "#;
+
+        let statements = split_sql_statements(sql);
+        assert_eq!(statements.len(), 2);
+        assert!(statements[0].contains(r#"say ""hello"""#));
     }
 }

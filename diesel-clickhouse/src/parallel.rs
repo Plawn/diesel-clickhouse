@@ -151,23 +151,37 @@ impl<T: Send + Sync> ParallelProcessor<T> {
         }
     }
 
-    /// Reduce items in parallel.
-    pub fn reduce<F, R>(self, identity: R, f: F) -> R
+    /// Reduce items in parallel using a combiner function.
+    ///
+    /// # Arguments
+    ///
+    /// - `identity`: The identity element for the reduction
+    /// - `fold_op`: Function to fold each item into an accumulator
+    /// - `combine_op`: Function to combine two accumulators (must be associative)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Sum all values
+    /// let sum = processor.reduce(
+    ///     0i64,
+    ///     |acc, item| acc + item.value,
+    ///     |a, b| a + b
+    /// );
+    /// ```
+    pub fn reduce<F, C, R>(self, identity: R, fold_op: F, combine_op: C) -> R
     where
         F: Fn(R, &T) -> R + Send + Sync,
+        C: Fn(R, R) -> R + Send + Sync,
         R: Clone + Send + Sync,
     {
         if self.config.should_parallelize(self.items.len()) {
             self.items
                 .par_iter()
-                .fold(|| identity.clone(), |acc, item| f(acc, item))
-                .reduce(|| identity.clone(), |_a, b| {
-                    // For simple reductions, just return b
-                    // Complex reductions should use fold_with
-                    b
-                })
+                .fold(|| identity.clone(), |acc, item| fold_op(acc, item))
+                .reduce(|| identity.clone(), |a, b| combine_op(a, b))
         } else {
-            self.items.iter().fold(identity, |acc, item| f(acc, item))
+            self.items.iter().fold(identity, |acc, item| fold_op(acc, item))
         }
     }
 

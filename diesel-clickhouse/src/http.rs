@@ -68,24 +68,10 @@ fn parse_json_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
 use crate::core::backend::{ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
 use crate::core::connection::{AsyncConnection, ClickHouseConnection as ClickHouseConnectionTrait};
 use crate::core::deserialize::FromRow;
+use crate::core::escape::escape_identifier;
 use crate::core::query_builder::{AstPass, QueryFragment};
 use crate::core::result::{Error, QueryResult};
 use crate::core::row::ClickHouseRow as ClickHouseRowTrait;
-
-// =============================================================================
-// SQL Escaping Utilities
-// =============================================================================
-
-/// Escape an identifier for use in SQL (table names, column names).
-/// Wraps in backticks and escapes any backticks within.
-#[inline]
-fn escape_identifier(s: &str) -> String {
-    if s.contains('`') {
-        format!("`{}`", s.replace('`', "``"))
-    } else {
-        format!("`{}`", s)
-    }
-}
 
 // Re-export clickhouse Row for convenience (for users who need direct clickhouse crate access)
 pub use clickhouse::Row as NativeClickHouseRow;

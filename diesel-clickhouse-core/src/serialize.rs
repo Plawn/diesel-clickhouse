@@ -1,29 +1,12 @@
 //! Serialization traits for inserting data.
 
-use std::borrow::Cow;
-
 use compact_str::CompactString;
 
 use crate::backend::Backend;
+use crate::escape::escape_sql_string;
 use crate::query_builder::AstPass;
 use crate::result::QueryResult;
 use diesel_clickhouse_types::{SqlType, ToClickHouse};
-
-// =============================================================================
-// Optimized String Escaping
-// =============================================================================
-
-/// Escape single quotes in a string for SQL.
-/// Returns Cow::Borrowed if no escaping needed (zero allocation),
-/// or Cow::Owned only when escaping is required.
-#[inline]
-fn escape_sql_string(s: &str) -> Cow<'_, str> {
-    if s.contains('\'') {
-        Cow::Owned(s.replace('\'', "''"))
-    } else {
-        Cow::Borrowed(s)
-    }
-}
 
 /// Trait for types that can be serialized as a row for insertion.
 pub trait ToRow {

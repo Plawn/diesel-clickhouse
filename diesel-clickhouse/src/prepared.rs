@@ -22,10 +22,11 @@
 //! ```
 
 use std::any::TypeId;
-use std::collections::HashMap;
 use std::hash::Hash;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+
+use lru::LruCache;
 
 use crate::core::backend::ClickHouse;
 use crate::core::query_builder::QueryFragment;
@@ -37,20 +38,12 @@ use crate::core::result::{Error, QueryResult};
 /// avoiding repeated query building for frequently used queries.
 ///
 /// Uses an LRU (Least Recently Used) eviction strategy when the cache
-/// reaches its maximum size.
+/// reaches its maximum size. Eviction is O(1) using the `lru` crate.
 #[derive(Debug)]
 pub struct PreparedCache {
-    cache: RwLock<HashMap<CacheKey, CacheEntry>>,
-    max_size: usize,
+    cache: RwLock<LruCache<CacheKey, Arc<PreparedStatement>>>,
     hits: std::sync::atomic::AtomicU64,
     misses: std::sync::atomic::AtomicU64,
-}
-
-/// An entry in the prepared cache, including LRU metadata.
-#[derive(Debug, Clone)]
-struct CacheEntry {
-    statement: Arc<PreparedStatement>,
-    last_accessed: Instant,
 }
 
 /// Key for cache lookup.
@@ -64,11 +57,11 @@ impl PreparedCache {
     /// Create a new prepared cache with the given maximum size.
     ///
     /// When the cache exceeds this size, least recently used entries
-    /// may be evicted.
+    /// are automatically evicted (O(1) eviction).
     pub fn new(max_size: usize) -> Self {
+        let cap = NonZeroUsize::new(max_size).unwrap_or(NonZeroUsize::new(256).unwrap());
         Self {
-            cache: RwLock::new(HashMap::with_capacity(max_size)),
-            max_size,
+            cache: RwLock::new(LruCache::new(cap)),
             hits: std::sync::atomic::AtomicU64::new(0),
             misses: std::sync::atomic::AtomicU64::new(0),
         }
@@ -102,18 +95,17 @@ impl PreparedCache {
             type_id: TypeId::of::<Q>(),
         };
 
-        // Fast path: check read lock first, update access time if found
+        // Fast path: check with read lock first (no mutation, just peek)
         {
-            let mut cache = self.cache.write()
+            let cache = self.cache.read()
                 .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
-            if let Some(entry) = cache.get_mut(&key) {
+            if let Some(stmt) = cache.peek(&key) {
                 self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                entry.last_accessed = Instant::now();
-                return Ok(Arc::clone(&entry.statement));
+                return Ok(Arc::clone(stmt));
             }
         }
 
-        // Slow path: build and insert
+        // Slow path: build the query (outside the lock)
         self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let query = build();
@@ -123,38 +115,18 @@ impl PreparedCache {
             name: name.to_owned(),
         });
 
+        // Insert with write lock
         {
             let mut cache = self.cache.write()
                 .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
 
-            // Check again in case another thread inserted
-            if let Some(entry) = cache.get_mut(&key) {
-                entry.last_accessed = Instant::now();
-                return Ok(Arc::clone(&entry.statement));
+            // Check again in case another thread inserted while we were building
+            if let Some(existing) = cache.get(&key) {
+                return Ok(Arc::clone(existing));
             }
 
-            // LRU eviction: remove least recently used entries when at capacity
-            if cache.len() >= self.max_size {
-                // Find entries to evict (oldest half)
-                let evict_count = self.max_size / 2;
-                let mut entries: Vec<_> = cache.iter()
-                    .map(|(k, e)| (k.clone(), e.last_accessed))
-                    .collect();
-
-                // Sort by last accessed time (oldest first)
-                entries.sort_by_key(|(_, time)| *time);
-
-                // Remove oldest entries
-                for (key, _) in entries.into_iter().take(evict_count) {
-                    cache.remove(&key);
-                }
-            }
-
-            let entry = CacheEntry {
-                statement: Arc::clone(&stmt),
-                last_accessed: Instant::now(),
-            };
-            cache.insert(key, entry);
+            // LRU eviction is automatic when capacity is reached
+            cache.put(key, Arc::clone(&stmt));
         }
 
         Ok(stmt)
@@ -182,7 +154,7 @@ impl PreparedCache {
             .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
         Ok(CacheStats {
             size: cache.len(),
-            max_size: self.max_size,
+            max_size: cache.cap().get(),
             hits: self.hits.load(std::sync::atomic::Ordering::Relaxed),
             misses: self.misses.load(std::sync::atomic::Ordering::Relaxed),
         })
@@ -200,15 +172,18 @@ impl PreparedCache {
 
     /// Get a cached statement by name without building.
     ///
+    /// This searches through all cached statements to find one with the given name.
     /// Note: This does not update the LRU access time.
     ///
     /// Returns an error if the internal RwLock is poisoned.
     pub fn get(&self, name: &str) -> QueryResult<Option<Arc<PreparedStatement>>> {
         let cache = self.cache.read()
             .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
-        for (key, entry) in cache.iter() {
+        // Note: This is O(n) because we're searching by name only, not by full key.
+        // For O(1) lookup, use prepare() with the same type parameter.
+        for (key, stmt) in cache.iter() {
             if key.name == name {
-                return Ok(Some(Arc::clone(&entry.statement)));
+                return Ok(Some(Arc::clone(stmt)));
             }
         }
         Ok(None)

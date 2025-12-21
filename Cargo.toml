@@ -11,10 +11,6 @@ members = [
 
 # Examples use the main crate
 [[example]]
-name = "basic_queries"
-path = "examples/basic_queries.rs"
-
-[[example]]
 name = "advanced_queries"
 path = "examples/advanced_queries.rs"
 

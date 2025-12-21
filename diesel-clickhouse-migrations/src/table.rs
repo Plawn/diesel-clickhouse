@@ -1,32 +1,7 @@
 //! Schema migrations tracking table.
 
 use crate::DEFAULT_MIGRATIONS_TABLE;
-
-// =============================================================================
-// SQL Escaping Utilities
-// =============================================================================
-
-/// Escape a string value for use in SQL single-quoted strings.
-/// Escapes single quotes by doubling them.
-#[inline]
-fn escape_sql_string(s: &str) -> String {
-    if s.contains('\'') {
-        s.replace('\'', "''")
-    } else {
-        s.to_string()
-    }
-}
-
-/// Escape an identifier for use in SQL (table names, column names).
-/// Wraps in backticks and escapes any backticks within.
-#[inline]
-fn escape_identifier(s: &str) -> String {
-    if s.contains('`') {
-        format!("`{}`", s.replace('`', "``"))
-    } else {
-        format!("`{}`", s)
-    }
-}
+use diesel_clickhouse_core::escape::{escape_identifier, escape_sql_string_owned as escape_sql_string};
 
 /// SQL for the migrations tracking table.
 pub struct MigrationsTable {

@@ -6,6 +6,9 @@
 pub mod operators;
 pub mod functions;
 pub mod methods;
+pub mod case;
+pub mod subquery;
+pub mod window;
 
 use std::marker::PhantomData;
 
@@ -18,6 +21,42 @@ use diesel_clickhouse_types::SqlType;
 pub use operators::*;
 pub use functions::*;
 pub use methods::ExpressionMethods;
+pub use case::{
+    case_when, case, if_, multi_if,
+    CaseWhenBuilder, CaseWhenThen, CaseWhenElse,
+    SimpleCaseBuilder, SimpleCaseWhenThen, SimpleCaseElse,
+    If, MultiIf,
+};
+pub use subquery::{
+    Subquery, ScalarSubquery, DerivedTable,
+    InSubquery, NotInSubquery, EqAny, NeAll,
+    Exists, NotExists, exists, not_exists,
+    AsSubquery, SubqueryExpressionMethods,
+};
+pub use window::{
+    // Window definition
+    Window, Over,
+    // Frame bounds
+    UnboundedPreceding, UnboundedFollowing, CurrentRow, Preceding, Following,
+    FrameBound, RowsFrame, RangeFrame,
+    // Window functions
+    RowNumber, row_number,
+    Rank, rank,
+    DenseRank, dense_rank,
+    Ntile, ntile,
+    Lag, lag,
+    Lead, lead,
+    FirstValue, first_value,
+    LastValue, last_value,
+    NthValue, nth_value,
+    // Window aggregates
+    WindowAggregate, WindowAggregateExt,
+    SumWindow, sum_over,
+    AvgWindow, avg_over,
+    CountWindow, count_over,
+    MinWindow, min_over,
+    MaxWindow, max_over,
+};
 
 /// The core trait for all SQL expressions.
 ///

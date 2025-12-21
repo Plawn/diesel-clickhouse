@@ -324,14 +324,49 @@ struct ConnectionPool<C: AsyncConnection> {
     _conn: std::marker::PhantomData<C>,
 }
 
-/// Transaction handle (limited support in ClickHouse).
+/// Transaction handle placeholder.
+///
+/// # ⚠️ ClickHouse Transaction Limitations
+///
+/// **ClickHouse does NOT support traditional ACID transactions** like PostgreSQL/MySQL.
+/// This struct exists for API compatibility but provides **no actual transactional guarantees**.
+///
+/// ## What ClickHouse Offers Instead
+///
+/// - **Atomicity per INSERT**: Each INSERT statement is atomic
+/// - **ReplacingMergeTree**: For deduplication (use FINAL to get latest)
+/// - **CollapsingMergeTree**: For implementing delete/update patterns
+/// - **Lightweight deletes**: `ALTER TABLE DELETE` (async background operation)
+///
+/// ## Behavior of This Struct
+///
+/// - `commit()`: No-op, always succeeds
+/// - `rollback()`: No-op, does nothing (data already written is NOT rolled back)
+/// - `drop()`: No-op
+///
+/// ## Recommendations
+///
+/// For transactional semantics in ClickHouse:
+/// 1. Design your schema to be append-only
+/// 2. Use ReplacingMergeTree + FINAL for latest state
+/// 3. Use batch inserts (atomic per batch)
+/// 4. Consider external coordination (e.g., Redis locks) for complex workflows
+#[deprecated(
+    since = "0.2.0",
+    note = "ClickHouse does not support transactions. This struct is a no-op placeholder. \
+            Use batch inserts for atomicity or ReplacingMergeTree for deduplication."
+)]
 pub struct Transaction<'a, C: AsyncConnection> {
     conn: &'a mut C,
     committed: bool,
 }
 
+#[allow(deprecated)]
 impl<'a, C: AsyncConnection> Transaction<'a, C> {
     /// Create a new transaction.
+    ///
+    /// # Note
+    /// This does NOT start an actual database transaction.
     pub fn new(conn: &'a mut C) -> Self {
         Self {
             conn,
@@ -340,15 +375,22 @@ impl<'a, C: AsyncConnection> Transaction<'a, C> {
     }
 
     /// Commit the transaction.
+    ///
+    /// # Note
+    /// This is a **no-op**. ClickHouse does not support transactions.
+    /// Data written before calling this is already persisted.
     pub async fn commit(mut self) -> QueryResult<()> {
-        // ClickHouse has limited transaction support
         self.committed = true;
         Ok(())
     }
 
     /// Rollback the transaction.
+    ///
+    /// # Note
+    /// This is a **no-op**. ClickHouse does not support rollback.
+    /// Data written is NOT reverted.
     pub async fn rollback(self) -> QueryResult<()> {
-        // ClickHouse has limited transaction support
+        // ClickHouse has no rollback capability
         Ok(())
     }
 
@@ -358,10 +400,9 @@ impl<'a, C: AsyncConnection> Transaction<'a, C> {
     }
 }
 
+#[allow(deprecated)]
 impl<'a, C: AsyncConnection> Drop for Transaction<'a, C> {
     fn drop(&mut self) {
-        if !self.committed {
-            // Would rollback here if supported
-        }
+        // No-op: ClickHouse has no transaction rollback
     }
 }

@@ -28,6 +28,9 @@ pub mod deserialize;
 pub mod serialize;
 pub mod row;
 
+/// SQL escaping utilities for preventing SQL injection.
+pub mod escape;
+
 /// Arena allocator for efficient query building.
 pub mod arena;
 

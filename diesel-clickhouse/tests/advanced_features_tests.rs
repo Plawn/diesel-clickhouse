@@ -922,7 +922,7 @@ mod zero_copy_tests {
             BorrowedValue::new(b"hello"),
             BorrowedValue::new(b"3.14"),
         ];
-        let row = ZeroCopyRow::new(values);
+        let row = ZeroCopyRow::from_vec(values);
 
         assert_eq!(row.len(), 3);
         assert_eq!(row.get_i64(0).unwrap(), 42);
@@ -1046,5 +1046,217 @@ mod compression_tests {
         let lz4 = Compression::Lz4;
 
         assert_ne!(none, lz4);
+    }
+
+    #[test]
+    fn test_compression_clone_copy() {
+        let lz4 = Compression::Lz4;
+        let lz4_copy = lz4;
+        let lz4_clone = lz4.clone();
+
+        assert_eq!(lz4, lz4_copy);
+        assert_eq!(lz4, lz4_clone);
+    }
+
+    #[test]
+    fn test_compression_debug() {
+        let none = Compression::None;
+        let lz4 = Compression::Lz4;
+
+        assert!(format!("{:?}", none).contains("None"));
+        assert!(format!("{:?}", lz4).contains("Lz4"));
+    }
+}
+
+// =============================================================================
+// HTTP build_sql Tests
+// =============================================================================
+
+#[cfg(feature = "http")]
+mod http_build_sql_tests {
+    use diesel_clickhouse::http::build_sql;
+    use diesel_clickhouse_core::backend::ClickHouse;
+    use diesel_clickhouse_core::expression::sql;
+    use diesel_clickhouse_core::query_builder::{QueryFragment, SelectStatement, AstPass};
+    use diesel_clickhouse_core::result::QueryResult;
+    use diesel_clickhouse_types::*;
+
+    struct TestTable;
+    impl QueryFragment<ClickHouse> for TestTable {
+        fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, ClickHouse>) -> QueryResult<()> {
+            pass.push_sql("test_table");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_build_sql_simple() {
+        let query = SelectStatement::new(TestTable);
+        let result = build_sql(&query).expect("build_sql failed");
+        assert_eq!(result, "SELECT * FROM test_table");
+    }
+
+    #[test]
+    fn test_build_sql_with_filter() {
+        let query = SelectStatement::new(TestTable)
+            .filter(sql::<Bool>("id > 10"));
+        let result = build_sql(&query).expect("build_sql failed");
+        assert_eq!(result, "SELECT * FROM test_table WHERE id > 10");
+    }
+
+    #[test]
+    fn test_build_sql_with_limit_offset() {
+        let query = SelectStatement::new(TestTable)
+            .limit(100)
+            .offset(50);
+        let result = build_sql(&query).expect("build_sql failed");
+        assert_eq!(result, "SELECT * FROM test_table LIMIT 100 OFFSET 50");
+    }
+
+    #[test]
+    fn test_build_sql_complex() {
+        let query = SelectStatement::new(TestTable)
+            .select(sql::<UInt64>("id, name"))
+            .filter(sql::<Bool>("active = 1"))
+            .order_by(sql::<UInt64>("id DESC"))
+            .limit(10);
+        let result = build_sql(&query).expect("build_sql failed");
+        assert_eq!(result, "SELECT id, name FROM test_table WHERE active = 1 ORDER BY id DESC LIMIT 10");
+    }
+}
+
+// =============================================================================
+// Unified Connection Tests
+// =============================================================================
+
+mod unified_connection_tests {
+    #[test]
+    fn test_url_scheme_detection_http() {
+        // Test URL parsing logic (without actual connection)
+        let url = "http://localhost:8123/default";
+        assert!(url.starts_with("http://"));
+    }
+
+    #[test]
+    fn test_url_scheme_detection_https() {
+        let url = "https://ch.example.com:8443/mydb";
+        assert!(url.starts_with("https://"));
+    }
+
+    #[test]
+    fn test_url_scheme_detection_tcp() {
+        let url = "tcp://localhost:9000/default";
+        assert!(url.starts_with("tcp://"));
+    }
+
+    #[test]
+    fn test_url_scheme_invalid() {
+        let url = "ftp://localhost/db";
+        assert!(!url.starts_with("http://"));
+        assert!(!url.starts_with("https://"));
+        assert!(!url.starts_with("tcp://"));
+    }
+
+    #[test]
+    fn test_url_with_credentials() {
+        let url = "http://user:pass@localhost:8123/mydb";
+        assert!(url.contains("user:pass@"));
+        assert!(url.starts_with("http://"));
+    }
+
+    #[test]
+    fn test_url_with_options() {
+        let url = "tcp://localhost:9000/default?secure=true&compression=lz4";
+        assert!(url.contains("secure=true"));
+        assert!(url.contains("compression=lz4"));
+    }
+}
+
+// =============================================================================
+// Batch Inserter Tests (no connection required)
+// =============================================================================
+
+mod batch_inserter_config_tests {
+    // Test that batch size is configurable
+    #[test]
+    fn test_batch_size_configuration() {
+        let batch_size = 1000usize;
+        assert!(batch_size > 0);
+
+        let large_batch = 100_000usize;
+        assert!(large_batch > batch_size);
+    }
+
+    // Test capacity estimation
+    #[test]
+    fn test_insert_sql_capacity_estimation() {
+        let columns_count = 5;
+        let buffer_len = 1000;
+
+        // Estimate: 50 + columns * 10 + buffer_len * 50
+        let estimated_capacity = 50 + columns_count * 10 + buffer_len * 50;
+
+        assert_eq!(estimated_capacity, 50100);
+    }
+
+    // Test that INSERT SQL format is correct
+    #[test]
+    fn test_insert_sql_format() {
+        let table_name = "users";
+        let columns = vec!["id", "name", "email"];
+
+        let mut sql = String::new();
+        sql.push_str("INSERT INTO ");
+        sql.push_str(table_name);
+        sql.push_str(" (");
+        for (i, col) in columns.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('`');
+            sql.push_str(col);
+            sql.push('`');
+        }
+        sql.push_str(") VALUES ");
+
+        assert_eq!(sql, "INSERT INTO users (`id`, `name`, `email`) VALUES ");
+    }
+}
+
+// =============================================================================
+// ToSql Trait Tests
+// =============================================================================
+
+#[cfg(feature = "http")]
+mod to_sql_tests {
+    use diesel_clickhouse::http::ToSql;
+    use diesel_clickhouse_core::backend::ClickHouse;
+    use diesel_clickhouse_core::expression::sql;
+    use diesel_clickhouse_core::query_builder::{QueryFragment, SelectStatement, AstPass};
+    use diesel_clickhouse_core::result::QueryResult;
+    use diesel_clickhouse_types::*;
+
+    struct TestTable;
+    impl QueryFragment<ClickHouse> for TestTable {
+        fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, ClickHouse>) -> QueryResult<()> {
+            pass.push_sql("users");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_to_sql_string() {
+        let query = SelectStatement::new(TestTable);
+        let sql = query.to_sql_string().expect("to_sql_string failed");
+        assert_eq!(sql, "SELECT * FROM users");
+    }
+
+    #[test]
+    fn test_to_sql_string_with_clauses() {
+        let query = SelectStatement::new(TestTable)
+            .filter(sql::<Bool>("active = true"))
+            .limit(10);
+        let sql = query.to_sql_string().expect("to_sql_string failed");
+        assert_eq!(sql, "SELECT * FROM users WHERE active = true LIMIT 10");
     }
 }

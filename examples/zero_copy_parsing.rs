@@ -182,7 +182,7 @@ fn main() {
         BorrowedValue::new(b"true"),
         BorrowedValue::new(b"\\N"),
     ];
-    let row = ZeroCopyRow::new(values);
+    let row = ZeroCopyRow::from_vec(values);
 
     println!("   Row length: {} columns", row.len());
     println!("   get_i64(0): {:?}", row.get_i64(0));

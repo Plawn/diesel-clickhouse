@@ -6,6 +6,8 @@ mod insert;
 mod update;
 mod delete;
 mod clickhouse;
+pub mod set_operations;
+pub mod with;
 
 pub use ast_pass::*;
 pub use select::*;
@@ -13,6 +15,18 @@ pub use insert::*;
 pub use update::*;
 pub use delete::*;
 pub use clickhouse::*;
+pub use set_operations::{
+    Union, UnionAll, Intersect, Except,
+    SetOperationsDsl, SetOperationModifiers,
+    OrderedSetOperation, LimitedSetOperation,
+};
+pub use with::{
+    Cte, WithClause, CteList, CteRef, cte_ref,
+    WithQueryBuilder, with_query,
+    WithQueriesBuilder, with_queries,
+    DynamicWithBuilder, dynamic_with,
+    WithDsl,
+};
 
 use crate::backend::Backend;
 use crate::result::QueryResult;

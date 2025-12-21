@@ -23,6 +23,8 @@
 use std::borrow::Cow;
 use std::str;
 
+use smallvec::SmallVec;
+
 /// A borrowed value from a parsed response.
 ///
 /// This type holds a reference to the original data without copying,
@@ -156,16 +158,28 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Type alias for the inline storage of row values.
+/// Most rows have 8 or fewer columns, so we inline up to 8 values to avoid heap allocation.
+pub type RowValues<'a> = SmallVec<[BorrowedValue<'a>; 8]>;
+
 /// A zero-copy row from a parsed response.
+///
+/// Uses `SmallVec` to avoid heap allocation for rows with 8 or fewer columns,
+/// which covers the vast majority of use cases.
 #[derive(Debug)]
 pub struct ZeroCopyRow<'a> {
-    values: Vec<BorrowedValue<'a>>,
+    values: RowValues<'a>,
 }
 
 impl<'a> ZeroCopyRow<'a> {
     /// Create a new row with the given values.
-    pub fn new(values: Vec<BorrowedValue<'a>>) -> Self {
+    pub fn new(values: RowValues<'a>) -> Self {
         Self { values }
+    }
+
+    /// Create a new row from a Vec (will be converted to SmallVec).
+    pub fn from_vec(values: Vec<BorrowedValue<'a>>) -> Self {
+        Self { values: SmallVec::from_vec(values) }
     }
 
     /// Get the number of columns.
@@ -250,7 +264,7 @@ impl<'a> TsvParser<'a> {
         }
 
         let start = self.pos;
-        let mut values = Vec::with_capacity(8);
+        let mut values: RowValues<'a> = SmallVec::new();
         let mut col_start = start;
 
         while self.pos < self.data.len() {
@@ -334,7 +348,7 @@ impl<'a> CsvParser<'a> {
             return None;
         }
 
-        let mut values = Vec::with_capacity(8);
+        let mut values: RowValues<'a> = SmallVec::new();
 
         loop {
             if self.pos >= self.data.len() {
@@ -772,7 +786,7 @@ mod tests {
 
     #[test]
     fn test_zero_copy_row() {
-        let values = vec![
+        let values: RowValues = smallvec::smallvec![
             BorrowedValue::new(b"42"),
             BorrowedValue::new(b"hello"),
             BorrowedValue::new(b"3.14"),
