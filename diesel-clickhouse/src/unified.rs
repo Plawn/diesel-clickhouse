@@ -1,28 +1,148 @@
-//! Unified connection interface for diesel-clickhouse.
+//! # Unified Connection Interface
 //!
-//! This module provides a unified API that works with both HTTP and Native backends,
-//! allowing you to write backend-agnostic code.
+//! The `Connection` enum provides a unified API for both HTTP and Native backends.
+//! The backend is selected automatically based on the URL scheme.
 //!
-//! # Example
+//! ## What Works Uniformly (Both Backends)
+//!
+//! These operations work identically on both HTTP and Native:
+//!
+//! | Operation | Method | Description |
+//! |-----------|--------|-------------|
+//! | Connect | `Connection::establish(url)` | Auto-selects backend from URL |
+//! | Execute DDL | `conn.execute(sql)` | CREATE, ALTER, DROP, TRUNCATE |
+//! | Execute DML | `conn.execute_query(query)` | UPDATE, DELETE via query builder |
+//! | Insert raw | `conn.insert_values(table, values)` | Raw SQL VALUES |
+//! | Insert query | `conn.insert(query)` | Query builder INSERT |
+//! | Build SQL | `conn.build_sql(query)` | Get SQL string without executing |
+//! | Get database | `conn.database()` | Current database name |
+//! | Check backend | `conn.is_http()` / `conn.is_native()` | Identify connection type |
+//!
+//! ## What Differs By Backend (Fetch Operations)
+//!
+//! Fetching rows requires different trait bounds per backend:
+//!
+//! | Backend | Feature | Trait Required | Derive |
+//! |---------|---------|----------------|--------|
+//! | HTTP | `http` | `clickhouse::Row` | `#[derive(clickhouse::Row)]` |
+//! | Native | `native` | `serde::Deserialize` | `#[derive(serde::Deserialize)]` |
+//!
+//! ## Quick Start
 //!
 //! ```rust,ignore
-//! use diesel_clickhouse::connection::Connection;
 //! use diesel_clickhouse::prelude::*;
+//! use diesel_clickhouse::Connection;
 //!
-//! // Connect via HTTP or Native based on URL scheme
-//! let conn = Connection::establish("http://localhost:8123/default").await?;
-//! // or: Connection::establish("tcp://localhost:9000/default").await?
+//! // 1. Define table schema
+//! diesel_clickhouse::table! {
+//!     users (id, created_at) {
+//!         id -> UInt64,
+//!         name -> CHString,
+//!         active -> Bool,
+//!         created_at -> DateTime,
+//!     }
+//! }
 //!
-//! // Execute queries - same API for both backends
-//! conn.execute("CREATE TABLE test (id UInt64) ENGINE = Memory").await?;
+//! // 2. Define row types
+//! #[derive(clickhouse::Row, serde::Serialize)]  // For HTTP insert
+//! #[derive(diesel_clickhouse::Insertable)]
+//! #[diesel_clickhouse(table = users)]
+//! struct NewUser {
+//!     id: u64,
+//!     name: String,
+//!     active: bool,
+//! }
 //!
-//! // Insert data
-//! conn.insert_values("test", "(1), (2), (3)").await?;
+//! #[derive(Debug, clickhouse::Row, serde::Deserialize)]  // For HTTP fetch
+//! struct User {
+//!     id: u64,
+//!     name: String,
+//!     active: bool,
+//! }
 //!
-//! // Query with the builder
-//! let sql = conn.build_sql(users::table.filter(users::active.eq(true)));
+//! // 3. Use the connection
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let conn = Connection::establish("http://localhost:8123/default").await?;
+//!
+//!     // DDL - works on both backends
+//!     conn.execute("CREATE TABLE IF NOT EXISTS users (
+//!         id UInt64,
+//!         name String,
+//!         active Bool,
+//!         created_at DateTime DEFAULT now()
+//!     ) ENGINE = MergeTree() ORDER BY id").await?;
+//!
+//!     // INSERT via query builder - works on both backends
+//!     let new_user = NewUser { id: 1, name: "Alice".into(), active: true };
+//!     conn.insert(insert_into(users::table).values(&new_user)).await?;
+//!
+//!     // FETCH - requires clickhouse::Row for HTTP
+//!     let users: Vec<User> = conn.fetch_all(
+//!         users::table.filter(users::active.eq(true))
+//!     ).await?;
+//!
+//!     Ok(())
+//! }
 //! ```
+//!
+//! ## URL Schemes
+//!
+//! | Scheme | Backend | Default Port | Example |
+//! |--------|---------|--------------|---------|
+//! | `http://` | HTTP | 8123 | `http://localhost:8123/mydb` |
+//! | `https://` | HTTP | 8443 | `https://ch.example.com/mydb` |
+//! | `tcp://` | Native | 9000 | `tcp://localhost:9000/mydb` |
+//!
+//! ## Backend-Specific Access
+//!
+//! For advanced use cases, access the underlying connection:
+//!
+//! ```rust,ignore
+//! // HTTP: Access clickhouse crate's Client directly
+//! if let Some(http_conn) = conn.as_http() {
+//!     // Use clickhouse crate's streaming inserter
+//!     let mut inserter = http_conn.client()
+//!         .inserter::<NewUser>("users")?
+//!         .with_max_entries(10_000);
+//!     inserter.write(&user)?;
+//!     inserter.end().await?;
+//! }
+//!
+//! // Native: Access clickhouse-rs connection directly
+//! if let Some(native_conn) = conn.as_native() {
+//!     // Use clickhouse-rs Block API
+//!     let block = native_conn.query_raw("SELECT * FROM users").await?;
+//! }
+//! ```
+//!
+//! ## Feature Flags
+//!
+//! | Feature | Backend | Crate Used |
+//! |---------|---------|------------|
+//! | `http` (default) | HTTP | `clickhouse` |
+//! | `native` | Native TCP | `clickhouse-rs` |
+//! | `migrations` | Schema migrations | `diesel-clickhouse-migrations` |
+//!
+//! ## Limitations
+//!
+//! The unified `Connection` does NOT provide:
+//!
+//! - **Streaming inserts**: Use `conn.as_http().client().inserter()` for HTTP
+//! - **Block API**: Use `conn.as_native().query_raw()` for Native
+//! - **Connection pooling**: Implement at application level or use `deadpool`
+//! - **Transactions**: ClickHouse has limited transaction support
+//!
+//! ## Choosing a Backend
+//!
+//! | Use Case | Recommended Backend |
+//! |----------|---------------------|
+//! | Simple deployments | HTTP (easier firewall/proxy) |
+//! | High throughput inserts | HTTP with inserter |
+//! | Low latency queries | Native |
+//! | Cloud/managed ClickHouse | HTTP (often only option) |
 
+#[cfg(feature = "native")]
 use serde::de::DeserializeOwned;
 
 use crate::core::backend::ClickHouse;
@@ -38,11 +158,7 @@ use crate::core::result::{Error, QueryResult};
 pub enum Connection {
     /// HTTP backend connection
     #[cfg(feature = "http")]
-    Http {
-        conn: crate::http::ClickHouseConnection,
-        /// Base URL for direct HTTP requests (for unified fetch)
-        base_url: String,
-    },
+    Http(crate::http::ClickHouseConnection),
 
     /// Native protocol connection
     #[cfg(feature = "native")]
@@ -75,16 +191,7 @@ impl Connection {
             #[cfg(feature = "http")]
             {
                 let conn = crate::http::ClickHouseConnection::new(url).await?;
-                // Extract base URL for direct requests
-                let parsed = url::Url::parse(url)
-                    .map_err(|e| Error::ConnectionError(format!("Invalid URL: {}", e)))?;
-                let base_url = format!(
-                    "{}://{}{}",
-                    parsed.scheme(),
-                    parsed.host_str().unwrap_or("localhost"),
-                    parsed.port().map(|p| format!(":{}", p)).unwrap_or_default()
-                );
-                Ok(Connection::Http { conn, base_url })
+                Ok(Connection::Http(conn))
             }
             #[cfg(not(feature = "http"))]
             {
@@ -116,7 +223,7 @@ impl Connection {
     pub fn database(&self) -> &str {
         match self {
             #[cfg(feature = "http")]
-            Connection::Http { conn, .. } => conn.database(),
+            Connection::Http(conn) => conn.database(),
             #[cfg(feature = "native")]
             Connection::Native(conn) => conn.database(),
         }
@@ -126,7 +233,7 @@ impl Connection {
     pub fn is_http(&self) -> bool {
         match self {
             #[cfg(feature = "http")]
-            Connection::Http { .. } => true,
+            Connection::Http(_) => true,
             #[cfg(feature = "native")]
             Connection::Native(_) => false,
         }
@@ -150,7 +257,7 @@ impl Connection {
     pub async fn execute(&self, sql: &str) -> QueryResult<()> {
         match self {
             #[cfg(feature = "http")]
-            Connection::Http { conn, .. } => conn.execute_raw(sql).await,
+            Connection::Http(conn) => conn.execute_raw(sql).await,
             #[cfg(feature = "native")]
             Connection::Native(conn) => conn.execute_raw(sql).await,
         }
@@ -173,7 +280,7 @@ impl Connection {
     {
         match self {
             #[cfg(feature = "http")]
-            Connection::Http { conn, .. } => conn.execute_statement(&query).await,
+            Connection::Http(conn) => conn.execute_statement(&query).await,
             #[cfg(feature = "native")]
             Connection::Native(conn) => conn.execute_statement(&query).await,
         }
@@ -195,7 +302,7 @@ impl Connection {
     {
         match self {
             #[cfg(feature = "http")]
-            Connection::Http { conn, .. } => conn.build_query(&query),
+            Connection::Http(conn) => conn.build_query(&query),
             #[cfg(feature = "native")]
             Connection::Native(conn) => conn.build_query(&query),
         }
@@ -211,7 +318,7 @@ impl Connection {
     pub async fn insert_values(&self, table: &str, values_sql: &str) -> QueryResult<()> {
         match self {
             #[cfg(feature = "http")]
-            Connection::Http { conn, .. } => conn.insert_raw(table, values_sql).await,
+            Connection::Http(conn) => conn.insert_raw(table, values_sql).await,
             #[cfg(feature = "native")]
             Connection::Native(conn) => conn.insert_values(table, values_sql).await,
         }
@@ -242,7 +349,7 @@ impl Connection {
     #[cfg(feature = "http")]
     pub fn as_http(&self) -> Option<&crate::http::ClickHouseConnection> {
         match self {
-            Connection::Http { conn, .. } => Some(conn),
+            Connection::Http(conn) => Some(conn),
             #[cfg(feature = "native")]
             Connection::Native(_) => None,
         }
@@ -253,23 +360,26 @@ impl Connection {
     pub fn as_native(&self) -> Option<&crate::native::NativeConnection> {
         match self {
             #[cfg(feature = "http")]
-            Connection::Http { .. } => None,
+            Connection::Http(_) => None,
             Connection::Native(conn) => Some(conn),
         }
     }
 
     // =========================================================================
-    // Unified Fetch Methods
+    // Unified Fetch Methods (HTTP)
     // =========================================================================
 
     /// Fetch all rows from a query.
     ///
-    /// The row type must implement `serde::Deserialize`.
+    /// For HTTP backend, row type must derive `clickhouse::Row`.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// #[derive(Debug, Deserialize)]
+    /// use clickhouse::Row;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Debug, Row, Deserialize)]
     /// struct User {
     ///     id: u64,
     ///     name: String,
@@ -279,6 +389,67 @@ impl Connection {
     ///     users::table.filter(users::active.eq(true))
     /// ).await?;
     /// ```
+    #[cfg(feature = "http")]
+    pub async fn fetch_all<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+    {
+        let sql = self.build_sql(query);
+        self.fetch_all_raw(&sql).await
+    }
+
+    /// Fetch all rows from a raw SQL query.
+    #[cfg(feature = "http")]
+    pub async fn fetch_all_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
+    where
+        T: clickhouse::RowOwned + clickhouse::RowRead + Send,
+    {
+        match self {
+            Connection::Http(conn) => {
+                conn.client()
+                    .query(sql)
+                    .fetch_all()
+                    .await
+                    .map_err(|e| Error::QueryError(e.to_string()))
+            }
+            #[cfg(feature = "native")]
+            Connection::Native(_) => {
+                Err(Error::QueryError(
+                    "Native backend requires serde::Deserialize. Use fetch_all_native() instead.".to_string()
+                ))
+            }
+        }
+    }
+
+    /// Fetch exactly one row from a query.
+    #[cfg(feature = "http")]
+    pub async fn fetch_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    where
+        T: clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+    {
+        let results: Vec<T> = self.fetch_all(query).await?;
+        results.into_iter().next().ok_or(Error::NotFound)
+    }
+
+    /// Fetch zero or one row from a query.
+    #[cfg(feature = "http")]
+    pub async fn fetch_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
+    where
+        T: clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+    {
+        let results: Vec<T> = self.fetch_all(query).await?;
+        Ok(results.into_iter().next())
+    }
+
+    // =========================================================================
+    // Unified Fetch Methods (Native only)
+    // =========================================================================
+
+    /// Fetch all rows from a query (native backend).
+    #[cfg(all(feature = "native", not(feature = "http")))]
     pub async fn fetch_all<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
     where
         T: DeserializeOwned,
@@ -288,55 +459,13 @@ impl Connection {
         self.fetch_all_raw(&sql).await
     }
 
-    /// Fetch all rows from a raw SQL query.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let users: Vec<User> = conn.fetch_all_raw("SELECT * FROM users").await?;
-    /// ```
+    /// Fetch all rows from a raw SQL query (native backend).
+    #[cfg(all(feature = "native", not(feature = "http")))]
     pub async fn fetch_all_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
     where
         T: DeserializeOwned,
     {
         match self {
-            #[cfg(feature = "http")]
-            Connection::Http { conn, base_url } => {
-                // Use JSONEachRow format for easy parsing
-                let json_sql = format!("{} FORMAT JSONEachRow", sql);
-
-                // Make direct HTTP request to ClickHouse
-                let client = reqwest::Client::new();
-                let response = client
-                    .post(base_url)
-                    .query(&[("database", conn.database())])
-                    .body(json_sql)
-                    .send()
-                    .await
-                    .map_err(|e| Error::QueryError(e.to_string()))?;
-
-                if !response.status().is_success() {
-                    let error_text = response.text().await.unwrap_or_default();
-                    return Err(Error::QueryError(error_text));
-                }
-
-                let text = response
-                    .text()
-                    .await
-                    .map_err(|e| Error::QueryError(e.to_string()))?;
-
-                // Parse JSONEachRow format (one JSON object per line)
-                let mut results = Vec::new();
-                for line in text.lines() {
-                    if !line.trim().is_empty() {
-                        let row: T = serde_json::from_str(line)
-                            .map_err(|e| Error::DeserializationError(e.to_string()))?;
-                        results.push(row);
-                    }
-                }
-                Ok(results)
-            }
-            #[cfg(feature = "native")]
             Connection::Native(conn) => {
                 let block = conn.query_raw(sql).await?;
                 block_to_vec(&block)
@@ -344,17 +473,8 @@ impl Connection {
         }
     }
 
-    /// Fetch exactly one row from a query.
-    ///
-    /// Returns an error if no rows are found.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let user: User = conn.fetch_one(
-    ///     users::table.filter(users::id.eq(1))
-    /// ).await?;
-    /// ```
+    /// Fetch exactly one row (native backend).
+    #[cfg(all(feature = "native", not(feature = "http")))]
     pub async fn fetch_one<T, Q>(&self, query: Q) -> QueryResult<T>
     where
         T: DeserializeOwned,
@@ -364,17 +484,8 @@ impl Connection {
         results.into_iter().next().ok_or(Error::NotFound)
     }
 
-    /// Fetch zero or one row from a query.
-    ///
-    /// Returns `None` if no rows are found.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let user: Option<User> = conn.fetch_optional(
-    ///     users::table.filter(users::id.eq(1))
-    /// ).await?;
-    /// ```
+    /// Fetch zero or one row (native backend).
+    #[cfg(all(feature = "native", not(feature = "http")))]
     pub async fn fetch_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
     where
         T: DeserializeOwned,
@@ -382,6 +493,35 @@ impl Connection {
     {
         let results: Vec<T> = self.fetch_all(query).await?;
         Ok(results.into_iter().next())
+    }
+
+    // =========================================================================
+    // Native-specific fetch (when both features enabled)
+    // =========================================================================
+
+    /// Fetch all rows using native backend with serde deserialization.
+    ///
+    /// Use this when you have both HTTP and Native features enabled
+    /// and want to fetch from the native backend.
+    #[cfg(feature = "native")]
+    pub async fn fetch_all_native<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: DeserializeOwned,
+        Q: QueryFragment<ClickHouse>,
+    {
+        let sql = self.build_sql(query);
+        match self {
+            #[cfg(feature = "http")]
+            Connection::Http(_) => {
+                Err(Error::QueryError(
+                    "This is an HTTP connection. Use fetch_all() with clickhouse::Row instead.".to_string()
+                ))
+            }
+            Connection::Native(conn) => {
+                let block = conn.query_raw(&sql).await?;
+                block_to_vec(&block)
+            }
+        }
     }
 }
 

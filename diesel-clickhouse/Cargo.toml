@@ -56,11 +56,8 @@ clickhouse = { workspace = true, optional = true, features = ["time"] }
 # Optional - Native backend
 clickhouse-rs = { version = "1.1.0-alpha.1", optional = true, default-features = false, features = ["tokio_io"] }
 
-# Serialization
+# Serialization (for native backend block parsing)
 serde_json = "1"
-
-# HTTP client for unified fetch
-reqwest = { version = "0.11", default-features = false, features = ["json"] }
 
 # Optional - Other
 chrono = { workspace = true, optional = true }

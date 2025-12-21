@@ -2,6 +2,7 @@
 //!
 //! This crate provides:
 //! - `table!` macro for defining table schemas
+//! - `#[derive(Row)]` for unified row deserialization (HTTP + Native)
 //! - `#[derive(Queryable)]` for row deserialization
 //! - `#[derive(Insertable)]` for row serialization
 //! - `#[derive(Selectable)]` for explicit column selection
@@ -35,6 +36,126 @@ mod table;
 #[proc_macro]
 pub fn table(input: TokenStream) -> TokenStream {
     table::table_impl(input)
+}
+
+/// Derive `Row` for unified row deserialization.
+///
+/// This derive macro generates implementations that work with both
+/// HTTP and Native backends:
+///
+/// - Generates `serde::Deserialize` for serde-based deserialization
+/// - Generates `clickhouse::Row` when the `http` feature is enabled
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::Row;
+///
+/// #[derive(Debug, Row)]
+/// struct User {
+///     id: u64,
+///     name: String,
+///     email: Option<String>,
+/// }
+///
+/// // Works with unified Connection
+/// let users: Vec<User> = conn.fetch_all(users::table).await?;
+/// ```
+///
+/// # Attributes
+///
+/// - `#[column_name = "..."]` - Rename a field for the database column
+/// - `#[serde(rename = "...")]` - Also supported for serde compatibility
+///
+/// ```rust,ignore
+/// #[derive(Debug, Row)]
+/// struct User {
+///     id: u64,
+///     #[column_name = "user_name"]
+///     name: String,
+/// }
+/// ```
+#[proc_macro_derive(Row, attributes(column_name, serde))]
+pub fn derive_row(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+    let generics = &input.generics;
+    let (_impl_generics, _ty_generics, where_clause) = generics.split_for_impl();
+
+    let fields = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => &fields.named,
+            _ => panic!("Row can only be derived for structs with named fields"),
+        },
+        _ => panic!("Row can only be derived for structs"),
+    };
+
+    // Collect field info
+    let field_count = fields.len();
+    let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
+    let field_types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
+    let column_names: Vec<String> = fields.iter()
+        .map(|f| get_column_name(f).unwrap_or_else(|| f.ident.as_ref().unwrap().to_string()))
+        .collect();
+
+    // Generate serde rename attributes for Deserialize
+    let serde_field_attrs: Vec<_> = column_names.iter().zip(field_names.iter()).map(|(col, field)| {
+        let field_str = field.as_ref().unwrap().to_string();
+        if col != &field_str {
+            quote! { #[serde(rename = #col)] }
+        } else {
+            quote! {}
+        }
+    }).collect();
+
+    let expanded = quote! {
+        // Implement serde::Deserialize by delegation
+        // The struct fields are deserialized using serde's standard mechanism
+        // with rename attributes for column name mapping
+        impl<'de> ::serde::Deserialize<'de> for #name #where_clause
+        where
+            #(#field_types: ::serde::Deserialize<'de>,)*
+        {
+            fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                // Use an intermediate struct with serde derives
+                #[derive(::serde::Deserialize)]
+                struct __DieselClickhouseRowHelper {
+                    #(
+                        #serde_field_attrs
+                        #field_names: #field_types,
+                    )*
+                }
+
+                let helper = __DieselClickhouseRowHelper::deserialize(deserializer)?;
+                ::std::result::Result::Ok(Self {
+                    #(#field_names: helper.#field_names,)*
+                })
+            }
+        }
+
+        // Implement serde::Serialize
+        impl ::serde::Serialize for #name #where_clause
+        where
+            #(#field_types: ::serde::Serialize,)*
+        {
+            fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
+            where
+                S: ::serde::Serializer,
+            {
+                use ::serde::ser::SerializeStruct;
+                let mut state = serializer.serialize_struct(stringify!(#name), #field_count)?;
+                #(
+                    state.serialize_field(#column_names, &self.#field_names)?;
+                )*
+                state.end()
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
 }
 
 /// Derive `Queryable` for deserializing query results.

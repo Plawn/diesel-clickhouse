@@ -108,7 +108,11 @@ pub use diesel_clickhouse_core as core;
 pub use diesel_clickhouse_types as types;
 
 // Re-export derive macros
-pub use diesel_clickhouse_derive::{table, Queryable, Insertable, Selectable};
+pub use diesel_clickhouse_derive::{table, Queryable, Insertable, Selectable, Row};
+
+// Re-export clickhouse crate for Row derive to use
+#[cfg(feature = "http")]
+pub use clickhouse;
 
 // Re-export key items at the top level
 pub use core::backend::{Backend, HttpBackend, NativeBackend, ClickHouse};
@@ -129,7 +133,7 @@ pub mod prelude {
     pub use crate::core::prelude::*;
 
     // Derive macros
-    pub use crate::{table, Queryable, Insertable, Selectable};
+    pub use crate::{table, Queryable, Insertable, Selectable, Row};
 
     // Common functions
     pub use crate::core::expression::functions::{
