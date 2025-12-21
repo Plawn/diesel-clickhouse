@@ -236,10 +236,10 @@ impl Connection {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let sql = conn.build_sql(users::table.filter(users::active.eq(true)));
+    /// let sql = conn.build_sql(users::table.filter(users::active.eq(true)))?;
     /// println!("Query: {}", sql);
     /// ```
-    pub fn build_sql<Q>(&self, query: Q) -> String
+    pub fn build_sql<Q>(&self, query: Q) -> QueryResult<String>
     where
         Q: QueryFragment<ClickHouse>,
     {
@@ -454,7 +454,7 @@ impl Connection {
         T: clickhouse::RowOwned + clickhouse::RowRead + Send,
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = self.build_sql(query);
+        let sql = self.build_sql(query)?;
         self.fetch_all_raw(&sql).await
     }
 
@@ -514,7 +514,7 @@ impl Connection {
         T: DeserializeOwned,
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = self.build_sql(query);
+        let sql = self.build_sql(query)?;
         self.fetch_all_raw(&sql).await
     }
 
@@ -568,7 +568,7 @@ impl Connection {
         T: DeserializeOwned,
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = self.build_sql(query);
+        let sql = self.build_sql(query)?;
         match self {
             #[cfg(feature = "http")]
             Connection::Http(_) => {

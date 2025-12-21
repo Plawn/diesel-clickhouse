@@ -18,7 +18,7 @@ fn main() {
     let cache = PreparedCache::new(100);  // LRU cache with 100 entries
     println!("   Created cache with max size: 100");
 
-    let stats = cache.stats();
+    let stats = cache.stats().expect("stats failed");
     println!("   Initial state:");
     println!("   - Size: {}", stats.size);
     println!("   - Hits: {}", stats.hits);
@@ -39,10 +39,12 @@ fn main() {
     println!("   Name: {}", stmt.name());
     println!("   SQL: {}", stmt.sql());
 
-    // Substitute parameters
+    // Substitute parameters (deprecated, but shown for completeness)
+    #[allow(deprecated)]
     let sql_with_params = stmt.with_params(&[&42]);
     println!("   With id=42: {}", sql_with_params);
 
+    #[allow(deprecated)]
     let sql_with_params = stmt.with_params(&[&123]);
     println!("   With id=123: {}", sql_with_params);
     println!();
@@ -57,6 +59,7 @@ fn main() {
         "SELECT * FROM users WHERE name = ? AND age > ? LIMIT ?"
     );
 
+    #[allow(deprecated)]
     let sql = stmt.with_params(&[&"'Alice'", &25, &100]);
     println!("   Template: {}", stmt.sql());
     println!("   Rendered: {}", sql);
@@ -73,10 +76,12 @@ fn main() {
 
     println!("   Template param count: {}", template.param_count());
 
+    #[allow(deprecated)]
     let sql = template.render(&["users", "status", "'active'", "created_at DESC", "100"]);
     println!("   Rendered: {}", sql);
 
     // Different table
+    #[allow(deprecated)]
     let sql = template.render(&["orders", "user_id", "42", "order_date", "50"]);
     println!("   Rendered: {}", sql);
     println!();
@@ -91,10 +96,12 @@ fn main() {
     );
 
     // render_escaped wraps params in quotes and escapes
+    #[allow(deprecated)]
     let sql = template.render_escaped(&["O'Brien"]);
     println!("   Input: O'Brien");
     println!("   Escaped: {}", sql);
 
+    #[allow(deprecated)]
     let sql = template.render_escaped(&["normal_name"]);
     println!("   Input: normal_name");
     println!("   Escaped: {}", sql);
@@ -110,22 +117,22 @@ fn main() {
     // First call - cache miss
     let _stmt = cache.prepare::<String, _>("query_a", || {
         "SELECT * FROM table_a".to_string()
-    });
-    println!("   After query_a: misses={}", cache.stats().misses);
+    }).expect("prepare failed");
+    println!("   After query_a: misses={}", cache.stats().expect("stats failed").misses);
 
     // Second call - cache hit
     let _stmt = cache.prepare::<String, _>("query_a", || {
         "SELECT * FROM table_a".to_string()
-    });
-    println!("   After query_a (again): hits={}", cache.stats().hits);
+    }).expect("prepare failed");
+    println!("   After query_a (again): hits={}", cache.stats().expect("stats failed").hits);
 
     // Different query - cache miss
     let _stmt = cache.prepare::<String, _>("query_b", || {
         "SELECT * FROM table_b".to_string()
-    });
-    println!("   After query_b: misses={}", cache.stats().misses);
+    }).expect("prepare failed");
+    println!("   After query_b: misses={}", cache.stats().expect("stats failed").misses);
 
-    let stats = cache.stats();
+    let stats = cache.stats().expect("stats failed");
     println!("   Final: size={}, hits={}, misses={}, hit_rate={:.1}%",
         stats.size, stats.hits, stats.misses, stats.hit_rate() * 100.0);
     println!();
@@ -140,12 +147,12 @@ fn main() {
     // Use global cache
     let _stmt = global.prepare::<String, _>("global_query_1", || {
         "SELECT 1".to_string()
-    });
+    }).expect("prepare failed");
     let _stmt = global.prepare::<String, _>("global_query_2", || {
         "SELECT 2".to_string()
-    });
+    }).expect("prepare failed");
 
-    println!("   Global cache size: {}", global.stats().size);
+    println!("   Global cache size: {}", global.stats().expect("stats failed").size);
     println!();
 
     // -------------------------------------------------------------------------
@@ -154,14 +161,15 @@ fn main() {
     println!("8. Cache lookup by name:");
 
     let cache = PreparedCache::new(10);
-    cache.prepare::<String, _>("my_query", || "SELECT * FROM test".to_string());
+    cache.prepare::<String, _>("my_query", || "SELECT * FROM test".to_string())
+        .expect("prepare failed");
 
-    match cache.get("my_query") {
+    match cache.get("my_query").expect("get failed") {
         Some(stmt) => println!("   Found: {}", stmt.sql()),
         None => println!("   Not found"),
     }
 
-    match cache.get("nonexistent") {
+    match cache.get("nonexistent").expect("get failed") {
         Some(stmt) => println!("   Found: {}", stmt.sql()),
         None => println!("   Not found (expected)"),
     }
@@ -173,12 +181,12 @@ fn main() {
     println!("9. Clearing cache:");
 
     let cache = PreparedCache::new(10);
-    cache.prepare::<String, _>("q1", || "SELECT 1".to_string());
-    cache.prepare::<String, _>("q2", || "SELECT 2".to_string());
+    cache.prepare::<String, _>("q1", || "SELECT 1".to_string()).expect("prepare failed");
+    cache.prepare::<String, _>("q2", || "SELECT 2".to_string()).expect("prepare failed");
 
-    println!("   Before clear: size={}", cache.stats().size);
-    cache.clear();
-    println!("   After clear: size={}", cache.stats().size);
+    println!("   Before clear: size={}", cache.stats().expect("stats failed").size);
+    cache.clear().expect("clear failed");
+    println!("   After clear: size={}", cache.stats().expect("stats failed").size);
     println!();
 
     // -------------------------------------------------------------------------
@@ -208,7 +216,7 @@ fn main() {
                 "SELECT * FROM users WHERE id = {} AND status = 'active'",
                 i % 100
             )
-        });
+        }).expect("prepare failed");
         let _ = stmt.sql();
     }
     let cached_time = start.elapsed();
@@ -216,7 +224,7 @@ fn main() {
     println!("   {} iterations:", iterations);
     println!("   - Uncached: {:?}", uncached_time);
     println!("   - Cached: {:?}", cached_time);
-    println!("   - Hit rate: {:.1}%", cache.stats().hit_rate() * 100.0);
+    println!("   - Hit rate: {:.1}%", cache.stats().expect("stats failed").hit_rate() * 100.0);
     println!();
 
     // -------------------------------------------------------------------------

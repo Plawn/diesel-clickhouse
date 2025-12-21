@@ -1,3 +1,10 @@
+// Deny unwrap/expect in library code to prevent panics
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+// Allow in tests
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+#![cfg_attr(test, allow(clippy::expect_used))]
+
 //! SQL type system for diesel-clickhouse
 //!
 //! This crate provides the type system that maps ClickHouse SQL types to Rust types.

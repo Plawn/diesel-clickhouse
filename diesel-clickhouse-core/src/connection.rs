@@ -196,7 +196,9 @@ pub trait ClickHouseConnection: Send + Sync {
     /// Build SQL from a query fragment without executing.
     ///
     /// Useful for debugging or logging queries.
-    fn build_sql<Q>(&self, query: &Q) -> String
+    ///
+    /// Returns an error if the query fragment fails to produce valid SQL.
+    fn build_sql<Q>(&self, query: &Q) -> QueryResult<String>
     where
         Q: QueryFragment<ClickHouse>;
 

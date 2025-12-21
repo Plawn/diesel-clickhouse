@@ -1,3 +1,7 @@
+// Deny unwrap/expect in code to prevent panics
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+
 //! CLI tool for diesel-clickhouse migrations.
 //!
 //! Usage:

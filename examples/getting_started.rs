@@ -221,7 +221,7 @@ fn demo_mode() {
         .and_filter(users::age.gt(25))
         .order_by(users::age.desc())
         .limit(10);
-    println!("SELECT:\n  {}\n", select.to_sql_string());
+    println!("SELECT:\n  {}\n", select.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // INSERT - single row (NEW!)
     let new_user = NewUser {
@@ -232,7 +232,7 @@ fn demo_mode() {
         active: true,
     };
     let insert_one = insert_into(users::table).values(&new_user);
-    println!("INSERT (single):\n  {}\n", insert_one.to_sql_string());
+    println!("INSERT (single):\n  {}\n", insert_one.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // INSERT - multiple rows (NEW!)
     let new_users = vec![
@@ -240,13 +240,13 @@ fn demo_mode() {
         NewUser { id: 3, name: "Charlie".into(), email: "charlie@example.com".into(), age: 35, active: false },
     ];
     let insert_batch = insert_into(users::table).values(new_users.as_slice());
-    println!("INSERT (batch):\n  {}\n", insert_batch.to_sql_string());
+    println!("INSERT (batch):\n  {}\n", insert_batch.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // UPDATE
     let upd = update(users::table)
         .filter(users::id.eq(1u64))
         .set(users::name.eq("New Name"));
-    println!("UPDATE:\n  {}\n", upd.to_sql_string());
+    println!("UPDATE:\n  {}\n", upd.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // JOIN - inner join with custom ON clause (NEW!)
     // Use .select() to start a SelectStatement, then add join
@@ -255,14 +255,14 @@ fn demo_mode() {
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
         .filter(users::active.eq(true))
         .limit(10);
-    println!("INNER JOIN:\n  {}\n", join_query.to_sql_string());
+    println!("INNER JOIN:\n  {}\n", join_query.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // JOIN - left join (NEW!)
     let left_join = users::table
         .select(users::star)
         .left_join_on(posts::table, users::id.eq(posts::user_id))
         .filter(users::age.gt(18));
-    println!("LEFT JOIN:\n  {}\n", left_join.to_sql_string());
+    println!("LEFT JOIN:\n  {}\n", left_join.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // JOIN with groupArray - one-to-many accumulation (NEW!)
     let grouped_join = users::table
@@ -274,9 +274,9 @@ fn demo_mode() {
         ))
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
         .group_by((users::id, users::name));
-    println!("JOIN + GROUP BY + groupArray:\n  {}\n", grouped_join.to_sql_string());
+    println!("JOIN + GROUP BY + groupArray:\n  {}\n", grouped_join.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // ClickHouse-specific
-    println!("FINAL:\n  {}\n", users::table.final_().to_sql_string());
-    println!("SAMPLE:\n  {}", users::table.sample(0.1).to_sql_string());
+    println!("FINAL:\n  {}\n", users::table.final_().to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
+    println!("SAMPLE:\n  {}", users::table.sample(0.1).to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 }

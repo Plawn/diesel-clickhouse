@@ -1,3 +1,10 @@
+// Deny unwrap/expect in library code to prevent panics
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+// Allow in tests
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+#![cfg_attr(test, allow(clippy::expect_used))]
+
 //! Migration system for diesel-clickhouse.
 //!
 //! This module provides a Diesel-inspired migration system for ClickHouse,
@@ -13,7 +20,7 @@
 //!
 //! // Run migrations
 //! async fn run_migrations(conn: &mut impl MigrationConnection) {
-//!     conn.run_pending_migrations(MIGRATIONS).await.unwrap();
+//!     conn.run_pending_migrations(MIGRATIONS).await?;
 //! }
 //! ```
 //!

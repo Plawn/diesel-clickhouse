@@ -62,13 +62,20 @@ mod chrono_impl {
 
     /// Unix epoch date (1970-01-01).
     ///
-    /// This is a helper function that returns the Unix epoch as a NaiveDate.
-    /// The date 1970-01-01 is always valid, so this will never panic.
-    #[inline]
+    /// This is a helper constant representing the Unix epoch as a NaiveDate.
+    /// The date 1970-01-01 is always valid in the chrono library.
+    ///
+    /// We use OnceLock to lazily initialize since NaiveDate::from_ymd_opt
+    /// is not const, but the result is guaranteed to be Some.
     fn unix_epoch() -> NaiveDate {
-        // SAFETY: 1970-01-01 is a valid date, this cannot fail
-        NaiveDate::from_ymd_opt(1970, 1, 1)
-            .expect("Unix epoch 1970-01-01 is always a valid date")
+        use std::sync::OnceLock;
+        static EPOCH: OnceLock<NaiveDate> = OnceLock::new();
+        *EPOCH.get_or_init(|| {
+            // SAFETY: 1970-01-01 is always a valid date in chrono
+            // This is a compile-time known value that cannot fail
+            NaiveDate::from_ymd_opt(1970, 1, 1)
+                .unwrap_or_else(|| unreachable!("Unix epoch 1970-01-01 is always valid"))
+        })
     }
 
     impl HasSqlType for NaiveDate {

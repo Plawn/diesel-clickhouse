@@ -93,8 +93,31 @@ pub struct PooledConnection {
 
 impl PooledConnection {
     /// Get a reference to the underlying connection.
-    pub fn connection(&self) -> &Connection {
-        self.conn.as_ref().expect("connection taken")
+    ///
+    /// Returns `None` if the connection has already been taken (only possible
+    /// through internal misuse or after drop).
+    pub fn connection(&self) -> Option<&Connection> {
+        self.conn.as_ref()
+    }
+
+    /// Get a reference to the underlying connection, assuming it exists.
+    ///
+    /// # Safety Note
+    ///
+    /// This method returns a reference unconditionally. In normal usage,
+    /// the connection is always present until the PooledConnection is dropped.
+    /// The Option<Connection> is only None after drop() has been called.
+    ///
+    /// # Panics
+    /// Panics if called after the connection has been dropped (which should be impossible
+    /// in normal usage since the PooledConnection cannot be accessed after drop).
+    #[allow(clippy::expect_used)] // Invariant: conn is always Some until drop()
+    fn connection_unchecked(&self) -> &Connection {
+        // SAFETY: In normal usage, conn is always Some until drop() is called.
+        // The Deref impl can only be called on a live PooledConnection.
+        // After drop(), the PooledConnection cannot be accessed.
+        self.conn.as_ref()
+            .expect("PooledConnection::connection_unchecked called on dropped connection")
     }
 }
 
@@ -102,7 +125,7 @@ impl std::ops::Deref for PooledConnection {
     type Target = Connection;
 
     fn deref(&self) -> &Self::Target {
-        self.connection()
+        self.connection_unchecked()
     }
 }
 

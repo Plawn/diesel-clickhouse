@@ -109,6 +109,10 @@ where
 impl<T> AssumeNotNull for Option<T> {
     type NotNull = T;
 
+    /// # Panics
+    /// Panics if `self` is `None`. This is intentional - use this method only
+    /// when you are certain the value is not NULL.
+    #[allow(clippy::expect_used)] // Intentional user opt-in assertion
     fn assume_not_null(self) -> Self::NotNull {
         self.expect("assume_not_null called on NULL value")
     }

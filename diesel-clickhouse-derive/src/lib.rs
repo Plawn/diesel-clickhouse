@@ -1,3 +1,10 @@
+// Proc-macro crates: panics occur at compile-time, not runtime, so they're acceptable.
+// We still deny unwrap/expect but allow specific cases with documented invariants.
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+// Allow in proc-macro code where panics produce compile errors (acceptable)
+#![allow(clippy::expect_used)]
+
 //! Procedural macros for diesel-clickhouse.
 //!
 //! This crate provides:

@@ -24,16 +24,16 @@ mod prepared_cache_tests {
         // First call should miss
         let stmt1 = cache.prepare::<String, _>("test_query", || {
             "SELECT * FROM users WHERE id = ?".to_string()
-        });
-        let stats = cache.stats();
+        }).expect("prepare failed");
+        let stats = cache.stats().expect("stats failed");
         assert_eq!(stats.misses, 1);
         assert_eq!(stats.hits, 0);
 
         // Second call should hit
         let stmt2 = cache.prepare::<String, _>("test_query", || {
             "SELECT * FROM users WHERE id = ?".to_string()
-        });
-        let stats = cache.stats();
+        }).expect("prepare failed");
+        let stats = cache.stats().expect("stats failed");
         assert_eq!(stats.hits, 1);
 
         // Same SQL returned
@@ -44,11 +44,11 @@ mod prepared_cache_tests {
     fn test_prepared_cache_different_queries() {
         let cache = PreparedCache::new(100);
 
-        let stmt1 = cache.prepare::<String, _>("query1", || "SELECT 1".to_string());
-        let stmt2 = cache.prepare::<String, _>("query2", || "SELECT 2".to_string());
+        let stmt1 = cache.prepare::<String, _>("query1", || "SELECT 1".to_string()).expect("prepare failed");
+        let stmt2 = cache.prepare::<String, _>("query2", || "SELECT 2".to_string()).expect("prepare failed");
 
         assert_ne!(stmt1.sql(), stmt2.sql());
-        assert_eq!(cache.stats().size, 2);
+        assert_eq!(cache.stats().expect("stats failed").size, 2);
     }
 
     #[test]
@@ -59,11 +59,11 @@ mod prepared_cache_tests {
         for i in 0..10 {
             cache.prepare::<String, _>(&format!("query_{}", i), || {
                 format!("SELECT {}", i)
-            });
+            }).expect("prepare failed");
         }
 
         // Cache should have evicted some entries
-        let stats = cache.stats();
+        let stats = cache.stats().expect("stats failed");
         assert!(stats.size <= 4);
     }
 
@@ -102,7 +102,7 @@ mod prepared_cache_tests {
 
         let stmt = cache.prepare::<String, _>("global_test", || {
             "SELECT * FROM global_test".to_string()
-        });
+        }).expect("prepare failed");
 
         assert_eq!(stmt.sql(), "SELECT * FROM global_test");
     }
@@ -112,13 +112,13 @@ mod prepared_cache_tests {
         let cache = PreparedCache::new(100);
 
         // 1 miss
-        cache.prepare::<String, _>("q1", || "SELECT 1".to_string());
+        cache.prepare::<String, _>("q1", || "SELECT 1".to_string()).expect("prepare failed");
         // 3 hits
-        cache.prepare::<String, _>("q1", || "SELECT 1".to_string());
-        cache.prepare::<String, _>("q1", || "SELECT 1".to_string());
-        cache.prepare::<String, _>("q1", || "SELECT 1".to_string());
+        cache.prepare::<String, _>("q1", || "SELECT 1".to_string()).expect("prepare failed");
+        cache.prepare::<String, _>("q1", || "SELECT 1".to_string()).expect("prepare failed");
+        cache.prepare::<String, _>("q1", || "SELECT 1".to_string()).expect("prepare failed");
 
-        let stats = cache.stats();
+        let stats = cache.stats().expect("stats failed");
         assert!((stats.hit_rate() - 0.75).abs() < 0.01);
     }
 
@@ -126,12 +126,12 @@ mod prepared_cache_tests {
     fn test_cache_clear() {
         let cache = PreparedCache::new(100);
 
-        cache.prepare::<String, _>("q1", || "SELECT 1".to_string());
-        cache.prepare::<String, _>("q2", || "SELECT 2".to_string());
-        assert_eq!(cache.stats().size, 2);
+        cache.prepare::<String, _>("q1", || "SELECT 1".to_string()).expect("prepare failed");
+        cache.prepare::<String, _>("q2", || "SELECT 2".to_string()).expect("prepare failed");
+        assert_eq!(cache.stats().expect("stats failed").size, 2);
 
-        cache.clear();
-        assert_eq!(cache.stats().size, 0);
+        cache.clear().expect("clear failed");
+        assert_eq!(cache.stats().expect("stats failed").size, 0);
     }
 }
 
@@ -708,9 +708,9 @@ mod interner_tests {
     fn test_interner_basic() {
         let interner = ColumnInterner::new();
 
-        let sym1 = interner.intern("id");
-        let sym2 = interner.intern("name");
-        let sym3 = interner.intern("id"); // Same as sym1
+        let sym1 = interner.intern("id").expect("intern failed");
+        let sym2 = interner.intern("name").expect("intern failed");
+        let sym3 = interner.intern("id").expect("intern failed"); // Same as sym1
 
         assert_eq!(sym1, sym3);
         assert_ne!(sym1, sym2);
@@ -720,8 +720,8 @@ mod interner_tests {
     fn test_interner_resolve() {
         let interner = ColumnInterner::new();
 
-        let sym = interner.intern("test_column");
-        let resolved = interner.resolve(sym);
+        let sym = interner.intern("test_column").expect("intern failed");
+        let resolved = interner.resolve(sym).expect("resolve failed");
 
         assert_eq!(resolved, Some("test_column".to_owned()));
     }
@@ -731,19 +731,19 @@ mod interner_tests {
         let interner = ColumnInterner::new();
 
         // Not interned yet
-        assert!(interner.get("missing").is_none());
+        assert!(interner.get("missing").expect("get failed").is_none());
 
         // After interning
-        interner.intern("present");
-        assert!(interner.get("present").is_some());
+        interner.intern("present").expect("intern failed");
+        assert!(interner.get("present").expect("get failed").is_some());
     }
 
     #[test]
     fn test_interner_with_resolved() {
         let interner = ColumnInterner::new();
-        let sym = interner.intern("test");
+        let sym = interner.intern("test").expect("intern failed");
 
-        let len = interner.with_resolved(sym, |s| s.len());
+        let len = interner.with_resolved(sym, |s| s.len()).expect("with_resolved failed");
         assert_eq!(len, Some(4));
     }
 
@@ -751,42 +751,42 @@ mod interner_tests {
     fn test_interner_len() {
         let interner = ColumnInterner::new();
 
-        assert_eq!(interner.len(), 0);
-        assert!(interner.is_empty());
+        assert_eq!(interner.len().expect("len failed"), 0);
+        assert!(interner.is_empty().expect("is_empty failed"));
 
-        interner.intern("a");
-        interner.intern("b");
-        interner.intern("a"); // Duplicate
+        interner.intern("a").expect("intern failed");
+        interner.intern("b").expect("intern failed");
+        interner.intern("a").expect("intern failed"); // Duplicate
 
-        assert_eq!(interner.len(), 2);
-        assert!(!interner.is_empty());
+        assert_eq!(interner.len().expect("len failed"), 2);
+        assert!(!interner.is_empty().expect("is_empty failed"));
     }
 
     #[test]
     fn test_interner_clear() {
         let interner = ColumnInterner::new();
 
-        interner.intern("a");
-        interner.intern("b");
-        assert_eq!(interner.len(), 2);
+        interner.intern("a").expect("intern failed");
+        interner.intern("b").expect("intern failed");
+        assert_eq!(interner.len().expect("len failed"), 2);
 
-        interner.clear();
-        assert_eq!(interner.len(), 0);
+        interner.clear().expect("clear failed");
+        assert_eq!(interner.len().expect("len failed"), 0);
     }
 
     #[test]
     fn test_global_interner() {
-        let sym1 = intern("global_test_1");
-        let sym2 = intern("global_test_1");
+        let sym1 = intern("global_test_1").expect("intern failed");
+        let sym2 = intern("global_test_1").expect("intern failed");
         assert_eq!(sym1, sym2);
 
-        let resolved = resolve(sym1);
+        let resolved = resolve(sym1).expect("resolve failed");
         assert_eq!(resolved, Some("global_test_1".to_owned()));
     }
 
     #[test]
     fn test_interned_schema() {
-        let schema = InternedSchema::new(&["id", "name", "age"]);
+        let schema = InternedSchema::new(&["id", "name", "age"]).expect("new failed");
 
         assert_eq!(schema.len(), 3);
         assert!(!schema.is_empty());
@@ -794,36 +794,36 @@ mod interner_tests {
 
     #[test]
     fn test_interned_schema_column_name() {
-        let schema = InternedSchema::new(&["id", "name", "age"]);
+        let schema = InternedSchema::new(&["id", "name", "age"]).expect("new failed");
 
-        assert_eq!(schema.column_name(0), Some("id".to_owned()));
-        assert_eq!(schema.column_name(1), Some("name".to_owned()));
-        assert_eq!(schema.column_name(2), Some("age".to_owned()));
-        assert_eq!(schema.column_name(3), None);
+        assert_eq!(schema.column_name(0).expect("column_name failed"), Some("id".to_owned()));
+        assert_eq!(schema.column_name(1).expect("column_name failed"), Some("name".to_owned()));
+        assert_eq!(schema.column_name(2).expect("column_name failed"), Some("age".to_owned()));
+        assert_eq!(schema.column_name(3).expect("column_name failed"), None);
     }
 
     #[test]
     fn test_interned_schema_find_column() {
-        let schema = InternedSchema::new(&["id", "name", "age"]);
+        let schema = InternedSchema::new(&["id", "name", "age"]).expect("new failed");
 
-        assert_eq!(schema.find_column("id"), Some(0));
-        assert_eq!(schema.find_column("name"), Some(1));
-        assert_eq!(schema.find_column("age"), Some(2));
-        assert_eq!(schema.find_column("missing"), None);
+        assert_eq!(schema.find_column("id").expect("find_column failed"), Some(0));
+        assert_eq!(schema.find_column("name").expect("find_column failed"), Some(1));
+        assert_eq!(schema.find_column("age").expect("find_column failed"), Some(2));
+        assert_eq!(schema.find_column("missing").expect("find_column failed"), None);
     }
 
     #[test]
     fn test_interned_schema_from_strings() {
         let columns = vec!["col1".to_string(), "col2".to_string()];
-        let schema = InternedSchema::from_strings(&columns);
+        let schema = InternedSchema::from_strings(&columns).expect("from_strings failed");
 
         assert_eq!(schema.len(), 2);
-        assert_eq!(schema.column_name(0), Some("col1".to_owned()));
+        assert_eq!(schema.column_name(0).expect("column_name failed"), Some("col1".to_owned()));
     }
 
     #[test]
     fn test_interned_schema_iter() {
-        let schema = InternedSchema::new(&["a", "b", "c"]);
+        let schema = InternedSchema::new(&["a", "b", "c"]).expect("new failed");
         let symbols: Vec<_> = schema.iter().collect();
 
         assert_eq!(symbols.len(), 3);
@@ -831,7 +831,7 @@ mod interner_tests {
 
     #[test]
     fn test_interned_schema_names() {
-        let schema = InternedSchema::new(&["x", "y", "z"]);
+        let schema = InternedSchema::new(&["x", "y", "z"]).expect("new failed");
         let names: Vec<_> = schema.names().collect();
 
         assert_eq!(names, vec!["x", "y", "z"]);
@@ -839,7 +839,7 @@ mod interner_tests {
 
     #[test]
     fn test_interned_row() {
-        let schema = InternedSchema::new(&["id", "name"]);
+        let schema = InternedSchema::new(&["id", "name"]).expect("new failed");
         let values = vec![vec![42, 0, 0, 0], b"alice".to_vec()];
         let row = InternedRow::new(&schema, values);
 
@@ -849,7 +849,7 @@ mod interner_tests {
 
     #[test]
     fn test_interned_row_get() {
-        let schema = InternedSchema::new(&["id", "name"]);
+        let schema = InternedSchema::new(&["id", "name"]).expect("new failed");
         let values = vec![vec![1, 2, 3, 4], b"test".to_vec()];
         let row = InternedRow::new(&schema, values);
 
@@ -860,13 +860,13 @@ mod interner_tests {
 
     #[test]
     fn test_interned_row_get_by_name() {
-        let schema = InternedSchema::new(&["id", "name"]);
+        let schema = InternedSchema::new(&["id", "name"]).expect("new failed");
         let values = vec![vec![42], b"alice".to_vec()];
         let row = InternedRow::new(&schema, values);
 
-        assert_eq!(row.get_by_name("id"), Some([42].as_slice()));
-        assert_eq!(row.get_by_name("name"), Some(b"alice".as_slice()));
-        assert_eq!(row.get_by_name("missing"), None);
+        assert_eq!(row.get_by_name("id").expect("get_by_name failed"), Some([42].as_slice()));
+        assert_eq!(row.get_by_name("name").expect("get_by_name failed"), Some(b"alice".as_slice()));
+        assert_eq!(row.get_by_name("missing").expect("get_by_name failed"), None);
     }
 }
 

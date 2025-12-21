@@ -1,3 +1,10 @@
+// Deny unwrap/expect in library code to prevent panics
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+// Allow in tests
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+#![cfg_attr(test, allow(clippy::expect_used))]
+
 //! Core traits and types for diesel-clickhouse.
 //!
 //! This crate provides the fundamental abstractions for building type-safe

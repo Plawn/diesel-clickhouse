@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
         .filter(events::user_id.eq(100u32))
         .order_by(events::timestamp.desc())
         .limit(10);
-    let sql = conn.build_sql(query);
+    let sql = conn.build_sql(query)?;
     println!("[OK] Build SQL: {}", sql);
 
     // =========================================================================
@@ -205,7 +205,7 @@ fn demo_mode() -> anyhow::Result<()> {
     // INSERT single
     let event = NewEvent { id: 1, user_id: 100, event_type: "click".into(), value: 1.5 };
     let insert = insert_into(events::table).values(&event);
-    println!("INSERT (single):\n  {}\n", insert.to_sql_string());
+    println!("INSERT (single):\n  {}\n", insert.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // INSERT batch
     let events = vec![
@@ -213,7 +213,7 @@ fn demo_mode() -> anyhow::Result<()> {
         NewEvent { id: 3, user_id: 200, event_type: "click".into(), value: 2.0 },
     ];
     let insert_batch = insert_into(events::table).values(events.as_slice());
-    println!("INSERT (batch):\n  {}\n", insert_batch.to_sql_string());
+    println!("INSERT (batch):\n  {}\n", insert_batch.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // SELECT with filter
     let select = events::table
@@ -221,30 +221,30 @@ fn demo_mode() -> anyhow::Result<()> {
         .and_filter(events::event_type.eq("click"))
         .order_by(events::timestamp.desc())
         .limit(10);
-    println!("SELECT:\n  {}\n", select.to_sql_string());
+    println!("SELECT:\n  {}\n", select.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // UPDATE
     let upd = update(events::table)
         .filter(events::id.eq(1u64))
         .set(events::value.eq(10.0));
-    println!("UPDATE:\n  {}\n", upd.to_sql_string());
+    println!("UPDATE:\n  {}\n", upd.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // DELETE
     let del = delete(events::table).filter(events::id.eq(1u64));
-    println!("DELETE:\n  {}\n", del.to_sql_string());
+    println!("DELETE:\n  {}\n", del.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // Aggregation with GROUP BY
     let agg = events::table
         .select((events::user_id, count(events::id), sum(events::value)))
         .group_by(events::user_id)
         .order_by(count(events::id).desc());
-    println!("AGGREGATION:\n  {}\n", agg.to_sql_string());
+    println!("AGGREGATION:\n  {}\n", agg.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // ClickHouse-specific: FINAL
-    println!("FINAL:\n  {}\n", events::table.final_().to_sql_string());
+    println!("FINAL:\n  {}\n", events::table.final_().to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // ClickHouse-specific: SAMPLE
-    println!("SAMPLE 10%:\n  {}", events::table.sample(0.1).to_sql_string());
+    println!("SAMPLE 10%:\n  {}", events::table.sample(0.1).to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     Ok(())
 }

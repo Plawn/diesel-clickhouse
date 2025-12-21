@@ -27,7 +27,7 @@ use std::marker::PhantomData;
 use crate::core::backend::{ClickHouse, GenericQueryBuilder, GenericBindCollector, QueryBuilder};
 use crate::core::query_builder::{AstPass, Insertable};
 use crate::core::query_source::Table;
-use crate::core::result::QueryResult;
+use crate::core::result::{Error, QueryResult};
 use crate::Connection;
 
 /// Configuration for async insert mode.
@@ -304,13 +304,11 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     ///
     /// Automatically flushes when the buffer is full.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal Mutex is poisoned.
+    /// Returns an error if the internal Mutex is poisoned.
     pub async fn push(&self, row: R) -> QueryResult<()> {
         let should_flush = {
             let mut buffer = self.buffer.lock()
-                .expect("BufferedAsyncInserter Mutex poisoned");
+                .map_err(|_| Error::QueryError("BufferedAsyncInserter Mutex poisoned".to_string()))?;
             buffer.push(row);
             buffer.len() >= self.buffer_size
         };
@@ -324,13 +322,11 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
 
     /// Flush the local buffer to the server.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal Mutex is poisoned.
+    /// Returns an error if the internal Mutex is poisoned.
     pub async fn flush_buffer(&self) -> QueryResult<()> {
         let rows: Vec<R> = {
             let mut buffer = self.buffer.lock()
-                .expect("BufferedAsyncInserter Mutex poisoned");
+                .map_err(|_| Error::QueryError("BufferedAsyncInserter Mutex poisoned".to_string()))?;
             std::mem::take(&mut *buffer)
         };
 
@@ -349,13 +345,11 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
 
     /// Get the number of rows currently buffered locally.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal Mutex is poisoned.
-    pub fn buffered_count(&self) -> usize {
-        self.buffer.lock()
-            .expect("BufferedAsyncInserter Mutex poisoned")
-            .len()
+    /// Returns an error if the internal Mutex is poisoned.
+    pub fn buffered_count(&self) -> QueryResult<usize> {
+        let buffer = self.buffer.lock()
+            .map_err(|_| Error::QueryError("BufferedAsyncInserter Mutex poisoned".to_string()))?;
+        Ok(buffer.len())
     }
 
     /// Get total insert count.

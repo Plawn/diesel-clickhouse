@@ -206,12 +206,12 @@ impl NativeConnection {
     where
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = build_sql(query);
+        let sql = build_sql(query)?;
         self.execute_raw(&sql).await
     }
 
     /// Build SQL from a query fragment without executing.
-    pub fn build_query<Q>(&self, query: &Q) -> String
+    pub fn build_query<Q>(&self, query: &Q) -> QueryResult<String>
     where
         Q: QueryFragment<ClickHouse>,
     {
@@ -244,7 +244,7 @@ impl NativeConnection {
     where
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = build_sql(&query);
+        let sql = build_sql(&query)?;
         self.query_raw(&sql).await
     }
 
@@ -307,7 +307,7 @@ impl AsyncConnection for NativeConnection {
         T: QueryFragment<Self::Backend> + Send,
         U: FromRow + Send,
     {
-        let sql = build_sql(&query);
+        let sql = build_sql(&query)?;
         Err(Error::QueryError(format!(
             "Use conn.query(q).await and process Block directly for: {}",
             sql
@@ -318,7 +318,7 @@ impl AsyncConnection for NativeConnection {
     where
         T: QueryFragment<Self::Backend> + Send,
     {
-        let sql = build_sql(&query);
+        let sql = build_sql(&query)?;
         self.execute_raw(&sql).await?;
         Ok(0)
     }
@@ -348,18 +348,13 @@ fn extract_database_from_url(url: &str) -> String {
 
 /// Build SQL from a QueryFragment.
 ///
-/// # Panics
-///
-/// Panics if the query fragment fails to produce valid SQL. This should only
-/// occur if there's a bug in the query builder implementation, as all valid
-/// query fragments should produce valid SQL.
-pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> String {
+/// Returns an error if the query fragment fails to produce valid SQL.
+pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
     let mut builder = GenericQueryBuilder::default();
     let mut collector = GenericBindCollector::default();
     let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-    fragment.walk_ast(pass)
-        .expect("QueryFragment::walk_ast failed - this indicates a bug in the query builder");
-    builder.finish()
+    fragment.walk_ast(pass)?;
+    Ok(builder.finish())
 }
 
 // =============================================================================
@@ -369,7 +364,9 @@ pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> String 
 /// Extension trait for query fragments to get SQL.
 pub trait ToSql: QueryFragment<ClickHouse> {
     /// Convert to SQL string.
-    fn to_sql_string(&self) -> String {
+    ///
+    /// Returns an error if the query fragment fails to produce valid SQL.
+    fn to_sql_string(&self) -> QueryResult<String> {
         build_sql(self)
     }
 }
@@ -428,7 +425,7 @@ impl ClickHouseConnectionTrait for NativeConnection {
     where
         Q: QueryFragment<ClickHouse> + Send + Sync,
     {
-        let sql = build_sql(query);
+        let sql = build_sql(query)?;
         self.execute_raw(&sql).await
     }
 
@@ -437,11 +434,11 @@ impl ClickHouseConnectionTrait for NativeConnection {
         T: ClickHouseRowTrait,
         Q: QueryFragment<ClickHouse> + Send + Sync,
     {
-        let sql = build_sql(&query);
+        let sql = build_sql(&query)?;
         self.load_json(&sql).await
     }
 
-    fn build_sql<Q>(&self, query: &Q) -> String
+    fn build_sql<Q>(&self, query: &Q) -> QueryResult<String>
     where
         Q: QueryFragment<ClickHouse>,
     {
@@ -732,7 +729,7 @@ mod tests {
         }
 
         let query = SelectStatement::new(TestTable);
-        let result = build_sql(&query);
+        let result = build_sql(&query).expect("failed to build SQL");
         assert_eq!(result, "SELECT * FROM test_table");
     }
 

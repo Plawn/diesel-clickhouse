@@ -29,6 +29,7 @@ use std::time::Instant;
 
 use crate::core::backend::ClickHouse;
 use crate::core::query_builder::QueryFragment;
+use crate::core::result::{Error, QueryResult};
 
 /// A cache for prepared SQL statements.
 ///
@@ -88,10 +89,10 @@ impl PreparedCache {
     /// - `name`: A unique name for this query type
     /// - `build`: A closure that builds the query fragment
     ///
-    /// # Panics
+    /// # Returns
     ///
-    /// Panics if the internal RwLock is poisoned.
-    pub fn prepare<Q, F>(&self, name: &str, build: F) -> Arc<PreparedStatement>
+    /// Returns an error if the internal RwLock is poisoned or the query fails to build.
+    pub fn prepare<Q, F>(&self, name: &str, build: F) -> QueryResult<Arc<PreparedStatement>>
     where
         Q: QueryFragment<ClickHouse> + 'static,
         F: FnOnce() -> Q,
@@ -104,11 +105,11 @@ impl PreparedCache {
         // Fast path: check read lock first, update access time if found
         {
             let mut cache = self.cache.write()
-                .expect("PreparedCache RwLock poisoned during write");
+                .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
             if let Some(entry) = cache.get_mut(&key) {
                 self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 entry.last_accessed = Instant::now();
-                return Arc::clone(&entry.statement);
+                return Ok(Arc::clone(&entry.statement));
             }
         }
 
@@ -116,7 +117,7 @@ impl PreparedCache {
         self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let query = build();
-        let sql = build_sql(&query);
+        let sql = build_sql(&query)?;
         let stmt = Arc::new(PreparedStatement {
             sql,
             name: name.to_owned(),
@@ -124,12 +125,12 @@ impl PreparedCache {
 
         {
             let mut cache = self.cache.write()
-                .expect("PreparedCache RwLock poisoned during write");
+                .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
 
             // Check again in case another thread inserted
             if let Some(entry) = cache.get_mut(&key) {
                 entry.last_accessed = Instant::now();
-                return Arc::clone(&entry.statement);
+                return Ok(Arc::clone(&entry.statement));
             }
 
             // LRU eviction: remove least recently used entries when at capacity
@@ -156,14 +157,14 @@ impl PreparedCache {
             cache.insert(key, entry);
         }
 
-        stmt
+        Ok(stmt)
     }
 
     /// Prepare a query with a hash-based key.
     ///
     /// This is useful when you don't have a string name but want to
     /// cache based on the query structure.
-    pub fn prepare_hashed<Q, F>(&self, build: F) -> Arc<PreparedStatement>
+    pub fn prepare_hashed<Q, F>(&self, build: F) -> QueryResult<Arc<PreparedStatement>>
     where
         Q: QueryFragment<ClickHouse> + Hash + 'static,
         F: FnOnce() -> Q,
@@ -175,47 +176,42 @@ impl PreparedCache {
 
     /// Get cache statistics.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal RwLock is poisoned.
-    pub fn stats(&self) -> CacheStats {
-        CacheStats {
-            size: self.cache.read()
-                .expect("PreparedCache RwLock poisoned during read")
-                .len(),
+    /// Returns an error if the internal RwLock is poisoned.
+    pub fn stats(&self) -> QueryResult<CacheStats> {
+        let cache = self.cache.read()
+            .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
+        Ok(CacheStats {
+            size: cache.len(),
             max_size: self.max_size,
             hits: self.hits.load(std::sync::atomic::Ordering::Relaxed),
             misses: self.misses.load(std::sync::atomic::Ordering::Relaxed),
-        }
+        })
     }
 
     /// Clear all cached statements.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal RwLock is poisoned.
-    pub fn clear(&self) {
+    /// Returns an error if the internal RwLock is poisoned.
+    pub fn clear(&self) -> QueryResult<()> {
         self.cache.write()
-            .expect("PreparedCache RwLock poisoned during write")
+            .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?
             .clear();
+        Ok(())
     }
 
     /// Get a cached statement by name without building.
     ///
     /// Note: This does not update the LRU access time.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal RwLock is poisoned.
-    pub fn get(&self, name: &str) -> Option<Arc<PreparedStatement>> {
+    /// Returns an error if the internal RwLock is poisoned.
+    pub fn get(&self, name: &str) -> QueryResult<Option<Arc<PreparedStatement>>> {
         let cache = self.cache.read()
-            .expect("PreparedCache RwLock poisoned during read");
+            .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
         for (key, entry) in cache.iter() {
             if key.name == name {
-                return Some(Arc::clone(&entry.statement));
+                return Ok(Some(Arc::clone(&entry.statement)));
             }
         }
-        None
+        Ok(None)
     }
 }
 
@@ -431,15 +427,15 @@ impl CacheStats {
 }
 
 /// Build SQL from a query fragment.
-fn build_sql<Q: QueryFragment<ClickHouse>>(query: &Q) -> String {
+fn build_sql<Q: QueryFragment<ClickHouse>>(query: &Q) -> QueryResult<String> {
     use crate::core::backend::{GenericQueryBuilder, GenericBindCollector, QueryBuilder};
     use crate::core::query_builder::AstPass;
 
     let mut builder = GenericQueryBuilder::default();
     let mut collector = GenericBindCollector::default();
     let pass = AstPass::<ClickHouse>::new(&mut builder, &mut collector);
-    let _ = query.walk_ast(pass);
-    builder.finish()
+    query.walk_ast(pass)?;
+    Ok(builder.finish())
 }
 
 /// A query template with placeholders.
@@ -593,13 +589,15 @@ mod tests {
         let cache = PreparedCache::new(10);
 
         // First call should miss
-        let stmt1 = cache.prepare::<String, _>("test", || "SELECT 1".to_string());
-        assert_eq!(cache.stats().misses, 1);
-        assert_eq!(cache.stats().hits, 0);
+        let stmt1 = cache.prepare::<String, _>("test", || "SELECT 1".to_string())
+            .expect("prepare failed");
+        assert_eq!(cache.stats().expect("stats failed").misses, 1);
+        assert_eq!(cache.stats().expect("stats failed").hits, 0);
 
         // Second call should hit
-        let stmt2 = cache.prepare::<String, _>("test", || "SELECT 2".to_string());
-        assert_eq!(cache.stats().hits, 1);
+        let stmt2 = cache.prepare::<String, _>("test", || "SELECT 2".to_string())
+            .expect("prepare failed");
+        assert_eq!(cache.stats().expect("stats failed").hits, 1);
 
         // Should return same SQL (first one)
         assert_eq!(stmt1.sql, stmt2.sql);
@@ -691,11 +689,11 @@ mod tests {
     fn test_cache_stats() {
         let cache = PreparedCache::new(10);
 
-        cache.prepare::<String, _>("q1", || "SELECT 1".to_string());
-        cache.prepare::<String, _>("q1", || "SELECT 1".to_string());
-        cache.prepare::<String, _>("q2", || "SELECT 2".to_string());
+        cache.prepare::<String, _>("q1", || "SELECT 1".to_string()).expect("prepare failed");
+        cache.prepare::<String, _>("q1", || "SELECT 1".to_string()).expect("prepare failed");
+        cache.prepare::<String, _>("q2", || "SELECT 2".to_string()).expect("prepare failed");
 
-        let stats = cache.stats();
+        let stats = cache.stats().expect("stats failed");
         assert_eq!(stats.size, 2);
         assert_eq!(stats.hits, 1);
         assert_eq!(stats.misses, 2);

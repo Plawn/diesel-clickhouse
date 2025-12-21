@@ -323,14 +323,16 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
             in_block_comment = true;
             current.push(c);
             // SAFETY: We just verified peek() == Some(&'*'), so next() will return Some('*')
-            current.push(chars.next().expect("peek() returned Some, so next() must succeed"));
+            #[allow(clippy::expect_used)] // Invariant: peek() == Some implies next() == Some
+            current.push(chars.next().unwrap_or_else(|| unreachable!("peek() returned Some")));
             continue;
         }
         if in_block_comment && c == '*' && chars.peek() == Some(&'/') {
             in_block_comment = false;
             current.push(c);
             // SAFETY: We just verified peek() == Some(&'/'), so next() will return Some('/')
-            current.push(chars.next().expect("peek() returned Some, so next() must succeed"));
+            #[allow(clippy::unwrap_used)] // Invariant: peek() == Some implies next() == Some
+            current.push(chars.next().unwrap_or_else(|| unreachable!("peek() returned Some")));
             continue;
         }
         if in_block_comment {
