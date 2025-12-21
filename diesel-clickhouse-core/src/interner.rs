@@ -60,54 +60,80 @@ impl ColumnInterner {
     ///
     /// If the string was already interned, returns the existing symbol.
     /// Otherwise, stores the string and returns a new symbol.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal RwLock is poisoned.
     #[inline]
     pub fn intern(&self, s: &str) -> Symbol {
         // Fast path: check if already interned (read lock)
         {
-            let interner = self.inner.read().unwrap();
+            let interner = self.inner.read()
+                .expect("ColumnInterner RwLock poisoned during read");
             if let Some(sym) = interner.get(s) {
                 return sym;
             }
         }
 
         // Slow path: intern the string (write lock)
-        let mut interner = self.inner.write().unwrap();
+        let mut interner = self.inner.write()
+            .expect("ColumnInterner RwLock poisoned during write");
         interner.get_or_intern(s)
     }
 
     /// Get the symbol for a string if it was already interned.
     ///
     /// Returns `None` if the string has not been interned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal RwLock is poisoned.
     #[inline]
     pub fn get(&self, s: &str) -> Option<Symbol> {
-        let interner = self.inner.read().unwrap();
+        let interner = self.inner.read()
+            .expect("ColumnInterner RwLock poisoned during read");
         interner.get(s)
     }
 
     /// Resolve a symbol back to its string.
     ///
     /// Returns `None` if the symbol is invalid.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal RwLock is poisoned.
     #[inline]
     pub fn resolve(&self, sym: Symbol) -> Option<String> {
-        let interner = self.inner.read().unwrap();
+        let interner = self.inner.read()
+            .expect("ColumnInterner RwLock poisoned during read");
         interner.resolve(sym).map(|s| s.to_owned())
     }
 
     /// Resolve a symbol, returning a reference via a closure.
     ///
     /// This avoids allocating a new string.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal RwLock is poisoned.
     #[inline]
     pub fn with_resolved<F, R>(&self, sym: Symbol, f: F) -> Option<R>
     where
         F: FnOnce(&str) -> R,
     {
-        let interner = self.inner.read().unwrap();
+        let interner = self.inner.read()
+            .expect("ColumnInterner RwLock poisoned during read");
         interner.resolve(sym).map(f)
     }
 
     /// Get the number of interned strings.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal RwLock is poisoned.
     pub fn len(&self) -> usize {
-        let interner = self.inner.read().unwrap();
+        let interner = self.inner.read()
+            .expect("ColumnInterner RwLock poisoned during read");
         interner.len()
     }
 
@@ -119,8 +145,13 @@ impl ColumnInterner {
     /// Clear all interned strings.
     ///
     /// Warning: This invalidates all existing symbols!
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal RwLock is poisoned.
     pub fn clear(&self) {
-        let mut interner = self.inner.write().unwrap();
+        let mut interner = self.inner.write()
+            .expect("ColumnInterner RwLock poisoned during write");
         *interner = StringInterner::<DefaultBackend>::new();
     }
 }

@@ -72,6 +72,21 @@ use crate::core::query_builder::{AstPass, QueryFragment};
 use crate::core::result::{Error, QueryResult};
 use crate::core::row::ClickHouseRow as ClickHouseRowTrait;
 
+// =============================================================================
+// SQL Escaping Utilities
+// =============================================================================
+
+/// Escape an identifier for use in SQL (table names, column names).
+/// Wraps in backticks and escapes any backticks within.
+#[inline]
+fn escape_identifier(s: &str) -> String {
+    if s.contains('`') {
+        format!("`{}`", s.replace('`', "``"))
+    } else {
+        format!("`{}`", s)
+    }
+}
+
 // Re-export clickhouse Row for convenience (for users who need direct clickhouse crate access)
 pub use clickhouse::Row as NativeClickHouseRow;
 
@@ -267,11 +282,18 @@ impl AsyncConnection for ClickHouseConnection {
 // =============================================================================
 
 /// Build SQL from a QueryFragment.
+///
+/// # Panics
+///
+/// Panics if the query fragment fails to produce valid SQL. This should only
+/// occur if there's a bug in the query builder implementation, as all valid
+/// query fragments should produce valid SQL.
 pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> String {
     let mut builder = GenericQueryBuilder::default();
     let mut collector = GenericBindCollector::default();
     let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-    fragment.walk_ast(pass).unwrap();
+    fragment.walk_ast(pass)
+        .expect("QueryFragment::walk_ast failed - this indicates a bug in the query builder");
     builder.finish()
 }
 
@@ -365,13 +387,20 @@ impl ClickHouseConnection {
 
     /// Insert rows into a table using raw SQL values.
     ///
+    /// # Safety
+    ///
+    /// The `sql_values` parameter is inserted directly into the SQL query.
+    /// The caller is responsible for properly escaping any user-provided data
+    /// within `sql_values` to prevent SQL injection.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
     /// conn.insert_raw("users", "(1, 'alice'), (2, 'bob')").await?;
     /// ```
     pub async fn insert_raw(&self, table_name: &str, sql_values: &str) -> QueryResult<()> {
-        let sql = format!("INSERT INTO {} VALUES {}", table_name, sql_values);
+        let escaped_table = escape_identifier(table_name);
+        let sql = format!("INSERT INTO {} VALUES {}", escaped_table, sql_values);
         self.execute_raw(&sql).await
     }
 

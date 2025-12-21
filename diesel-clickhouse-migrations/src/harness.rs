@@ -7,6 +7,21 @@ use crate::migration::{Migration, MigrationVersion};
 use crate::source::MigrationSource;
 use crate::table::MigrationsTable;
 
+// =============================================================================
+// SQL Escaping Utilities
+// =============================================================================
+
+/// Escape a string value for use in SQL single-quoted strings.
+/// Escapes single quotes by doubling them.
+#[inline]
+fn escape_sql_string(s: &str) -> String {
+    if s.contains('\'') {
+        s.replace('\'', "''")
+    } else {
+        s.to_string()
+    }
+}
+
 /// A connection that can run migrations.
 #[async_trait]
 pub trait MigrationConnection: Send {
@@ -97,12 +112,13 @@ pub trait MigrationHarness: MigrationConnection {
         let table = MigrationsTable::new();
         let checksum = migration.checksum();
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+        // Escape all values to prevent SQL injection
         let insert_sql = format!(
             "{} ('{}', '{}', '{}')",
             table.insert_sql(),
-            migration.version,
-            now,
-            checksum
+            escape_sql_string(&migration.version.to_string()),
+            escape_sql_string(&now),
+            escape_sql_string(&checksum)
         );
         self.execute(&insert_sql).await?;
 
@@ -306,13 +322,15 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
         if !in_string && !in_comment && c == '/' && chars.peek() == Some(&'*') {
             in_block_comment = true;
             current.push(c);
-            current.push(chars.next().unwrap());
+            // SAFETY: We just verified peek() == Some(&'*'), so next() will return Some('*')
+            current.push(chars.next().expect("peek() returned Some, so next() must succeed"));
             continue;
         }
         if in_block_comment && c == '*' && chars.peek() == Some(&'/') {
             in_block_comment = false;
             current.push(c);
-            current.push(chars.next().unwrap());
+            // SAFETY: We just verified peek() == Some(&'/'), so next() will return Some('/')
+            current.push(chars.next().expect("peek() returned Some, so next() must succeed"));
             continue;
         }
         if in_block_comment {

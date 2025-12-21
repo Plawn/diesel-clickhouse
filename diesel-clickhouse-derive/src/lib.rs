@@ -10,8 +10,49 @@
 use proc_macro::TokenStream;
 use quote::{quote, format_ident};
 use syn::{parse_macro_input, DeriveInput, Data, Fields, Ident, LitStr, Attribute};
+use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 
 mod table;
+
+// =============================================================================
+// Error Handling Helpers
+// =============================================================================
+
+/// Extract named fields from a DeriveInput, returning a compile error if not a struct with named fields.
+fn extract_named_fields<'a>(input: &'a DeriveInput, derive_name: &str) -> Result<&'a Punctuated<syn::Field, syn::Token![,]>, TokenStream> {
+    match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => Ok(&fields.named),
+            Fields::Unnamed(_) => Err(syn::Error::new(
+                data.fields.span(),
+                format!("{} can only be derived for structs with named fields, not tuple structs", derive_name)
+            ).to_compile_error().into()),
+            Fields::Unit => Err(syn::Error::new(
+                input.ident.span(),
+                format!("{} can only be derived for structs with named fields, not unit structs", derive_name)
+            ).to_compile_error().into()),
+        },
+        Data::Enum(e) => Err(syn::Error::new(
+            e.enum_token.span(),
+            format!("{} can only be derived for structs, not enums", derive_name)
+        ).to_compile_error().into()),
+        Data::Union(u) => Err(syn::Error::new(
+            u.union_token.span(),
+            format!("{} can only be derived for structs, not unions", derive_name)
+        ).to_compile_error().into()),
+    }
+}
+
+/// Get a required table attribute, returning a compile error if not present.
+fn require_table_attribute(attrs: &[Attribute], derive_name: &str) -> Result<syn::Path, TokenStream> {
+    get_table_attribute(attrs).ok_or_else(|| {
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            format!("#[diesel_clickhouse(table = ...)] attribute is required for {}", derive_name)
+        ).to_compile_error().into()
+    })
+}
 
 /// Define a ClickHouse table schema.
 ///
@@ -95,12 +136,9 @@ pub fn derive_row(input: TokenStream) -> TokenStream {
     let generics = &input.generics;
     let (_impl_generics, _ty_generics, where_clause) = generics.split_for_impl();
 
-    let fields = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => &fields.named,
-            _ => panic!("Row can only be derived for structs with named fields"),
-        },
-        _ => panic!("Row can only be derived for structs"),
+    let fields = match extract_named_fields(&input, "Row") {
+        Ok(fields) => fields,
+        Err(err) => return err,
     };
 
     // Collect field info
@@ -108,12 +146,18 @@ pub fn derive_row(input: TokenStream) -> TokenStream {
     let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
     let field_types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
     let column_names: Vec<String> = fields.iter()
-        .map(|f| get_column_name(f).unwrap_or_else(|| f.ident.as_ref().unwrap().to_string()))
+        .map(|f| get_column_name(f).unwrap_or_else(|| {
+            f.ident.as_ref()
+                .expect("Named fields always have identifiers")
+                .to_string()
+        }))
         .collect();
 
     // Generate serde rename attributes for Deserialize
     let serde_field_attrs: Vec<_> = column_names.iter().zip(field_names.iter()).map(|(col, field)| {
-        let field_str = field.as_ref().unwrap().to_string();
+        let field_str = field.as_ref()
+            .expect("Named fields always have identifiers")
+            .to_string();
         if col != &field_str {
             quote! { #[serde(rename = #col)] }
         } else {
@@ -191,17 +235,18 @@ pub fn derive_queryable(input: TokenStream) -> TokenStream {
     let generics = &input.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let fields = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => &fields.named,
-            _ => panic!("Queryable can only be derived for structs with named fields"),
-        },
-        _ => panic!("Queryable can only be derived for structs"),
+    let fields = match extract_named_fields(&input, "Queryable") {
+        Ok(fields) => fields,
+        Err(err) => return err,
     };
 
     let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
     let field_names_str: Vec<_> = fields.iter()
-        .map(|f| get_column_name(f).unwrap_or_else(|| f.ident.as_ref().unwrap().to_string()))
+        .map(|f| get_column_name(f).unwrap_or_else(|| {
+            f.ident.as_ref()
+                .expect("Named fields always have identifiers")
+                .to_string()
+        }))
         .collect();
 
     let expanded = quote! {
@@ -243,19 +288,22 @@ pub fn derive_insertable(input: TokenStream) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     // Get table name from attribute
-    let table_path = get_table_attribute(&input.attrs)
-        .expect("#[diesel_clickhouse(table = ...)] attribute is required for Insertable");
+    let table_path = match require_table_attribute(&input.attrs, "Insertable") {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
 
-    let fields = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => &fields.named,
-            _ => panic!("Insertable can only be derived for structs with named fields"),
-        },
-        _ => panic!("Insertable can only be derived for structs"),
+    let fields = match extract_named_fields(&input, "Insertable") {
+        Ok(fields) => fields,
+        Err(err) => return err,
     };
 
     let column_names: Vec<String> = fields.iter()
-        .map(|f| get_column_name(f).unwrap_or_else(|| f.ident.as_ref().unwrap().to_string()))
+        .map(|f| get_column_name(f).unwrap_or_else(|| {
+            f.ident.as_ref()
+                .expect("Named fields always have identifiers")
+                .to_string()
+        }))
         .collect();
 
     let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
@@ -328,20 +376,23 @@ pub fn derive_selectable(input: TokenStream) -> TokenStream {
     let generics = &input.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let table_path = get_table_attribute(&input.attrs)
-        .expect("#[diesel_clickhouse(table = ...)] attribute is required for Selectable");
+    let table_path = match require_table_attribute(&input.attrs, "Selectable") {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
 
-    let fields = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => &fields.named,
-            _ => panic!("Selectable can only be derived for structs with named fields"),
-        },
-        _ => panic!("Selectable can only be derived for structs"),
+    let fields = match extract_named_fields(&input, "Selectable") {
+        Ok(fields) => fields,
+        Err(err) => return err,
     };
 
     let column_refs: Vec<_> = fields.iter().map(|f| {
         let col_name = get_column_name(f)
-            .unwrap_or_else(|| f.ident.as_ref().unwrap().to_string());
+            .unwrap_or_else(|| {
+                f.ident.as_ref()
+                    .expect("Named fields always have identifiers")
+                    .to_string()
+            });
         let col_ident = format_ident!("{}", col_name);
         quote! { #table_path::#col_ident }
     }).collect();

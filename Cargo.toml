@@ -42,6 +42,38 @@ path = "examples/migrations_example.rs"
 name = "unified_connection"
 path = "examples/unified_connection.rs"
 
+[[example]]
+name = "connection_pooling"
+path = "examples/connection_pooling.rs"
+
+[[example]]
+name = "batch_inserts"
+path = "examples/batch_inserts.rs"
+
+[[example]]
+name = "async_inserts"
+path = "examples/async_inserts.rs"
+
+[[example]]
+name = "prepared_cache"
+path = "examples/prepared_cache.rs"
+
+[[example]]
+name = "metrics_observability"
+path = "examples/metrics_observability.rs"
+
+[[example]]
+name = "zero_copy_parsing"
+path = "examples/zero_copy_parsing.rs"
+
+[[example]]
+name = "parallel_processing"
+path = "examples/parallel_processing.rs"
+
+[[example]]
+name = "arena_allocation"
+path = "examples/arena_allocation.rs"
+
 # Dependencies for examples (workspace root package)
 [package]
 name = "diesel-clickhouse-examples"

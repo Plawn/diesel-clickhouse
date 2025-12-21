@@ -25,6 +25,7 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use crate::core::backend::ClickHouse;
 use crate::core::query_builder::QueryFragment;
@@ -33,12 +34,22 @@ use crate::core::query_builder::QueryFragment;
 ///
 /// The cache stores compiled SQL strings keyed by a unique identifier,
 /// avoiding repeated query building for frequently used queries.
+///
+/// Uses an LRU (Least Recently Used) eviction strategy when the cache
+/// reaches its maximum size.
 #[derive(Debug)]
 pub struct PreparedCache {
-    cache: RwLock<HashMap<CacheKey, Arc<PreparedStatement>>>,
+    cache: RwLock<HashMap<CacheKey, CacheEntry>>,
     max_size: usize,
     hits: std::sync::atomic::AtomicU64,
     misses: std::sync::atomic::AtomicU64,
+}
+
+/// An entry in the prepared cache, including LRU metadata.
+#[derive(Debug, Clone)]
+struct CacheEntry {
+    statement: Arc<PreparedStatement>,
+    last_accessed: Instant,
 }
 
 /// Key for cache lookup.
@@ -76,6 +87,10 @@ impl PreparedCache {
     ///
     /// - `name`: A unique name for this query type
     /// - `build`: A closure that builds the query fragment
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal RwLock is poisoned.
     pub fn prepare<Q, F>(&self, name: &str, build: F) -> Arc<PreparedStatement>
     where
         Q: QueryFragment<ClickHouse> + 'static,
@@ -86,12 +101,14 @@ impl PreparedCache {
             type_id: TypeId::of::<Q>(),
         };
 
-        // Fast path: check read lock first
+        // Fast path: check read lock first, update access time if found
         {
-            let cache = self.cache.read().unwrap();
-            if let Some(stmt) = cache.get(&key) {
+            let mut cache = self.cache.write()
+                .expect("PreparedCache RwLock poisoned during write");
+            if let Some(entry) = cache.get_mut(&key) {
                 self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return Arc::clone(stmt);
+                entry.last_accessed = Instant::now();
+                return Arc::clone(&entry.statement);
             }
         }
 
@@ -106,25 +123,37 @@ impl PreparedCache {
         });
 
         {
-            let mut cache = self.cache.write().unwrap();
+            let mut cache = self.cache.write()
+                .expect("PreparedCache RwLock poisoned during write");
 
             // Check again in case another thread inserted
-            if let Some(existing) = cache.get(&key) {
-                return Arc::clone(existing);
+            if let Some(entry) = cache.get_mut(&key) {
+                entry.last_accessed = Instant::now();
+                return Arc::clone(&entry.statement);
             }
 
-            // Evict if necessary (simple strategy: clear half)
+            // LRU eviction: remove least recently used entries when at capacity
             if cache.len() >= self.max_size {
-                let to_remove: Vec<_> = cache.keys()
-                    .take(self.max_size / 2)
-                    .cloned()
+                // Find entries to evict (oldest half)
+                let evict_count = self.max_size / 2;
+                let mut entries: Vec<_> = cache.iter()
+                    .map(|(k, e)| (k.clone(), e.last_accessed))
                     .collect();
-                for k in to_remove {
-                    cache.remove(&k);
+
+                // Sort by last accessed time (oldest first)
+                entries.sort_by_key(|(_, time)| *time);
+
+                // Remove oldest entries
+                for (key, _) in entries.into_iter().take(evict_count) {
+                    cache.remove(&key);
                 }
             }
 
-            cache.insert(key, Arc::clone(&stmt));
+            let entry = CacheEntry {
+                statement: Arc::clone(&stmt),
+                last_accessed: Instant::now(),
+            };
+            cache.insert(key, entry);
         }
 
         stmt
@@ -145,9 +174,15 @@ impl PreparedCache {
     }
 
     /// Get cache statistics.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal RwLock is poisoned.
     pub fn stats(&self) -> CacheStats {
         CacheStats {
-            size: self.cache.read().unwrap().len(),
+            size: self.cache.read()
+                .expect("PreparedCache RwLock poisoned during read")
+                .len(),
             max_size: self.max_size,
             hits: self.hits.load(std::sync::atomic::Ordering::Relaxed),
             misses: self.misses.load(std::sync::atomic::Ordering::Relaxed),
@@ -155,16 +190,29 @@ impl PreparedCache {
     }
 
     /// Clear all cached statements.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal RwLock is poisoned.
     pub fn clear(&self) {
-        self.cache.write().unwrap().clear();
+        self.cache.write()
+            .expect("PreparedCache RwLock poisoned during write")
+            .clear();
     }
 
     /// Get a cached statement by name without building.
+    ///
+    /// Note: This does not update the LRU access time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal RwLock is poisoned.
     pub fn get(&self, name: &str) -> Option<Arc<PreparedStatement>> {
-        let cache = self.cache.read().unwrap();
-        for (key, stmt) in cache.iter() {
+        let cache = self.cache.read()
+            .expect("PreparedCache RwLock poisoned during read");
+        for (key, entry) in cache.iter() {
             if key.name == name {
-                return Some(Arc::clone(stmt));
+                return Some(Arc::clone(&entry.statement));
             }
         }
         None
@@ -184,6 +232,21 @@ pub struct PreparedStatement {
     pub sql: String,
     /// The name/identifier of this statement.
     pub name: String,
+}
+
+// =============================================================================
+// SQL Escaping Utilities
+// =============================================================================
+
+/// Escape a string value for use in SQL single-quoted strings.
+/// Escapes single quotes by doubling them.
+#[inline]
+fn escape_sql_string(s: &str) -> String {
+    if s.contains('\'') {
+        s.replace('\'', "''")
+    } else {
+        s.to_string()
+    }
 }
 
 impl PreparedStatement {
@@ -207,7 +270,16 @@ impl PreparedStatement {
 
     /// Create a SQL string with parameters substituted.
     ///
+    /// # Safety Warning
+    ///
+    /// This method performs **no SQL escaping**. The parameters are inserted
+    /// directly into the SQL string. This is **unsafe** if the parameters
+    /// contain user-provided data.
+    ///
+    /// For safe parameter substitution, use [`with_params_escaped`] instead.
+    ///
     /// This replaces `?` placeholders with the provided values.
+    #[deprecated(since = "0.2.0", note = "Use with_params_escaped for safe parameter substitution")]
     pub fn with_params(&self, params: &[&dyn std::fmt::Display]) -> String {
         let mut result = String::with_capacity(self.sql.len() + params.len() * 10);
         let mut param_idx = 0;
@@ -222,6 +294,114 @@ impl PreparedStatement {
         }
 
         result
+    }
+
+    /// Create a SQL string with parameters safely substituted.
+    ///
+    /// This replaces `?` placeholders with the provided values, properly
+    /// escaping string values to prevent SQL injection.
+    ///
+    /// # Parameters
+    ///
+    /// Parameters are wrapped based on their type:
+    /// - Strings are quoted and escaped (single quotes doubled)
+    /// - Numbers are inserted as-is
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let stmt = PreparedStatement::new("find_user", "SELECT * FROM users WHERE name = ?");
+    /// let sql = stmt.with_params_escaped(&[SqlParam::String("O'Brien")]);
+    /// // Result: SELECT * FROM users WHERE name = 'O''Brien'
+    /// ```
+    pub fn with_params_escaped(&self, params: &[SqlParam<'_>]) -> String {
+        let mut result = String::with_capacity(self.sql.len() + params.len() * 20);
+        let mut param_idx = 0;
+
+        for c in self.sql.chars() {
+            if c == '?' && param_idx < params.len() {
+                match &params[param_idx] {
+                    SqlParam::String(s) => {
+                        result.push('\'');
+                        result.push_str(&escape_sql_string(s));
+                        result.push('\'');
+                    }
+                    SqlParam::Int(n) => {
+                        result.push_str(&n.to_string());
+                    }
+                    SqlParam::UInt(n) => {
+                        result.push_str(&n.to_string());
+                    }
+                    SqlParam::Float(n) => {
+                        result.push_str(&n.to_string());
+                    }
+                    SqlParam::Bool(b) => {
+                        result.push_str(if *b { "true" } else { "false" });
+                    }
+                    SqlParam::Null => {
+                        result.push_str("NULL");
+                    }
+                    SqlParam::Raw(s) => {
+                        // Raw is unescaped - user takes responsibility
+                        result.push_str(s);
+                    }
+                }
+                param_idx += 1;
+            } else {
+                result.push(c);
+            }
+        }
+
+        result
+    }
+}
+
+/// A typed SQL parameter for safe query building.
+#[derive(Debug, Clone)]
+pub enum SqlParam<'a> {
+    /// A string value (will be quoted and escaped).
+    String(&'a str),
+    /// A signed integer.
+    Int(i64),
+    /// An unsigned integer.
+    UInt(u64),
+    /// A floating point number.
+    Float(f64),
+    /// A boolean value.
+    Bool(bool),
+    /// A NULL value.
+    Null,
+    /// A raw SQL fragment (no escaping - use with caution).
+    Raw(&'a str),
+}
+
+impl<'a> From<&'a str> for SqlParam<'a> {
+    fn from(s: &'a str) -> Self {
+        SqlParam::String(s)
+    }
+}
+
+impl From<i64> for SqlParam<'_> {
+    fn from(n: i64) -> Self {
+        SqlParam::Int(n)
+    }
+}
+
+impl From<u64> for SqlParam<'_> {
+    fn from(n: u64) -> Self {
+        SqlParam::UInt(n)
+    }
+}
+
+impl From<f64> for SqlParam<'_> {
+    fn from(n: f64) -> Self {
+        SqlParam::Float(n)
+    }
+}
+
+impl From<bool> for SqlParam<'_> {
+    fn from(b: bool) -> Self {
+        SqlParam::Bool(b)
     }
 }
 
@@ -266,12 +446,38 @@ fn build_sql<Q: QueryFragment<ClickHouse>>(query: &Q) -> String {
 ///
 /// This allows creating parameterized queries that can be efficiently
 /// reused with different parameter values.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let tpl = QueryTemplate::new("SELECT * FROM {0} WHERE name = {1}");
+/// let sql = tpl.render_with_params(&[
+///     TemplateParam::Identifier("users"),
+///     TemplateParam::String("O'Brien"),
+/// ]);
+/// // Result: SELECT * FROM `users` WHERE name = 'O''Brien'
+/// ```
 #[derive(Debug, Clone)]
 pub struct QueryTemplate {
     /// The SQL template with `{0}`, `{1}`, etc. placeholders.
     template: String,
     /// Number of parameters.
     param_count: usize,
+}
+
+/// Parameter types for query templates.
+#[derive(Debug, Clone)]
+pub enum TemplateParam<'a> {
+    /// A SQL identifier (table name, column name) - will be backtick-escaped.
+    Identifier(&'a str),
+    /// A string value - will be single-quote escaped.
+    String(&'a str),
+    /// An integer value.
+    Int(i64),
+    /// An unsigned integer value.
+    UInt(u64),
+    /// A raw SQL fragment - no escaping (use with caution).
+    Raw(&'a str),
 }
 
 impl QueryTemplate {
@@ -292,7 +498,13 @@ impl QueryTemplate {
         self.param_count
     }
 
-    /// Render the template with the given parameters.
+    /// Render the template with the given parameters (no escaping).
+    ///
+    /// # Safety Warning
+    ///
+    /// This method performs **no SQL escaping**. Use [`render_with_params`]
+    /// for safe parameter substitution.
+    #[deprecated(since = "0.2.0", note = "Use render_with_params for safe parameter substitution")]
     pub fn render(&self, params: &[&str]) -> String {
         let mut result = self.template.clone();
         for (i, param) in params.iter().enumerate() {
@@ -302,12 +514,55 @@ impl QueryTemplate {
     }
 
     /// Render with SQL-escaped string parameters.
+    ///
+    /// Note: All parameters are treated as strings. Use [`render_with_params`]
+    /// for more control over parameter types.
+    #[deprecated(since = "0.2.0", note = "Use render_with_params for more control over parameter types")]
     pub fn render_escaped(&self, params: &[&str]) -> String {
         let escaped: Vec<String> = params.iter()
             .map(|s| format!("'{}'", s.replace('\'', "''")))
             .collect();
         let refs: Vec<&str> = escaped.iter().map(|s| s.as_str()).collect();
+        #[allow(deprecated)]
         self.render(&refs)
+    }
+
+    /// Render the template with typed parameters.
+    ///
+    /// This is the recommended method for safe query building.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let tpl = QueryTemplate::new("SELECT * FROM {0} WHERE name = {1} AND id = {2}");
+    /// let sql = tpl.render_with_params(&[
+    ///     TemplateParam::Identifier("users"),
+    ///     TemplateParam::String("O'Brien"),
+    ///     TemplateParam::Int(42),
+    /// ]);
+    /// // Result: SELECT * FROM `users` WHERE name = 'O''Brien' AND id = 42
+    /// ```
+    pub fn render_with_params(&self, params: &[TemplateParam<'_>]) -> String {
+        let mut result = self.template.clone();
+        for (i, param) in params.iter().enumerate() {
+            let replacement = match param {
+                TemplateParam::Identifier(s) => {
+                    if s.contains('`') {
+                        format!("`{}`", s.replace('`', "``"))
+                    } else {
+                        format!("`{}`", s)
+                    }
+                }
+                TemplateParam::String(s) => {
+                    format!("'{}'", escape_sql_string(s))
+                }
+                TemplateParam::Int(n) => n.to_string(),
+                TemplateParam::UInt(n) => n.to_string(),
+                TemplateParam::Raw(s) => s.to_string(),
+            };
+            result = result.replace(&format!("{{{}}}", i), &replacement);
+        }
+        result
     }
 }
 
@@ -351,19 +606,85 @@ mod tests {
     }
 
     #[test]
-    fn test_prepared_statement_with_params() {
+    #[allow(deprecated)]
+    fn test_prepared_statement_with_params_deprecated() {
         let stmt = PreparedStatement::new("test", "SELECT * FROM users WHERE id = ? AND name = ?");
-        let sql = stmt.with_params(&[&42, &"'alice'"]);
+        let sql = stmt.with_params(&[&42, &"alice"]);
+        assert_eq!(sql, "SELECT * FROM users WHERE id = 42 AND name = alice");
+    }
+
+    #[test]
+    fn test_prepared_statement_with_params_escaped() {
+        let stmt = PreparedStatement::new("test", "SELECT * FROM users WHERE id = ? AND name = ?");
+        let sql = stmt.with_params_escaped(&[SqlParam::Int(42), SqlParam::String("alice")]);
         assert_eq!(sql, "SELECT * FROM users WHERE id = 42 AND name = 'alice'");
     }
 
     #[test]
-    fn test_query_template() {
+    fn test_prepared_statement_sql_injection_prevention() {
+        let stmt = PreparedStatement::new("test", "SELECT * FROM users WHERE name = ?");
+        // Attempt SQL injection
+        let sql = stmt.with_params_escaped(&[SqlParam::String("'; DROP TABLE users; --")]);
+        // The single quote should be escaped: ' (open) + '' (escaped quote) + rest + ' (close)
+        assert_eq!(sql, "SELECT * FROM users WHERE name = '''; DROP TABLE users; --'");
+        // The original single quote is now escaped as two single quotes
+        assert!(sql.contains("'''"));  // open quote + escaped quote = three quotes
+    }
+
+    #[test]
+    fn test_sql_param_types() {
+        let stmt = PreparedStatement::new("test", "SELECT ? AS int, ? AS uint, ? AS float, ? AS bool, ? AS null");
+        let sql = stmt.with_params_escaped(&[
+            SqlParam::Int(-42),
+            SqlParam::UInt(100),
+            SqlParam::Float(3.14),
+            SqlParam::Bool(true),
+            SqlParam::Null,
+        ]);
+        assert_eq!(sql, "SELECT -42 AS int, 100 AS uint, 3.14 AS float, true AS bool, NULL AS null");
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_query_template_deprecated() {
         let tpl = QueryTemplate::new("SELECT * FROM {0} WHERE id = {1}");
         assert_eq!(tpl.param_count(), 2);
 
         let sql = tpl.render(&["users", "42"]);
         assert_eq!(sql, "SELECT * FROM users WHERE id = 42");
+    }
+
+    #[test]
+    fn test_query_template_with_params() {
+        let tpl = QueryTemplate::new("SELECT * FROM {0} WHERE id = {1}");
+        assert_eq!(tpl.param_count(), 2);
+
+        let sql = tpl.render_with_params(&[
+            TemplateParam::Identifier("users"),
+            TemplateParam::Int(42),
+        ]);
+        assert_eq!(sql, "SELECT * FROM `users` WHERE id = 42");
+    }
+
+    #[test]
+    fn test_query_template_sql_injection_prevention() {
+        let tpl = QueryTemplate::new("SELECT * FROM {0} WHERE name = {1}");
+
+        // Attempt SQL injection via table name
+        let sql = tpl.render_with_params(&[
+            TemplateParam::Identifier("users`; DROP TABLE users; --"),
+            TemplateParam::String("test"),
+        ]);
+        // Backticks should be escaped
+        assert!(sql.contains("`users``; DROP TABLE users; --`"));
+
+        // Attempt SQL injection via string value
+        let sql = tpl.render_with_params(&[
+            TemplateParam::Identifier("users"),
+            TemplateParam::String("'; DROP TABLE users; --"),
+        ]);
+        // Single quotes should be escaped
+        assert!(sql.contains("'''; DROP TABLE users; --'"));
     }
 
     #[test]

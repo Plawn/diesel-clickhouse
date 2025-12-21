@@ -125,11 +125,18 @@ struct PoolInner {
 
 impl PoolInner {
     fn return_connection(&self, conn: Connection) {
-        // Try to return to pool
-        let mut conns = self.connections.blocking_lock();
-        if conns.len() < self.config.max_size {
-            conns.push(conn);
+        // Try to return to pool using try_lock to avoid blocking
+        // If we can't get the lock, just drop the connection - this is safe
+        // because we still add the permit back
+        if let Ok(mut conns) = self.connections.try_lock() {
+            if conns.len() < self.config.max_size {
+                conns.push(conn);
+            }
+            // Connection is dropped if pool is full
         }
+        // else: Connection is dropped, which is acceptable
+
+        // Always add the permit back so another connection can be created
         self.available.add_permits(1);
     }
 }

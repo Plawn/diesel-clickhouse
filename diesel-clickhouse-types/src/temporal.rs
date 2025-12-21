@@ -60,6 +60,17 @@ mod chrono_impl {
     use super::*;
     use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 
+    /// Unix epoch date (1970-01-01).
+    ///
+    /// This is a helper function that returns the Unix epoch as a NaiveDate.
+    /// The date 1970-01-01 is always valid, so this will never panic.
+    #[inline]
+    fn unix_epoch() -> NaiveDate {
+        // SAFETY: 1970-01-01 is a valid date, this cannot fail
+        NaiveDate::from_ymd_opt(1970, 1, 1)
+            .expect("Unix epoch 1970-01-01 is always a valid date")
+    }
+
     impl HasSqlType for NaiveDate {
         type SqlType = Date;
     }
@@ -86,8 +97,7 @@ mod chrono_impl {
 
     impl ToClickHouse<Date> for NaiveDate {
         fn to_clickhouse(&self, out: &mut Vec<u8>) -> Result<(), SerializeError> {
-            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-            let days = self.signed_duration_since(epoch).num_days();
+            let days = self.signed_duration_since(unix_epoch()).num_days();
             if days < 0 || days > u16::MAX as i64 {
                 return Err(SerializeError::OutOfRange {
                     type_name: "Date".into(),
@@ -117,8 +127,7 @@ mod chrono_impl {
 
     impl ToClickHouse<Date32> for NaiveDate {
         fn to_clickhouse(&self, out: &mut Vec<u8>) -> Result<(), SerializeError> {
-            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-            let days = self.signed_duration_since(epoch).num_days() as i32;
+            let days = self.signed_duration_since(unix_epoch()).num_days() as i32;
             out.extend_from_slice(&days.to_le_bytes());
             Ok(())
         }

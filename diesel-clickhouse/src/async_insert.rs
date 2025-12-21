@@ -303,9 +303,14 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     /// Push a row to the buffer.
     ///
     /// Automatically flushes when the buffer is full.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal Mutex is poisoned.
     pub async fn push(&self, row: R) -> QueryResult<()> {
         let should_flush = {
-            let mut buffer = self.buffer.lock().unwrap();
+            let mut buffer = self.buffer.lock()
+                .expect("BufferedAsyncInserter Mutex poisoned");
             buffer.push(row);
             buffer.len() >= self.buffer_size
         };
@@ -318,9 +323,14 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     }
 
     /// Flush the local buffer to the server.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal Mutex is poisoned.
     pub async fn flush_buffer(&self) -> QueryResult<()> {
         let rows: Vec<R> = {
-            let mut buffer = self.buffer.lock().unwrap();
+            let mut buffer = self.buffer.lock()
+                .expect("BufferedAsyncInserter Mutex poisoned");
             std::mem::take(&mut *buffer)
         };
 
@@ -338,8 +348,14 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     }
 
     /// Get the number of rows currently buffered locally.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal Mutex is poisoned.
     pub fn buffered_count(&self) -> usize {
-        self.buffer.lock().unwrap().len()
+        self.buffer.lock()
+            .expect("BufferedAsyncInserter Mutex poisoned")
+            .len()
     }
 
     /// Get total insert count.

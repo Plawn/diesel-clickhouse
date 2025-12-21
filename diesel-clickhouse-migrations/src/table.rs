@@ -2,6 +2,32 @@
 
 use crate::DEFAULT_MIGRATIONS_TABLE;
 
+// =============================================================================
+// SQL Escaping Utilities
+// =============================================================================
+
+/// Escape a string value for use in SQL single-quoted strings.
+/// Escapes single quotes by doubling them.
+#[inline]
+fn escape_sql_string(s: &str) -> String {
+    if s.contains('\'') {
+        s.replace('\'', "''")
+    } else {
+        s.to_string()
+    }
+}
+
+/// Escape an identifier for use in SQL (table names, column names).
+/// Wraps in backticks and escapes any backticks within.
+#[inline]
+fn escape_identifier(s: &str) -> String {
+    if s.contains('`') {
+        format!("`{}`", s.replace('`', "``"))
+    } else {
+        format!("`{}`", s)
+    }
+}
+
 /// SQL for the migrations tracking table.
 pub struct MigrationsTable {
     /// The table name.
@@ -35,7 +61,7 @@ impl MigrationsTable {
             ENGINE = ReplacingMergeTree(run_on)
             ORDER BY version
             "#,
-            self.name
+            escape_identifier(&self.name)
         )
     }
 
@@ -43,7 +69,8 @@ impl MigrationsTable {
     pub fn exists_sql(&self, database: &str) -> String {
         format!(
             "SELECT 1 FROM system.tables WHERE database = '{}' AND name = '{}'",
-            database, self.name
+            escape_sql_string(database),
+            escape_sql_string(&self.name)
         )
     }
 
@@ -51,7 +78,7 @@ impl MigrationsTable {
     pub fn insert_sql(&self) -> String {
         format!(
             "INSERT INTO {} (version, run_on, checksum) VALUES",
-            self.name
+            escape_identifier(&self.name)
         )
     }
 
@@ -59,7 +86,8 @@ impl MigrationsTable {
     pub fn delete_sql(&self, version: &str) -> String {
         format!(
             "ALTER TABLE {} DELETE WHERE version = '{}'",
-            self.name, version
+            escape_identifier(&self.name),
+            escape_sql_string(version)
         )
     }
 
@@ -67,7 +95,7 @@ impl MigrationsTable {
     pub fn select_all_sql(&self) -> String {
         format!(
             "SELECT version, run_on, checksum FROM {} FINAL ORDER BY version",
-            self.name
+            escape_identifier(&self.name)
         )
     }
 
@@ -75,7 +103,8 @@ impl MigrationsTable {
     pub fn select_one_sql(&self, version: &str) -> String {
         format!(
             "SELECT version, run_on, checksum FROM {} FINAL WHERE version = '{}'",
-            self.name, version
+            escape_identifier(&self.name),
+            escape_sql_string(version)
         )
     }
 
@@ -83,13 +112,13 @@ impl MigrationsTable {
     pub fn select_latest_sql(&self) -> String {
         format!(
             "SELECT version FROM {} FINAL ORDER BY version DESC LIMIT 1",
-            self.name
+            escape_identifier(&self.name)
         )
     }
 
     /// SQL to count migrations.
     pub fn count_sql(&self) -> String {
-        format!("SELECT count() FROM {} FINAL", self.name)
+        format!("SELECT count() FROM {} FINAL", escape_identifier(&self.name))
     }
 }
 
@@ -120,6 +149,29 @@ mod tests {
     fn test_custom_table_name() {
         let table = MigrationsTable::with_name("my_migrations");
         assert_eq!(table.name, "my_migrations");
-        assert!(table.create_table_sql().contains("my_migrations"));
+        assert!(table.create_table_sql().contains("`my_migrations`"));
+    }
+
+    #[test]
+    fn test_sql_escaping() {
+        // Test that SQL injection is prevented
+        let table = MigrationsTable::with_name("test'; DROP TABLE users; --");
+        let sql = table.exists_sql("default");
+        // The name should be escaped, not executable
+        assert!(sql.contains("test''; DROP TABLE users; --"));
+        assert!(!sql.contains("test'; DROP"));
+
+        // Test identifier escaping
+        let table = MigrationsTable::with_name("test`name");
+        let sql = table.create_table_sql();
+        assert!(sql.contains("`test``name`"));
+    }
+
+    #[test]
+    fn test_version_escaping() {
+        let table = MigrationsTable::new();
+        let sql = table.delete_sql("v1'; DELETE FROM users; --");
+        // Single quotes should be escaped
+        assert!(sql.contains("v1''; DELETE FROM users; --"));
     }
 }
