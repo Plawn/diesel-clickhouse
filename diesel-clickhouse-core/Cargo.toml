@@ -16,3 +16,5 @@ diesel-clickhouse-types.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 serde.workspace = true
+itoa.workspace = true
+ryu.workspace = true

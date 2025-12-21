@@ -54,19 +54,33 @@ impl ClickHouseConnection {
         let parsed = url::Url::parse(url)
             .map_err(|e| Error::ConnectionError(format!("Invalid URL: {}", e)))?;
 
-        let database = parsed.path().trim_start_matches('/').to_string();
-        let database = if database.is_empty() {
-            "default".to_string()
+        let path = parsed.path().trim_start_matches('/');
+        let database = if path.is_empty() {
+            "default".to_owned()
         } else {
-            database
+            path.to_owned()
         };
 
-        let base_url = format!(
-            "{}://{}{}",
-            parsed.scheme(),
-            parsed.host_str().unwrap_or("localhost"),
-            parsed.port().map(|p| format!(":{}", p)).unwrap_or_default()
-        );
+        // Build URL efficiently without nested format! calls
+        let base_url = match parsed.port() {
+            Some(port) => {
+                let mut url = String::with_capacity(64);
+                url.push_str(parsed.scheme());
+                url.push_str("://");
+                url.push_str(parsed.host_str().unwrap_or("localhost"));
+                url.push(':');
+                let mut buf = itoa::Buffer::new();
+                url.push_str(buf.format(port));
+                url
+            }
+            None => {
+                let mut url = String::with_capacity(64);
+                url.push_str(parsed.scheme());
+                url.push_str("://");
+                url.push_str(parsed.host_str().unwrap_or("localhost"));
+                url
+            }
+        };
 
         let client = Client::default()
             .with_url(&base_url)
@@ -301,8 +315,9 @@ impl ClickHouseConnection {
             .fetch_bytes("JSONEachRow")
             .map_err(|e| Error::QueryError(e.to_string()))?;
 
-        // Collect all bytes using the cursor's iteration pattern
-        let mut all_bytes = Vec::new();
+        // Pre-allocate with reasonable initial capacity to reduce reallocations
+        // 4KB is a good starting point for typical query results
+        let mut all_bytes = Vec::with_capacity(4096);
         loop {
             match cursor.next().await {
                 Ok(Some(chunk)) => {
@@ -317,7 +332,10 @@ impl ClickHouseConnection {
         let text = String::from_utf8(all_bytes)
             .map_err(|e| Error::DeserializationError(e.to_string()))?;
 
-        let mut results = Vec::new();
+        // Estimate row count based on newlines for pre-allocation
+        let estimated_rows = text.bytes().filter(|&b| b == b'\n').count().max(1);
+        let mut results = Vec::with_capacity(estimated_rows);
+
         for line in text.lines() {
             if line.trim().is_empty() {
                 continue;

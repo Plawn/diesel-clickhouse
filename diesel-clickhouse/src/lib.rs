@@ -287,6 +287,15 @@ mod unified;
 #[cfg(any(feature = "http", feature = "native"))]
 pub use unified::Connection;
 
+/// Batch insertion utilities.
+///
+/// Provides `BatchInserter` for efficient bulk inserts.
+#[cfg(any(feature = "http", feature = "native"))]
+pub mod batch;
+
+#[cfg(any(feature = "http", feature = "native"))]
+pub use batch::{BatchInserter, RawBatchInserter, BatchInsertExt};
+
 /// Migrations module.
 ///
 /// Re-exports from diesel-clickhouse-migrations when the `migrations` feature is enabled.

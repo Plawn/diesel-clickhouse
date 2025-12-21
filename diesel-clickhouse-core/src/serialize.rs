@@ -1,9 +1,27 @@
 //! Serialization traits for inserting data.
 
+use std::borrow::Cow;
+
 use crate::backend::Backend;
 use crate::query_builder::AstPass;
 use crate::result::QueryResult;
 use diesel_clickhouse_types::{SqlType, ToClickHouse};
+
+// =============================================================================
+// Optimized String Escaping
+// =============================================================================
+
+/// Escape single quotes in a string for SQL.
+/// Returns Cow::Borrowed if no escaping needed (zero allocation),
+/// or Cow::Owned only when escaping is required.
+#[inline]
+fn escape_sql_string(s: &str) -> Cow<'_, str> {
+    if s.contains('\'') {
+        Cow::Owned(s.replace('\'', "''"))
+    } else {
+        Cow::Borrowed(s)
+    }
+}
 
 /// Trait for types that can be serialized as a row for insertion.
 pub trait ToRow {
@@ -51,64 +69,74 @@ pub fn write_sql_bytes<T>(_value: &T, _out: &mut Vec<u8>) {
     // Binary serialization - not used for SQL generation
 }
 
-// Implement WriteSqlValue for common types
+// Implement WriteSqlValue for common types using itoa/ryu for zero-allocation formatting
 impl WriteSqlValue for u8 {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql(&self.to_string());
+        let mut buf = itoa::Buffer::new();
+        pass.push_sql(buf.format(*self));
     }
 }
 
 impl WriteSqlValue for u16 {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql(&self.to_string());
+        let mut buf = itoa::Buffer::new();
+        pass.push_sql(buf.format(*self));
     }
 }
 
 impl WriteSqlValue for u32 {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql(&self.to_string());
+        let mut buf = itoa::Buffer::new();
+        pass.push_sql(buf.format(*self));
     }
 }
 
 impl WriteSqlValue for u64 {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql(&self.to_string());
+        let mut buf = itoa::Buffer::new();
+        pass.push_sql(buf.format(*self));
     }
 }
 
 impl WriteSqlValue for i8 {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql(&self.to_string());
+        let mut buf = itoa::Buffer::new();
+        pass.push_sql(buf.format(*self));
     }
 }
 
 impl WriteSqlValue for i16 {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql(&self.to_string());
+        let mut buf = itoa::Buffer::new();
+        pass.push_sql(buf.format(*self));
     }
 }
 
 impl WriteSqlValue for i32 {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql(&self.to_string());
+        let mut buf = itoa::Buffer::new();
+        pass.push_sql(buf.format(*self));
     }
 }
 
 impl WriteSqlValue for i64 {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql(&self.to_string());
+        let mut buf = itoa::Buffer::new();
+        pass.push_sql(buf.format(*self));
     }
 }
 
 impl WriteSqlValue for f32 {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql(&self.to_string());
+        let mut buf = ryu::Buffer::new();
+        pass.push_sql(buf.format_finite(*self));
     }
 }
 
 impl WriteSqlValue for f64 {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql(&self.to_string());
+        let mut buf = ryu::Buffer::new();
+        pass.push_sql(buf.format_finite(*self));
     }
 }
 
@@ -121,7 +149,7 @@ impl WriteSqlValue for bool {
 impl WriteSqlValue for String {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
         pass.push_sql("'");
-        pass.push_sql(&self.replace('\'', "''"));
+        pass.push_sql(&escape_sql_string(self));
         pass.push_sql("'");
     }
 }
@@ -129,7 +157,7 @@ impl WriteSqlValue for String {
 impl WriteSqlValue for str {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
         pass.push_sql("'");
-        pass.push_sql(&self.replace('\'', "''"));
+        pass.push_sql(&escape_sql_string(self));
         pass.push_sql("'");
     }
 }
@@ -137,7 +165,7 @@ impl WriteSqlValue for str {
 impl WriteSqlValue for &str {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
         pass.push_sql("'");
-        pass.push_sql(&self.replace('\'', "''"));
+        pass.push_sql(&escape_sql_string(self));
         pass.push_sql("'");
     }
 }
@@ -170,13 +198,25 @@ impl RowValues {
         Self::default()
     }
 
+    /// Create a new row values collection with pre-allocated capacity.
+    ///
+    /// Use this when you know the number of columns in advance to avoid
+    /// reallocations.
+    pub fn with_capacity(num_columns: usize) -> Self {
+        Self {
+            columns: Vec::with_capacity(num_columns),
+            values: Vec::with_capacity(num_columns),
+        }
+    }
+
     /// Add a value.
     pub fn add<T, ST>(&mut self, column: &'static str, value: &T) -> QueryResult<()>
     where
         ST: SqlType,
         T: ToSql<ST>,
     {
-        let mut bytes = Vec::new();
+        // Pre-allocate with reasonable initial capacity for value bytes
+        let mut bytes = Vec::with_capacity(32);
         value.to_sql(&mut bytes)?;
         self.columns.push(column);
         self.values.push(bytes);

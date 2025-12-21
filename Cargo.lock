@@ -516,6 +516,7 @@ dependencies = [
  "diesel-clickhouse-migrations",
  "diesel-clickhouse-types",
  "futures",
+ "itoa",
  "reqwest 0.11.27",
  "serde",
  "serde_json",
@@ -553,6 +554,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "diesel-clickhouse-types",
+ "itoa",
+ "ryu",
  "serde",
  "thiserror 1.0.69",
 ]

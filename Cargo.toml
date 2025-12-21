@@ -112,6 +112,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # ClickHouse client
 clickhouse = { version = "0.14", default-features = false, features = ["lz4"] }
 
+# Fast numeric formatting
+itoa = "1"
+ryu = "1"
+
 # Test dependencies (for integration tests)
 tempfile = "3"
 reqwest = { version = "0.11", features = ["blocking"] }

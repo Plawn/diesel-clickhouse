@@ -98,9 +98,13 @@ where
 {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         self.inner.walk_ast(pass.reborrow())?;
-        pass.push_sql(&format!(" SAMPLE {}", self.ratio));
+        pass.push_sql(" SAMPLE ");
+        let mut buf = ryu::Buffer::new();
+        pass.push_sql(buf.format_finite(self.ratio));
         if let Some(offset) = self.offset {
-            pass.push_sql(&format!(" OFFSET {}", offset));
+            pass.push_sql(" OFFSET ");
+            let mut buf = ryu::Buffer::new();
+            pass.push_sql(buf.format_finite(offset));
         }
         Ok(())
     }
@@ -173,7 +177,8 @@ impl<T> Settings<T> {
     pub fn new(inner: T) -> Self {
         Self {
             inner,
-            settings: Vec::new(),
+            // Pre-allocate for typical use case (2-4 settings)
+            settings: Vec::with_capacity(4),
         }
     }
 

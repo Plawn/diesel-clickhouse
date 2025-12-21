@@ -288,6 +288,40 @@ impl Connection {
         self.execute_query(query).await
     }
 
+    /// Insert multiple rows efficiently in a single statement.
+    ///
+    /// This is a convenience method that builds and executes an INSERT
+    /// statement for multiple rows in one network round-trip.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::prelude::*;
+    ///
+    /// let users = vec![
+    ///     NewUser { id: 1, name: "Alice".into() },
+    ///     NewUser { id: 2, name: "Bob".into() },
+    ///     NewUser { id: 3, name: "Charlie".into() },
+    /// ];
+    ///
+    /// conn.insert_batch(users::table, &users).await?;
+    /// ```
+    pub async fn insert_batch<T, R>(&self, table: T, rows: &[R]) -> QueryResult<()>
+    where
+        T: crate::core::query_source::Table,
+        R: crate::core::query_builder::Insertable<T>,
+    {
+        use crate::core::query_builder::insert_into;
+
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        // Use the existing insert mechanism with slice
+        let stmt = insert_into(table).values(rows);
+        self.execute_query(stmt).await
+    }
+
     // =========================================================================
     // Unified Load Method (NEW - works with #[derive(Row)])
     // =========================================================================
@@ -555,17 +589,23 @@ impl Connection {
 fn block_to_vec<T: DeserializeOwned>(
     block: &clickhouse_rs::Block<clickhouse_rs::types::Complex>,
 ) -> QueryResult<Vec<T>> {
-    let mut results = Vec::new();
+    let row_count = block.row_count();
+    let col_count = block.column_count();
 
-    for row_idx in 0..block.row_count() {
-        let mut map = serde_json::Map::new();
+    // Pre-allocate results vector
+    let mut results = Vec::with_capacity(row_count);
 
-        for col_idx in 0..block.column_count() {
-            let col_name = block.columns()[col_idx].name();
-            let sql_type = block.columns()[col_idx].sql_type();
+    // Cache column metadata outside the row loop to avoid repeated allocations
+    let columns: Vec<_> = block.columns().iter()
+        .map(|col| (col.name().to_string(), col.sql_type()))
+        .collect();
 
+    for row_idx in 0..row_count {
+        let mut map = serde_json::Map::with_capacity(col_count);
+
+        for (col_idx, (col_name, sql_type)) in columns.iter().enumerate() {
             let value = extract_value(block, row_idx, col_idx, sql_type)?;
-            map.insert(col_name.to_string(), value);
+            map.insert(col_name.clone(), value);
         }
 
         let row: T = serde_json::from_value(serde_json::Value::Object(map))
@@ -588,7 +628,7 @@ fn extract_value(
     block: &clickhouse_rs::Block<clickhouse_rs::types::Complex>,
     row: usize,
     col: usize,
-    sql_type: clickhouse_rs::types::SqlType,
+    sql_type: &clickhouse_rs::types::SqlType,
 ) -> QueryResult<serde_json::Value> {
     use clickhouse_rs::types::SqlType;
 
@@ -694,8 +734,31 @@ fn extract_value(
 }
 
 /// Simple date/time formatting without chrono dependency.
+/// Uses stack-based formatting to avoid heap allocations.
 #[cfg(feature = "native")]
 mod chrono_lite {
+    /// Write a zero-padded i32 to a string.
+    #[inline]
+    fn write_padded_i32(s: &mut String, value: i32, width: usize) {
+        let mut buf = itoa::Buffer::new();
+        let formatted = buf.format(value);
+        for _ in 0..(width.saturating_sub(formatted.len())) {
+            s.push('0');
+        }
+        s.push_str(formatted);
+    }
+
+    /// Write a zero-padded u32 to a string.
+    #[inline]
+    fn write_padded_u32(s: &mut String, value: u32, width: usize) {
+        let mut buf = itoa::Buffer::new();
+        let formatted = buf.format(value);
+        for _ in 0..(width.saturating_sub(formatted.len())) {
+            s.push('0');
+        }
+        s.push_str(formatted);
+    }
+
     /// Convert days since epoch to ISO date string.
     pub fn days_to_date(days: i32) -> String {
         const DAYS_IN_400_YEARS: i32 = 146097;
@@ -712,7 +775,14 @@ mod chrono_lite {
         let m = if mp < 10 { mp + 3 } else { mp - 9 };
         let y = if m <= 2 { y + 1 } else { y };
 
-        format!("{:04}-{:02}-{:02}", y, m, d)
+        // Pre-allocate exact size: "YYYY-MM-DD" = 10 chars
+        let mut result = String::with_capacity(10);
+        write_padded_i32(&mut result, y, 4);
+        result.push('-');
+        write_padded_i32(&mut result, m, 2);
+        result.push('-');
+        write_padded_i32(&mut result, d, 2);
+        result
     }
 
     /// Convert seconds since epoch to ISO datetime string.
@@ -721,10 +791,37 @@ mod chrono_lite {
         let day_secs = (secs % 86400) as u32;
         let hours = day_secs / 3600;
         let mins = (day_secs % 3600) / 60;
-        let secs = day_secs % 60;
+        let secs_val = day_secs % 60;
 
-        let date = days_to_date(days);
-        format!("{}T{:02}:{:02}:{:02}Z", date, hours, mins, secs)
+        // Pre-allocate exact size: "YYYY-MM-DDTHH:MM:SSZ" = 20 chars
+        let mut result = String::with_capacity(20);
+
+        // Date part inline
+        const DAYS_IN_400_YEARS: i32 = 146097;
+        let days_adj = days + 719468;
+        let era = if days_adj >= 0 { days_adj } else { days_adj - 146096 } / DAYS_IN_400_YEARS;
+        let doe = days_adj - era * DAYS_IN_400_YEARS;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if m <= 2 { y + 1 } else { y };
+
+        write_padded_i32(&mut result, y, 4);
+        result.push('-');
+        write_padded_i32(&mut result, m, 2);
+        result.push('-');
+        write_padded_i32(&mut result, d, 2);
+        result.push('T');
+        write_padded_u32(&mut result, hours, 2);
+        result.push(':');
+        write_padded_u32(&mut result, mins, 2);
+        result.push(':');
+        write_padded_u32(&mut result, secs_val, 2);
+        result.push('Z');
+        result
     }
 }
 
