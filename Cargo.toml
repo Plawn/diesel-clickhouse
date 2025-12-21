@@ -116,6 +116,14 @@ clickhouse = { version = "0.14", default-features = false, features = ["lz4"] }
 itoa = "1"
 ryu = "1"
 
+# Performance optimizations
+smallvec = "1.13"
+compact_str = "0.8"
+simd-json = "0.14"
+bumpalo = { version = "3.16", features = ["collections"] }
+string-interner = "0.17"
+rayon = "1.10"
+
 # Test dependencies (for integration tests)
 tempfile = "3"
 reqwest = { version = "0.11", features = ["blocking"] }

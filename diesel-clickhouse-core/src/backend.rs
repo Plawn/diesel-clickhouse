@@ -12,6 +12,7 @@
 //! with either protocol.
 
 use std::fmt::Debug;
+use smallvec::SmallVec;
 
 /// Core backend trait for ClickHouse connections.
 ///
@@ -43,14 +44,33 @@ pub trait BindValue {
     fn to_sql_literal(&self) -> String;
 }
 
-// Implement BindValue for common types
+// Implement BindValue for integer types using itoa for fast formatting
 macro_rules! impl_bind_value_int {
     ($($t:ty => $name:literal),*) => {
         $(
             impl BindValue for $t {
                 fn type_name(&self) -> &'static str { $name }
                 fn to_bytes(&self) -> Vec<u8> { self.to_le_bytes().to_vec() }
-                fn to_sql_literal(&self) -> String { self.to_string() }
+                fn to_sql_literal(&self) -> String {
+                    let mut buf = itoa::Buffer::new();
+                    buf.format(*self).to_owned()
+                }
+            }
+        )*
+    };
+}
+
+// Implement BindValue for float types using ryu for fast formatting
+macro_rules! impl_bind_value_float {
+    ($($t:ty => $name:literal),*) => {
+        $(
+            impl BindValue for $t {
+                fn type_name(&self) -> &'static str { $name }
+                fn to_bytes(&self) -> Vec<u8> { self.to_le_bytes().to_vec() }
+                fn to_sql_literal(&self) -> String {
+                    let mut buf = ryu::Buffer::new();
+                    buf.format_finite(*self).to_owned()
+                }
             }
         )*
     };
@@ -58,21 +78,33 @@ macro_rules! impl_bind_value_int {
 
 impl_bind_value_int!(
     u8 => "UInt8", u16 => "UInt16", u32 => "UInt32", u64 => "UInt64",
-    i8 => "Int8", i16 => "Int16", i32 => "Int32", i64 => "Int64",
+    i8 => "Int8", i16 => "Int16", i32 => "Int32", i64 => "Int64"
+);
+
+impl_bind_value_float!(
     f32 => "Float32", f64 => "Float64"
 );
 
 impl BindValue for bool {
     fn type_name(&self) -> &'static str { "Bool" }
     fn to_bytes(&self) -> Vec<u8> { vec![if *self { 1 } else { 0 }] }
-    fn to_sql_literal(&self) -> String { if *self { "true" } else { "false" }.to_string() }
+    fn to_sql_literal(&self) -> String { (if *self { "true" } else { "false" }).to_owned() }
 }
 
 impl BindValue for str {
     fn type_name(&self) -> &'static str { "String" }
     fn to_bytes(&self) -> Vec<u8> { self.as_bytes().to_vec() }
     fn to_sql_literal(&self) -> String {
-        format!("'{}'", self.replace('\'', "''"))
+        // Pre-allocate: original length + 2 quotes + potential escapes
+        let mut result = String::with_capacity(self.len() + 2);
+        result.push('\'');
+        if self.contains('\'') {
+            result.push_str(&self.replace('\'', "''"));
+        } else {
+            result.push_str(self);
+        }
+        result.push('\'');
+        result
     }
 }
 
@@ -80,7 +112,7 @@ impl BindValue for String {
     fn type_name(&self) -> &'static str { "String" }
     fn to_bytes(&self) -> Vec<u8> { self.as_bytes().to_vec() }
     fn to_sql_literal(&self) -> String {
-        format!("'{}'", self.replace('\'', "''"))
+        self.as_str().to_sql_literal()
     }
 }
 
@@ -176,9 +208,19 @@ pub struct HttpRawValue<'a> {
 }
 
 /// Bind collector for HTTP backend.
-#[derive(Debug, Default)]
+///
+/// Uses SmallVec to store up to 8 bindings on the stack without allocation.
+#[derive(Debug)]
 pub struct HttpBindCollector<'a> {
-    bindings: Vec<BoundValue<'a>>,
+    bindings: SmallVec<[BoundValue<'a>; 8]>,
+}
+
+impl<'a> Default for HttpBindCollector<'a> {
+    fn default() -> Self {
+        Self {
+            bindings: SmallVec::new(),
+        }
+    }
 }
 
 impl<'a> BindCollector<'a, HttpBackend> for HttpBindCollector<'a> {
@@ -193,10 +235,20 @@ impl<'a> BindCollector<'a, HttpBackend> for HttpBindCollector<'a> {
 }
 
 /// Query builder for HTTP backend.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HttpQueryBuilder {
     sql: String,
     param_count: usize,
+}
+
+impl Default for HttpQueryBuilder {
+    fn default() -> Self {
+        Self {
+            // Pre-allocate for typical query size
+            sql: String::with_capacity(256),
+            param_count: 0,
+        }
+    }
 }
 
 impl QueryBuilder for HttpQueryBuilder {
@@ -207,21 +259,28 @@ impl QueryBuilder for HttpQueryBuilder {
     fn push_identifier(&mut self, identifier: &str) {
         // ClickHouse uses backticks for identifiers
         self.sql.push('`');
-        // Escape backticks in the identifier
-        for c in identifier.chars() {
-            if c == '`' {
-                self.sql.push_str("``");
-            } else {
-                self.sql.push(c);
+        // Fast path: no escaping needed if no backticks
+        if identifier.contains('`') {
+            for c in identifier.chars() {
+                if c == '`' {
+                    self.sql.push_str("``");
+                } else {
+                    self.sql.push(c);
+                }
             }
+        } else {
+            self.sql.push_str(identifier);
         }
         self.sql.push('`');
     }
 
     fn push_bind_param(&mut self) {
         // ClickHouse HTTP uses {name:Type} format for parameters
-        // For simplicity, we use positional {p0:String} style
-        self.sql.push_str(&format!("{{p{}:String}}", self.param_count));
+        // Build without format! macro for efficiency
+        self.sql.push_str("{p");
+        let mut buf = itoa::Buffer::new();
+        self.sql.push_str(buf.format(self.param_count));
+        self.sql.push_str(":String}");
         self.param_count += 1;
     }
 
@@ -268,9 +327,19 @@ pub struct NativeRawValue<'a> {
 }
 
 /// Bind collector for Native backend.
-#[derive(Debug, Default)]
+///
+/// Uses SmallVec to store up to 8 bindings on the stack without allocation.
+#[derive(Debug)]
 pub struct NativeBindCollector<'a> {
-    bindings: Vec<BoundValue<'a>>,
+    bindings: SmallVec<[BoundValue<'a>; 8]>,
+}
+
+impl<'a> Default for NativeBindCollector<'a> {
+    fn default() -> Self {
+        Self {
+            bindings: SmallVec::new(),
+        }
+    }
 }
 
 impl<'a> BindCollector<'a, NativeBackend> for NativeBindCollector<'a> {
@@ -285,10 +354,19 @@ impl<'a> BindCollector<'a, NativeBackend> for NativeBindCollector<'a> {
 }
 
 /// Query builder for Native backend.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct NativeQueryBuilder {
     sql: String,
     param_count: usize,
+}
+
+impl Default for NativeQueryBuilder {
+    fn default() -> Self {
+        Self {
+            sql: String::with_capacity(256),
+            param_count: 0,
+        }
+    }
 }
 
 impl QueryBuilder for NativeQueryBuilder {
@@ -297,14 +375,17 @@ impl QueryBuilder for NativeQueryBuilder {
     }
 
     fn push_identifier(&mut self, identifier: &str) {
-        // Same escaping as HTTP
         self.sql.push('`');
-        for c in identifier.chars() {
-            if c == '`' {
-                self.sql.push_str("``");
-            } else {
-                self.sql.push(c);
+        if identifier.contains('`') {
+            for c in identifier.chars() {
+                if c == '`' {
+                    self.sql.push_str("``");
+                } else {
+                    self.sql.push(c);
+                }
             }
+        } else {
+            self.sql.push_str(identifier);
         }
         self.sql.push('`');
     }
@@ -312,7 +393,9 @@ impl QueryBuilder for NativeQueryBuilder {
     fn push_bind_param(&mut self) {
         // Native protocol uses $1, $2, etc.
         self.param_count += 1;
-        self.sql.push_str(&format!("${}", self.param_count));
+        self.sql.push('$');
+        let mut buf = itoa::Buffer::new();
+        self.sql.push_str(buf.format(self.param_count));
     }
 
     fn finish(self) -> String {
@@ -352,9 +435,19 @@ pub struct GenericRawValue<'a> {
 }
 
 /// Generic bind collector.
-#[derive(Debug, Default)]
+///
+/// Uses SmallVec to store up to 8 bindings on the stack without allocation.
+#[derive(Debug)]
 pub struct GenericBindCollector<'a> {
-    bindings: Vec<BoundValue<'a>>,
+    bindings: SmallVec<[BoundValue<'a>; 8]>,
+}
+
+impl<'a> Default for GenericBindCollector<'a> {
+    fn default() -> Self {
+        Self {
+            bindings: SmallVec::new(),
+        }
+    }
 }
 
 impl<'a> BindCollector<'a, ClickHouse> for GenericBindCollector<'a> {
@@ -369,9 +462,17 @@ impl<'a> BindCollector<'a, ClickHouse> for GenericBindCollector<'a> {
 }
 
 /// Generic query builder.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GenericQueryBuilder {
     sql: String,
+}
+
+impl Default for GenericQueryBuilder {
+    fn default() -> Self {
+        Self {
+            sql: String::with_capacity(256),
+        }
+    }
 }
 
 impl QueryBuilder for GenericQueryBuilder {
@@ -381,12 +482,16 @@ impl QueryBuilder for GenericQueryBuilder {
 
     fn push_identifier(&mut self, identifier: &str) {
         self.sql.push('`');
-        for c in identifier.chars() {
-            if c == '`' {
-                self.sql.push_str("``");
-            } else {
-                self.sql.push(c);
+        if identifier.contains('`') {
+            for c in identifier.chars() {
+                if c == '`' {
+                    self.sql.push_str("``");
+                } else {
+                    self.sql.push(c);
+                }
             }
+        } else {
+            self.sql.push_str(identifier);
         }
         self.sql.push('`');
     }

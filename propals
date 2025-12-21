@@ -1,0 +1,28 @@
+⏺ Voici les optimisations restantes par priorité :
+
+  Priorité Basse (restantes de l'audit)
+
+  | Item                 | Fichier          | Description                                                |
+  |----------------------|------------------|------------------------------------------------------------|
+  | Macro to_sql_literal | backend.rs:48-56 | impl_bind_value_int! utilise .to_string() pour les entiers |
+  | Format struct        | clickhouse.rs    | Format<T> contient String, pourrait être Cow<'static, str> |
+
+  Nouvelles opportunités identifiées
+
+  | Item              | Fichier      | Description                                                  |
+  |-------------------|--------------|--------------------------------------------------------------|
+  | Compression LZ4   | http.rs      | Activer compression pour gros INSERT                         |
+  | Query cache       | nouveau      | Cache de requêtes SQL construites (même query = même string) |
+  | Lazy column index | native.rs    | Construire ColumnIndex une fois par Block                    |
+  | SmallVec          | backend.rs   | Utiliser SmallVec pour les petits bind collectors            |
+  | Inline strings    | serialize.rs | smallstr ou compact_str pour petites chaînes                 |
+  | SIMD JSON         | http.rs      | Utiliser simd-json au lieu de serde_json                     |
+
+  Fonctionnalités avancées
+
+  | Item                | Description                                |
+  |---------------------|--------------------------------------------|
+  | Prepared statements | Cache de requêtes préparées côté serveur   |
+  | Async insert mode   | Support du mode async_insert de ClickHouse |
+  | Metrics/Tracing     | Instrumenter avec tracing pour profiling   |
+  | Zero-copy parsing   | Parser les réponses sans copier les bytes  |

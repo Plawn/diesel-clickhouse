@@ -18,3 +18,7 @@ async-trait.workspace = true
 serde.workspace = true
 itoa.workspace = true
 ryu.workspace = true
+smallvec.workspace = true
+compact_str.workspace = true
+bumpalo.workspace = true
+string-interner.workspace = true

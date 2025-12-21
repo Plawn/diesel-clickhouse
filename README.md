@@ -276,6 +276,158 @@ async fn main() {
 }
 ```
 
+## Advanced Features
+
+### Connection Pooling
+
+Efficient connection management for high-concurrency applications:
+
+```rust
+use diesel_clickhouse::pool::{Pool, PoolConfig};
+
+// Create a pool with custom settings
+let config = PoolConfig::new(20)
+    .min_idle(5)
+    .connection_timeout_ms(30_000);
+
+let pool = Pool::new("http://localhost:8123/default", config).await?;
+
+// Get a connection (automatically returned to pool on drop)
+let conn = pool.get().await?;
+conn.connection().execute("SELECT 1").await?;
+```
+
+### Batch Inserts
+
+Optimized bulk inserts for ClickHouse's batch-oriented design:
+
+```rust
+use diesel_clickhouse::BatchInserter;
+
+let mut batch = BatchInserter::new(&conn, "events", 10000);
+
+for event in events {
+    batch.push(&event).await?;
+}
+batch.flush().await?;  // Insert remaining rows
+```
+
+### Async Insert Mode
+
+High-throughput inserts using ClickHouse's async_insert mode:
+
+```rust
+use diesel_clickhouse::async_insert::{AsyncInserter, AsyncInsertConfig};
+
+let config = AsyncInsertConfig::default()
+    .busy_timeout_ms(5000)
+    .max_data_size_bytes(1_000_000);
+
+let inserter = AsyncInserter::new(&conn, config);
+inserter.insert("events", &new_events).await?;
+```
+
+### Prepared Statement Cache
+
+Reduce query compilation overhead for repeated queries:
+
+```rust
+use diesel_clickhouse::prepared::{PreparedCache, QueryTemplate};
+
+let cache = PreparedCache::new(100);
+
+// Create a template with placeholders
+let template = QueryTemplate::new("SELECT * FROM events WHERE user_id = {}");
+let stmt = cache.get_or_prepare(&template);
+
+// Execute with parameters
+let sql = stmt.with_params(&[&"42"]);
+```
+
+### Metrics & Observability
+
+Built-in metrics collection for performance monitoring:
+
+```rust
+use diesel_clickhouse::metrics::{MetricsCollector, global_metrics};
+
+// Use global metrics
+let timer = global_metrics().start_query();
+// ... execute query ...
+timer.record_success();
+
+// Get metrics snapshot
+let snapshot = global_metrics().snapshot();
+println!("Total queries: {}", snapshot.total_queries);
+println!("Avg latency: {:?}", snapshot.avg_latency());
+```
+
+### Zero-Copy Parsing
+
+Parse large result sets without memory allocation:
+
+```rust
+use diesel_clickhouse::zero_copy::{ZeroCopyParser, TsvParser};
+
+// Parse TSV without allocating strings
+let parser = TsvParser::new();
+for row in parser.parse_rows(tsv_data) {
+    let id: i64 = row.get(0)?.parse()?;
+    let name: &str = row.get(1)?.as_str();
+}
+```
+
+### Parallel Processing
+
+Process large result sets in parallel using Rayon:
+
+```rust
+use diesel_clickhouse::parallel::{ParallelProcessor, ParallelExt};
+
+// Process items in parallel
+let results: Vec<ProcessedRow> = rows
+    .parallel()
+    .threshold(1000)  // Only parallelize if > 1000 items
+    .process(|row| expensive_transform(row));
+
+// Or use chunk processing
+let chunk_sums: Vec<i64> = rows
+    .chunks_parallel(1000)
+    .process_chunks(|chunk| chunk.iter().map(|r| r.value).sum());
+```
+
+### Arena Allocation
+
+Reduce heap allocations during complex query building:
+
+```rust
+use diesel_clickhouse::arena::{QueryArena, ArenaQueryBuilder, with_arena};
+
+// Thread-local arena for zero-allocation query building
+let sql = with_arena(|arena| {
+    let mut builder = ArenaQueryBuilder::new(arena);
+    builder.push("SELECT ");
+    builder.push_identifier("name");
+    builder.push(" FROM ");
+    builder.push_identifier("users");
+    builder.finish()
+});
+```
+
+### String Interning
+
+Efficient column name handling for result set processing:
+
+```rust
+use diesel_clickhouse::interner::{InternedSchema, global_interner};
+
+// Intern column names for fast lookup
+let schema = InternedSchema::new(&["id", "name", "age"]);
+
+// O(1) column lookup by name
+let idx = schema.find_column("name").unwrap();
+```
+
 ## Feature Flags
 
 ```toml
@@ -286,6 +438,7 @@ diesel-clickhouse = { version = "0.1", features = ["chrono", "uuid"] }
 | Feature | Description | Default |
 |---------|-------------|---------|
 | `http` | HTTP backend via clickhouse crate | Yes |
+| `native` | Native TCP protocol backend | No |
 | `chrono` | DateTime support via chrono | Yes |
 | `time` | DateTime support via time crate | No |
 | `uuid` | UUID support | No |
@@ -293,6 +446,7 @@ diesel-clickhouse = { version = "0.1", features = ["chrono", "uuid"] }
 | `native-tls` | TLS via native-tls | No |
 | `rustls-tls` | TLS via rustls | No |
 | `tracing` | Tracing integration | No |
+| `migrations` | Migration system | No |
 
 ## Crate Structure
 

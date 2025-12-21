@@ -208,6 +208,11 @@ impl RawRow {
     pub fn add_column(&mut self, name: impl Into<String>, value: Vec<u8>) {
         self.columns.push((name.into(), value));
     }
+
+    /// Convert to an IndexedRow for O(1) column name lookups.
+    pub fn into_indexed(self) -> IndexedRow {
+        IndexedRow::from_raw(self)
+    }
 }
 
 impl Row for RawRow {
@@ -227,6 +232,169 @@ impl Row for RawRow {
 
     fn column_name(&self, index: usize) -> Option<&str> {
         self.columns.get(index).map(|(n, _)| n.as_str())
+    }
+}
+
+/// Optimized row with O(1) column name lookup.
+///
+/// This row type builds a HashMap from column names to indices,
+/// making repeated column lookups by name much faster.
+///
+/// Use this when you need to access columns by name multiple times.
+#[derive(Debug)]
+pub struct IndexedRow {
+    /// Column names in order.
+    names: Vec<String>,
+    /// Column values in order.
+    values: Vec<Vec<u8>>,
+    /// Name to index mapping for O(1) lookup.
+    name_to_index: std::collections::HashMap<String, usize>,
+}
+
+impl IndexedRow {
+    /// Create a new indexed row with the given capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            names: Vec::with_capacity(capacity),
+            values: Vec::with_capacity(capacity),
+            name_to_index: std::collections::HashMap::with_capacity(capacity),
+        }
+    }
+
+    /// Create from a RawRow.
+    pub fn from_raw(raw: RawRow) -> Self {
+        let mut row = Self::with_capacity(raw.columns.len());
+        for (name, value) in raw.columns {
+            row.add_column(name, value);
+        }
+        row
+    }
+
+    /// Add a column to the row.
+    pub fn add_column(&mut self, name: impl Into<String>, value: Vec<u8>) {
+        let name = name.into();
+        let index = self.names.len();
+        self.name_to_index.insert(name.clone(), index);
+        self.names.push(name);
+        self.values.push(value);
+    }
+
+    /// Get column index by name in O(1).
+    #[inline]
+    pub fn column_index(&self, name: &str) -> Option<usize> {
+        self.name_to_index.get(name).copied()
+    }
+}
+
+impl Row for IndexedRow {
+    #[inline]
+    fn column_count(&self) -> usize {
+        self.names.len()
+    }
+
+    #[inline]
+    fn get_by_index(&self, index: usize) -> Option<&[u8]> {
+        self.values.get(index).map(|v| v.as_slice())
+    }
+
+    #[inline]
+    fn get_by_name(&self, name: &str) -> Option<&[u8]> {
+        // O(1) lookup using the hash map
+        self.name_to_index
+            .get(name)
+            .and_then(|&idx| self.values.get(idx))
+            .map(|v| v.as_slice())
+    }
+
+    #[inline]
+    fn column_name(&self, index: usize) -> Option<&str> {
+        self.names.get(index).map(|s| s.as_str())
+    }
+}
+
+/// A shared column index cache for multiple rows with the same schema.
+///
+/// This is useful when processing many rows with the same columns,
+/// as it allows sharing the column name -> index mapping.
+#[derive(Debug, Clone)]
+pub struct ColumnIndex {
+    name_to_index: std::collections::HashMap<String, usize>,
+    names: Vec<String>,
+}
+
+impl ColumnIndex {
+    /// Create a new column index from column names.
+    pub fn new(names: Vec<String>) -> Self {
+        let name_to_index = names.iter()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), i))
+            .collect();
+        Self { name_to_index, names }
+    }
+
+    /// Get column index by name in O(1).
+    #[inline]
+    pub fn get(&self, name: &str) -> Option<usize> {
+        self.name_to_index.get(name).copied()
+    }
+
+    /// Get column name by index.
+    #[inline]
+    pub fn name(&self, index: usize) -> Option<&str> {
+        self.names.get(index).map(|s| s.as_str())
+    }
+
+    /// Get the number of columns.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    /// Check if empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+}
+
+/// A row that uses a shared column index.
+///
+/// This is more memory-efficient when processing many rows with
+/// the same schema, as the column name mapping is shared.
+#[derive(Debug)]
+pub struct SharedIndexRow<'a> {
+    index: &'a ColumnIndex,
+    values: Vec<Vec<u8>>,
+}
+
+impl<'a> SharedIndexRow<'a> {
+    /// Create a new row with a shared column index.
+    pub fn new(index: &'a ColumnIndex, values: Vec<Vec<u8>>) -> Self {
+        Self { index, values }
+    }
+}
+
+impl<'a> Row for SharedIndexRow<'a> {
+    #[inline]
+    fn column_count(&self) -> usize {
+        self.values.len()
+    }
+
+    #[inline]
+    fn get_by_index(&self, index: usize) -> Option<&[u8]> {
+        self.values.get(index).map(|v| v.as_slice())
+    }
+
+    #[inline]
+    fn get_by_name(&self, name: &str) -> Option<&[u8]> {
+        self.index.get(name)
+            .and_then(|idx| self.values.get(idx))
+            .map(|v| v.as_slice())
+    }
+
+    #[inline]
+    fn column_name(&self, index: usize) -> Option<&str> {
+        self.index.name(index)
     }
 }
 
@@ -252,5 +420,54 @@ mod tests {
         assert_eq!(row.get_by_index(0), Some([1, 0, 0, 0].as_slice()));
         assert_eq!(row.get_by_name("name"), Some(b"test".as_slice()));
         assert_eq!(row.column_name(0), Some("id"));
+    }
+
+    #[test]
+    fn test_indexed_row() {
+        let mut row = IndexedRow::with_capacity(3);
+        row.add_column("id", vec![1, 0, 0, 0]);
+        row.add_column("name", b"test".to_vec());
+        row.add_column("active", vec![1]);
+
+        assert_eq!(row.column_count(), 3);
+        assert_eq!(row.get_by_index(0), Some([1, 0, 0, 0].as_slice()));
+        assert_eq!(row.get_by_name("name"), Some(b"test".as_slice()));
+        assert_eq!(row.get_by_name("active"), Some([1].as_slice()));
+        assert_eq!(row.column_index("name"), Some(1));
+        assert_eq!(row.column_name(0), Some("id"));
+    }
+
+    #[test]
+    fn test_column_index() {
+        let index = ColumnIndex::new(vec![
+            "id".to_string(),
+            "name".to_string(),
+            "active".to_string(),
+        ]);
+
+        assert_eq!(index.len(), 3);
+        assert_eq!(index.get("id"), Some(0));
+        assert_eq!(index.get("name"), Some(1));
+        assert_eq!(index.get("active"), Some(2));
+        assert_eq!(index.get("missing"), None);
+        assert_eq!(index.name(0), Some("id"));
+    }
+
+    #[test]
+    fn test_shared_index_row() {
+        let index = ColumnIndex::new(vec![
+            "id".to_string(),
+            "name".to_string(),
+        ]);
+
+        let row = SharedIndexRow::new(&index, vec![
+            vec![42, 0, 0, 0],
+            b"alice".to_vec(),
+        ]);
+
+        assert_eq!(row.column_count(), 2);
+        assert_eq!(row.get_by_name("id"), Some([42, 0, 0, 0].as_slice()));
+        assert_eq!(row.get_by_name("name"), Some(b"alice".as_slice()));
+        assert_eq!(row.column_name(1), Some("name"));
     }
 }

@@ -21,6 +21,12 @@ pub mod deserialize;
 pub mod serialize;
 pub mod row;
 
+/// Arena allocator for efficient query building.
+pub mod arena;
+
+/// String interning for column names.
+pub mod interner;
+
 // Re-export types crate
 pub use diesel_clickhouse_types as types;
 

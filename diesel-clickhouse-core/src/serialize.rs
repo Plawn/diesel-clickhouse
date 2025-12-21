@@ -2,6 +2,8 @@
 
 use std::borrow::Cow;
 
+use compact_str::CompactString;
+
 use crate::backend::Backend;
 use crate::query_builder::AstPass;
 use crate::result::QueryResult;
@@ -166,6 +168,16 @@ impl WriteSqlValue for &str {
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
         pass.push_sql("'");
         pass.push_sql(&escape_sql_string(self));
+        pass.push_sql("'");
+    }
+}
+
+/// CompactString: inline string (up to 24 bytes on stack, heap otherwise).
+/// Zero allocation for small strings like column names, short values, etc.
+impl WriteSqlValue for CompactString {
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
+        pass.push_sql("'");
+        pass.push_sql(&escape_sql_string(self.as_str()));
         pass.push_sql("'");
     }
 }

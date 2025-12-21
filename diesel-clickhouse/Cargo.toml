@@ -40,6 +40,9 @@ native-tls-native = ["clickhouse-rs?/tls"]
 # Tracing
 tracing = ["dep:tracing"]
 
+# SIMD-accelerated JSON parsing
+simd-json = ["dep:simd-json"]
+
 [dependencies]
 diesel-clickhouse-core.workspace = true
 diesel-clickhouse-types.workspace = true
@@ -51,6 +54,8 @@ thiserror.workspace = true
 serde.workspace = true
 futures = "0.3"
 itoa.workspace = true
+memchr = "2"
+rayon = { workspace = true }
 
 # Optional - HTTP backend
 clickhouse = { workspace = true, optional = true, features = ["time"] }
@@ -66,6 +71,7 @@ chrono = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 deadpool = { version = "0.10", optional = true }
 tracing = { version = "0.1", optional = true }
+simd-json = { workspace = true, optional = true }
 url = "2"
 
 # Optional - Migrations

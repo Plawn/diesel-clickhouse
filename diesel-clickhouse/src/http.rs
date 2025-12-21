@@ -25,6 +25,46 @@ use async_trait::async_trait;
 use clickhouse::Client;
 use serde::de::DeserializeOwned;
 
+// =============================================================================
+// JSON Parsing (with optional SIMD acceleration)
+// =============================================================================
+
+/// Parse JSON from a string slice.
+/// Uses simd-json when the feature is enabled for faster parsing.
+#[cfg(feature = "simd-json")]
+#[inline]
+fn parse_json_str<T: DeserializeOwned>(s: &str) -> Result<T, String> {
+    // simd-json requires a mutable buffer
+    let mut bytes = s.as_bytes().to_vec();
+    simd_json::from_slice(&mut bytes)
+        .map_err(|e| format!("Failed to parse JSON: {}", e))
+}
+
+#[cfg(not(feature = "simd-json"))]
+#[inline]
+fn parse_json_str<T: DeserializeOwned>(s: &str) -> Result<T, String> {
+    serde_json::from_str(s)
+        .map_err(|e| format!("Failed to parse JSON: {}", e))
+}
+
+/// Parse JSON from a byte slice.
+/// Uses simd-json when the feature is enabled for faster parsing.
+#[cfg(feature = "simd-json")]
+#[inline]
+fn parse_json_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
+    // simd-json requires a mutable buffer
+    let mut bytes = bytes.to_vec();
+    simd_json::from_slice(&mut bytes)
+        .map_err(|e| format!("Failed to parse JSON: {}", e))
+}
+
+#[cfg(not(feature = "simd-json"))]
+#[inline]
+fn parse_json_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
+    serde_json::from_slice(bytes)
+        .map_err(|e| format!("Failed to parse JSON: {}", e))
+}
+
 use crate::core::backend::{ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
 use crate::core::connection::{AsyncConnection, ClickHouseConnection as ClickHouseConnectionTrait};
 use crate::core::deserialize::FromRow;
@@ -35,11 +75,22 @@ use crate::core::row::ClickHouseRow as ClickHouseRowTrait;
 // Re-export clickhouse Row for convenience (for users who need direct clickhouse crate access)
 pub use clickhouse::Row as NativeClickHouseRow;
 
+/// Compression mode for HTTP requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Compression {
+    /// No compression (default for small payloads).
+    #[default]
+    None,
+    /// LZ4 compression (recommended for large INSERTs).
+    Lz4,
+}
+
 /// A connection to ClickHouse via HTTP.
 #[derive(Clone)]
 pub struct ClickHouseConnection {
     client: Client,
     database: String,
+    compression: Compression,
 }
 
 impl ClickHouseConnection {
@@ -93,7 +144,7 @@ impl ClickHouseConnection {
             .await
             .map_err(|e| Error::ConnectionError(e.to_string()))?;
 
-        Ok(Self { client, database })
+        Ok(Self { client, database, compression: Compression::None })
     }
 
     /// Create a connection from an existing Client.
@@ -101,7 +152,39 @@ impl ClickHouseConnection {
         Self {
             client,
             database: database.into(),
+            compression: Compression::None,
         }
+    }
+
+    /// Enable LZ4 compression for this connection.
+    ///
+    /// Compression is beneficial for large INSERT operations (>1KB payload).
+    /// For small queries, the compression overhead may outweigh the benefits.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let conn = ClickHouseConnection::new("http://localhost:8123/default")
+    ///     .await?
+    ///     .with_compression(Compression::Lz4);
+    /// ```
+    pub fn with_compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
+        // Update client with compression setting
+        if compression == Compression::Lz4 {
+            self.client = self.client.clone().with_compression(clickhouse::Compression::Lz4);
+        }
+        self
+    }
+
+    /// Enable LZ4 compression (convenience method).
+    pub fn with_lz4_compression(self) -> Self {
+        self.with_compression(Compression::Lz4)
+    }
+
+    /// Get the current compression mode.
+    pub fn compression(&self) -> Compression {
+        self.compression
     }
 
     /// Get the underlying client for direct operations.
@@ -340,12 +423,138 @@ impl ClickHouseConnection {
             if line.trim().is_empty() {
                 continue;
             }
-            let row: T = serde_json::from_str(line)
-                .map_err(|e| Error::DeserializationError(format!("Failed to parse JSON: {} - line: {}", e, line)))?;
+            let row: T = parse_json_str(line)
+                .map_err(|e| Error::DeserializationError(format!("{} - line: {}", e, line)))?;
             results.push(row);
         }
 
         Ok(results)
+    }
+
+    /// Load rows from a raw SQL query using streaming JSON parsing.
+    ///
+    /// This method parses JSON rows as they arrive, reducing memory usage
+    /// for large result sets. Each row is passed to the callback function.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.load_json_streaming("SELECT * FROM large_table", |user: User| {
+    ///     println!("Got user: {:?}", user);
+    ///     Ok(()) // Return Err to stop iteration early
+    /// }).await?;
+    /// ```
+    pub async fn load_json_streaming<T, F>(
+        &self,
+        sql: &str,
+        mut callback: F,
+    ) -> QueryResult<usize>
+    where
+        T: DeserializeOwned + Send,
+        F: FnMut(T) -> QueryResult<()> + Send,
+    {
+        let mut cursor = self.client
+            .query(sql)
+            .fetch_bytes("JSONEachRow")
+            .map_err(|e| Error::QueryError(e.to_string()))?;
+
+        let mut count = 0;
+        let mut buffer = Vec::with_capacity(4096);
+        let mut line_start = 0;
+
+        loop {
+            match cursor.next().await {
+                Ok(Some(chunk)) => {
+                    buffer.extend_from_slice(&chunk);
+
+                    // Process complete lines in the buffer
+                    while let Some(newline_pos) = buffer[line_start..].iter().position(|&b| b == b'\n') {
+                        let line_end = line_start + newline_pos;
+                        let line = &buffer[line_start..line_end];
+
+                        if !line.is_empty() && !line.iter().all(|&b| b == b' ' || b == b'\t' || b == b'\r') {
+                            // Parse the line as JSON
+                            let row: T = parse_json_slice(line)
+                                .map_err(|e| Error::DeserializationError(format!(
+                                    "{} - line: {}",
+                                    e,
+                                    String::from_utf8_lossy(line)
+                                )))?;
+
+                            callback(row)?;
+                            count += 1;
+                        }
+
+                        line_start = line_end + 1;
+                    }
+
+                    // Keep only the incomplete line in the buffer
+                    if line_start > 0 {
+                        buffer.drain(..line_start);
+                        line_start = 0;
+                    }
+                }
+                Ok(None) => {
+                    // Process any remaining data in buffer
+                    if !buffer.is_empty() {
+                        let line = buffer.trim_ascii();
+                        if !line.is_empty() {
+                            let row: T = parse_json_slice(line)
+                                .map_err(|e| Error::DeserializationError(format!(
+                                    "{} - line: {}",
+                                    e,
+                                    String::from_utf8_lossy(line)
+                                )))?;
+                            callback(row)?;
+                            count += 1;
+                        }
+                    }
+                    break;
+                }
+                Err(e) => return Err(Error::QueryError(e.to_string())),
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// Load rows into a Vec using streaming parsing.
+    ///
+    /// This is like `load_json` but uses streaming parsing internally,
+    /// which can be more memory-efficient for very large result sets.
+    pub async fn load_json_streamed<T: DeserializeOwned + Send>(&self, sql: &str) -> QueryResult<Vec<T>> {
+        // Estimate initial capacity from a quick scan
+        let mut results = Vec::with_capacity(1024);
+
+        self.load_json_streaming(sql, |row| {
+            results.push(row);
+            Ok(())
+        }).await?;
+
+        Ok(results)
+    }
+}
+
+/// Trait extension for trimming ASCII whitespace from byte slices.
+trait TrimAscii {
+    fn trim_ascii(&self) -> &[u8];
+}
+
+impl TrimAscii for [u8] {
+    fn trim_ascii(&self) -> &[u8] {
+        let start = self.iter().position(|&b| !b.is_ascii_whitespace()).unwrap_or(self.len());
+        let end = self.iter().rposition(|&b| !b.is_ascii_whitespace()).map(|i| i + 1).unwrap_or(0);
+        if start < end {
+            &self[start..end]
+        } else {
+            &[]
+        }
+    }
+}
+
+impl TrimAscii for Vec<u8> {
+    fn trim_ascii(&self) -> &[u8] {
+        self.as_slice().trim_ascii()
     }
 }
 

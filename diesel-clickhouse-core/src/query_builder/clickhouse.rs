@@ -1,5 +1,7 @@
 //! ClickHouse-specific query extensions.
 
+use std::borrow::Cow;
+
 use crate::backend::Backend;
 use crate::expression::Expression;
 use crate::result::QueryResult;
@@ -139,16 +141,49 @@ where
 #[derive(Debug, Clone)]
 pub struct Format<T> {
     inner: T,
-    format: String,
+    format: Cow<'static, str>,
 }
 
 impl<T> Format<T> {
-    /// Create a new FORMAT clause.
-    pub fn new(inner: T, format: impl Into<String>) -> Self {
+    /// Create a new FORMAT clause with a static format name (zero allocation).
+    pub fn new(inner: T, format: &'static str) -> Self {
         Self {
             inner,
-            format: format.into(),
+            format: Cow::Borrowed(format),
         }
+    }
+
+    /// Create a new FORMAT clause with an owned format name.
+    pub fn new_owned(inner: T, format: String) -> Self {
+        Self {
+            inner,
+            format: Cow::Owned(format),
+        }
+    }
+
+    /// Common format: JSON
+    pub fn json(inner: T) -> Self {
+        Self::new(inner, "JSON")
+    }
+
+    /// Common format: JSONEachRow
+    pub fn json_each_row(inner: T) -> Self {
+        Self::new(inner, "JSONEachRow")
+    }
+
+    /// Common format: TabSeparated (TSV)
+    pub fn tab_separated(inner: T) -> Self {
+        Self::new(inner, "TabSeparated")
+    }
+
+    /// Common format: CSV
+    pub fn csv(inner: T) -> Self {
+        Self::new(inner, "CSV")
+    }
+
+    /// Common format: Native
+    pub fn native(inner: T) -> Self {
+        Self::new(inner, "Native")
     }
 }
 
@@ -241,9 +276,14 @@ pub trait ClickHouseQueryExt: Sized {
         WithTotals::new(self)
     }
 
-    /// Specify output FORMAT.
-    fn format(self, format: impl Into<String>) -> Format<Self> {
+    /// Specify output FORMAT (zero-allocation for static format names).
+    fn format(self, format: &'static str) -> Format<Self> {
         Format::new(self, format)
+    }
+
+    /// Specify output FORMAT with an owned format name.
+    fn format_owned(self, format: String) -> Format<Self> {
+        Format::new_owned(self, format)
     }
 
     /// Add SETTINGS clause.

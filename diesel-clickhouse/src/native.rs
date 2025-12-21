@@ -424,27 +424,59 @@ impl ClickHouseConnectionTrait for NativeConnection {
     }
 }
 
+/// Lazily-built column index for a block.
+///
+/// This struct caches column metadata once per block, avoiding repeated
+/// allocations and lookups when processing many rows.
+struct BlockColumnIndex {
+    /// Column names (shared across all rows via Rc).
+    names: std::rc::Rc<[String]>,
+    /// Column types for extraction.
+    types: Vec<clickhouse_rs::types::SqlType>,
+}
+
+impl BlockColumnIndex {
+    /// Build the column index from a block (one-time cost per block).
+    fn from_block(block: &Block<Complex>) -> Self {
+        let cols: Vec<_> = block.columns().iter()
+            .map(|col| (col.name().to_string(), col.sql_type()))
+            .collect();
+
+        let (names, types): (Vec<_>, Vec<_>) = cols.into_iter().unzip();
+
+        Self {
+            names: names.into(),
+            types,
+        }
+    }
+
+    /// Get the number of columns.
+    #[inline]
+    fn len(&self) -> usize {
+        self.names.len()
+    }
+}
+
 /// Convert a native Block to a Vec of deserializable rows.
 fn block_to_vec<T: DeserializeOwned>(
     block: &Block<Complex>,
 ) -> QueryResult<Vec<T>> {
     let row_count = block.row_count();
-    let col_count = block.column_count();
 
     // Pre-allocate results vector
     let mut results = Vec::with_capacity(row_count);
 
-    // Cache column metadata outside the row loop to avoid repeated allocations
-    let columns: Vec<_> = block.columns().iter()
-        .map(|col| (col.name().to_string(), col.sql_type()))
-        .collect();
+    // Build column index once for the entire block (lazy initialization)
+    let index = BlockColumnIndex::from_block(block);
+    let col_count = index.len();
 
     for row_idx in 0..row_count {
         let mut map = serde_json::Map::with_capacity(col_count);
 
-        for (col_idx, (col_name, sql_type)) in columns.iter().enumerate() {
-            let value = extract_block_value(block, row_idx, col_idx, sql_type)?;
-            map.insert(col_name.clone(), value);
+        for col_idx in 0..col_count {
+            let value = extract_block_value(block, row_idx, col_idx, &index.types[col_idx])?;
+            // Clone from Rc is cheap (just ref count bump for the slice)
+            map.insert(index.names[col_idx].clone(), value);
         }
 
         let row: T = serde_json::from_value(serde_json::Value::Object(map))
