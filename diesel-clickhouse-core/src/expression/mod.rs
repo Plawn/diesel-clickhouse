@@ -127,25 +127,24 @@ impl<T, ST: SqlType, QS> AppearsOnTable<QS> for Bound<T, ST> {}
 
 // Implement QueryFragment for Bound with common types using native binding
 //
-// These implementations use push_bind_param_value to:
+// These implementations use push_bindable to:
 // 1. Add a `?` placeholder to the SQL
-// 2. Collect the value for later binding via `.bind()`
+// 2. Collect the typed value for native `.bind()` at execution time
 //
 // This is the SOTA approach as it:
+// - Enables query plan caching on the ClickHouse server (same SQL template)
 // - Delegates serialization to the clickhouse crate
-// - Enables query plan caching (same SQL template)
-// - Provides better type safety
+// - Provides proper type safety
 
 impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<&str, ST> {
     fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
-        // Use str directly since BindValue is implemented for str
-        pass.push_bind_param_value_unsized(self.value)
+        pass.push_bindable(&self.value)
     }
 }
 
 impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<String, ST> {
     fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
-        pass.push_bind_param_value(&self.value)
+        pass.push_bindable(&self.value)
     }
 }
 
@@ -154,7 +153,7 @@ macro_rules! impl_bound_numeric {
         $(
             impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<$t, ST> {
                 fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
-                    pass.push_bind_param_value(&self.value)
+                    pass.push_bindable(&self.value)
                 }
             }
         )*
@@ -163,15 +162,67 @@ macro_rules! impl_bound_numeric {
 
 impl_bound_numeric!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
 
+// Also implement for reference types
+macro_rules! impl_bound_numeric_ref {
+    ($($t:ty),*) => {
+        $(
+            impl<'a, ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<&'a $t, ST> {
+                fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
+                    pass.push_bindable(self.value)
+                }
+            }
+        )*
+    };
+}
+
+impl_bound_numeric_ref!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+
 impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<bool, ST> {
     fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
-        pass.push_bind_param_value(&self.value)
+        pass.push_bindable(&self.value)
     }
 }
 
 impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<&bool, ST> {
     fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
-        pass.push_bind_param_value(self.value)
+        pass.push_bindable(self.value)
+    }
+}
+
+// =============================================================================
+// Option<T> support for nullable expressions
+// =============================================================================
+
+// Option implementations need to handle NULL specially
+macro_rules! impl_bound_option {
+    ($($t:ty),*) => {
+        $(
+            impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<Option<$t>, ST> {
+                fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
+                    match &self.value {
+                        Some(v) => pass.push_bindable(v),
+                        None => {
+                            pass.push_sql("NULL");
+                            Ok(())
+                        }
+                    }
+                }
+            }
+        )*
+    };
+}
+
+impl_bound_option!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool);
+
+impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<Option<String>, ST> {
+    fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
+        match &self.value {
+            Some(v) => pass.push_bindable(v),
+            None => {
+                pass.push_sql("NULL");
+                Ok(())
+            }
+        }
     }
 }
 
@@ -353,6 +404,32 @@ impl<'a> AsExpression<CHString> for &'a str {
         Bound::new(self)
     }
 }
+
+// Option<T> implementations for nullable types
+macro_rules! impl_as_expression_option {
+    ($rust_ty:ty, $sql_ty:ty) => {
+        impl AsExpression<diesel_clickhouse_types::Nullable<$sql_ty>> for Option<$rust_ty> {
+            type Expression = Bound<Option<$rust_ty>, diesel_clickhouse_types::Nullable<$sql_ty>>;
+
+            fn as_expression(self) -> Self::Expression {
+                Bound::new(self)
+            }
+        }
+    };
+}
+
+impl_as_expression_option!(u8, UInt8);
+impl_as_expression_option!(u16, UInt16);
+impl_as_expression_option!(u32, UInt32);
+impl_as_expression_option!(u64, UInt64);
+impl_as_expression_option!(i8, Int8);
+impl_as_expression_option!(i16, Int16);
+impl_as_expression_option!(i32, Int32);
+impl_as_expression_option!(i64, Int64);
+impl_as_expression_option!(f32, Float32);
+impl_as_expression_option!(f64, Float64);
+impl_as_expression_option!(bool, Bool);
+impl_as_expression_option!(String, CHString);
 
 #[cfg(test)]
 mod tests {

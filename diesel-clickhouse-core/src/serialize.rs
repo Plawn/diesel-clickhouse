@@ -3,7 +3,6 @@
 use compact_str::CompactString;
 
 use crate::backend::Backend;
-use crate::escape::escape_sql_string;
 use crate::query_builder::AstPass;
 use crate::result::QueryResult;
 use diesel_clickhouse_types::{SqlType, ToClickHouse};
@@ -38,15 +37,20 @@ where
 // SQL Value Writing (for INSERT statements)
 // =============================================================================
 
-/// Trait for writing SQL literal values.
+/// Trait for writing SQL values using native parameter binding.
+///
+/// This uses `push_bindable` for proper parameter binding, enabling:
+/// - Query plan caching on the ClickHouse server
+/// - Type-safe value serialization
+/// - Protection against SQL injection
 pub trait WriteSqlValue {
-    /// Write the SQL literal representation to the AST pass.
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>);
+    /// Write the value to the AST pass using native binding.
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()>;
 }
 
-/// Write a value as SQL literal to an AstPass.
-pub fn write_sql_value<T: WriteSqlValue, DB: Backend>(value: &T, pass: &mut AstPass<'_, '_, DB>) {
-    value.write_sql(pass);
+/// Write a value using native binding to an AstPass.
+pub fn write_sql_value<T: WriteSqlValue, DB: Backend>(value: &T, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
+    value.write_sql(pass)
 }
 
 /// Write a value as bytes (for binary protocol).
@@ -54,129 +58,62 @@ pub fn write_sql_bytes<T>(_value: &T, _out: &mut Vec<u8>) {
     // Binary serialization - not used for SQL generation
 }
 
-// Implement WriteSqlValue for common types using itoa/ryu for zero-allocation formatting
-impl WriteSqlValue for u8 {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        let mut buf = itoa::Buffer::new();
-        pass.push_sql(buf.format(*self));
-    }
+// Implement WriteSqlValue for common types using native binding
+macro_rules! impl_write_sql_value_bindable {
+    ($($t:ty),*) => {
+        $(
+            impl WriteSqlValue for $t {
+                fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
+                    pass.push_bindable(self)
+                }
+            }
+        )*
+    };
 }
 
-impl WriteSqlValue for u16 {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        let mut buf = itoa::Buffer::new();
-        pass.push_sql(buf.format(*self));
-    }
-}
-
-impl WriteSqlValue for u32 {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        let mut buf = itoa::Buffer::new();
-        pass.push_sql(buf.format(*self));
-    }
-}
-
-impl WriteSqlValue for u64 {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        let mut buf = itoa::Buffer::new();
-        pass.push_sql(buf.format(*self));
-    }
-}
-
-impl WriteSqlValue for i8 {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        let mut buf = itoa::Buffer::new();
-        pass.push_sql(buf.format(*self));
-    }
-}
-
-impl WriteSqlValue for i16 {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        let mut buf = itoa::Buffer::new();
-        pass.push_sql(buf.format(*self));
-    }
-}
-
-impl WriteSqlValue for i32 {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        let mut buf = itoa::Buffer::new();
-        pass.push_sql(buf.format(*self));
-    }
-}
-
-impl WriteSqlValue for i64 {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        let mut buf = itoa::Buffer::new();
-        pass.push_sql(buf.format(*self));
-    }
-}
-
-impl WriteSqlValue for f32 {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        let mut buf = ryu::Buffer::new();
-        pass.push_sql(buf.format_finite(*self));
-    }
-}
-
-impl WriteSqlValue for f64 {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        let mut buf = ryu::Buffer::new();
-        pass.push_sql(buf.format_finite(*self));
-    }
-}
-
-impl WriteSqlValue for bool {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql(if *self { "true" } else { "false" });
-    }
-}
+impl_write_sql_value_bindable!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64, bool);
 
 impl WriteSqlValue for String {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql("'");
-        pass.push_sql(&escape_sql_string(self));
-        pass.push_sql("'");
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
+        pass.push_bindable(self)
     }
 }
 
 impl WriteSqlValue for str {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql("'");
-        pass.push_sql(&escape_sql_string(self));
-        pass.push_sql("'");
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
+        pass.push_bindable(&self.to_string())
     }
 }
 
 impl WriteSqlValue for &str {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql("'");
-        pass.push_sql(&escape_sql_string(self));
-        pass.push_sql("'");
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
+        pass.push_bindable(&self.to_string())
     }
 }
 
 /// CompactString: inline string (up to 24 bytes on stack, heap otherwise).
 /// Zero allocation for small strings like column names, short values, etc.
 impl WriteSqlValue for CompactString {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        pass.push_sql("'");
-        pass.push_sql(&escape_sql_string(self.as_str()));
-        pass.push_sql("'");
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
+        pass.push_bindable(&self.to_string())
     }
 }
 
 impl<T: WriteSqlValue> WriteSqlValue for Option<T> {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
         match self {
             Some(value) => value.write_sql(pass),
-            None => pass.push_sql("NULL"),
+            None => {
+                pass.push_sql("NULL");
+                Ok(())
+            }
         }
     }
 }
 
 impl<T: WriteSqlValue> WriteSqlValue for &T {
-    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) {
-        (*self).write_sql(pass);
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
+        (*self).write_sql(pass)
     }
 }
 

@@ -8,3 +8,4 @@
   - supprimer les migrations qui servent à rien
 - audit performance prepared queries
   - vérification de l'utilisation de bind params
+- audit les perfos

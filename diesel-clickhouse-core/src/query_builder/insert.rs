@@ -224,19 +224,30 @@ mod tests {
         }
 
         fn write_value<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
-            self.id.write_sql(pass);
+            self.id.write_sql(pass)?;
             pass.push_sql(", ");
-            self.name.write_sql(pass);
+            self.name.write_sql(pass)?;
             Ok(())
         }
     }
 
     fn to_sql<T: QueryFragment<HttpBackend>>(fragment: &T) -> String {
+        use crate::backend::BindCollector;
         let mut builder = HttpQueryBuilder::default();
         let mut collector = HttpBindCollector::default();
         let pass = AstPass::<HttpBackend>::new(&mut builder, &mut collector);
         fragment.walk_ast(pass).unwrap();
-        builder.finish()
+
+        // Inline bindings into the SQL for easier test assertions
+        let mut sql = builder.finish();
+        for binding in collector.bindable_values().iter().rev() {
+            if let Some(pos) = sql.rfind("{p") {
+                if let Some(end) = sql[pos..].find('}') {
+                    sql.replace_range(pos..pos + end + 1, &binding.sql_literal());
+                }
+            }
+        }
+        sql
     }
 
     #[test]

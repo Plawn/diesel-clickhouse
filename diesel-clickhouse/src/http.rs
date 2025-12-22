@@ -211,12 +211,23 @@ impl ClickHouseConnection {
     }
 
     /// Execute a query fragment (UPDATE, DELETE, etc).
+    ///
+    /// Uses native parameter binding for query plan caching.
     pub async fn execute_statement<Q>(&self, query: &Q) -> QueryResult<()>
     where
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = build_sql(query)?;
-        self.execute_raw(&sql).await
+        let compiled = build_sql_native(query)?;
+        self.execute_native(&compiled).await
+    }
+
+    /// Execute a NativeCompiledQuery with native parameter binding.
+    pub async fn execute_native(&self, compiled: &NativeCompiledQuery) -> QueryResult<()> {
+        let query = compiled.bind_to(self.client.query(&compiled.sql));
+        query
+            .execute()
+            .await
+            .map_err(|e| Error::QueryError(e.to_string()))
     }
 
     /// Build SQL from a query fragment without executing.
@@ -271,15 +282,33 @@ impl AsyncConnection for ClickHouseConnection {
 /// Build SQL from a QueryFragment.
 ///
 /// Returns an error if the query fragment fails to produce valid SQL.
+/// Bindings are automatically inlined into the SQL string for display/logging.
+///
+/// Note: For actual query execution, use `build_sql_native()` which preserves
+/// placeholders for native parameter binding and query plan caching.
 pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
     let mut builder = GenericQueryBuilder::default();
     let mut collector = GenericBindCollector::default();
     let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
     fragment.walk_ast(pass)?;
-    Ok(builder.finish())
+
+    // Inline bindings into the SQL (for display/logging purposes)
+    let mut sql = builder.finish();
+    let bindable_values = collector.bindable_values();
+
+    if !bindable_values.is_empty() {
+        // Replace each ? placeholder with its binding value (in reverse order)
+        for binding in bindable_values.iter().rev() {
+            if let Some(pos) = sql.rfind('?') {
+                sql.replace_range(pos..pos + 1, &binding.sql_literal());
+            }
+        }
+    }
+
+    Ok(sql)
 }
 
-/// A compiled query with SQL and collected bind values.
+/// A compiled query with SQL and collected bind values (legacy format).
 #[derive(Debug, Clone)]
 pub struct CompiledQuery {
     /// The SQL string with `?` placeholders.
@@ -300,7 +329,7 @@ impl CompiledQuery {
     }
 }
 
-/// Build SQL with bindings from a QueryFragment.
+/// Build SQL with bindings from a QueryFragment (legacy).
 ///
 /// Returns both the SQL string (with `?` placeholders) and the collected bind values.
 pub fn build_sql_with_bindings<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<CompiledQuery> {
@@ -318,6 +347,72 @@ pub fn build_sql_with_bindings<T: QueryFragment<ClickHouse> + ?Sized>(fragment: 
     Ok(CompiledQuery {
         sql: builder.finish(),
         bindings,
+    })
+}
+
+// Re-export for convenience
+pub use crate::core::backend::BindableValue;
+
+/// A compiled query with SQL placeholders and typed bindable values.
+///
+/// This is the SOTA format for native parameter binding, enabling:
+/// - Query plan caching on the ClickHouse server
+/// - Proper type safety through the clickhouse crate's `.bind()` method
+/// - No manual string escaping
+#[derive(Debug, Clone)]
+pub struct NativeCompiledQuery {
+    /// The SQL string with `?` placeholders.
+    pub sql: String,
+    /// The collected bindable values for native binding.
+    pub bindings: Vec<BindableValue>,
+}
+
+impl NativeCompiledQuery {
+    /// Get the number of bind parameters.
+    pub fn param_count(&self) -> usize {
+        self.bindings.len()
+    }
+
+    /// Check if there are any bind parameters.
+    pub fn has_bindings(&self) -> bool {
+        !self.bindings.is_empty()
+    }
+
+    /// Apply all bindings to a clickhouse Query object.
+    pub fn bind_to(&self, mut query: clickhouse::query::Query) -> clickhouse::query::Query {
+        for binding in &self.bindings {
+            query = query.bind(binding);
+        }
+        query
+    }
+
+    /// Get SQL with bindings inlined (for debugging/logging).
+    pub fn sql_with_inlined_bindings(&self) -> String {
+        let mut sql = self.sql.clone();
+        for binding in self.bindings.iter().rev() {
+            if let Some(pos) = sql.rfind('?') {
+                sql.replace_range(pos..pos + 1, &binding.sql_literal());
+            }
+        }
+        sql
+    }
+}
+
+/// Build SQL with native bindable values from a QueryFragment.
+///
+/// This is the SOTA way to build queries for execution:
+/// - Returns SQL with `?` placeholders
+/// - Returns typed BindableValue instances for native `.bind()` calls
+/// - Enables query plan caching on the ClickHouse server
+pub fn build_sql_native<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<NativeCompiledQuery> {
+    let mut builder = GenericQueryBuilder::default();
+    let mut collector = GenericBindCollector::default();
+    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
+    fragment.walk_ast(pass)?;
+
+    Ok(NativeCompiledQuery {
+        sql: builder.finish(),
+        bindings: collector.bindable_values().to_vec(),
     })
 }
 
@@ -428,6 +523,57 @@ impl ClickHouseConnection {
         let escaped_table = escape_identifier(table_name);
         let sql = format!("INSERT INTO {} VALUES {}", escaped_table, sql_values);
         self.execute_raw(&sql).await
+    }
+
+    /// Load rows using native parameter binding.
+    ///
+    /// This is the SOTA method that uses native `.bind()` calls for proper
+    /// parameter binding and query plan caching on the ClickHouse server.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let compiled = build_sql_native(&users::table.filter(users::id.eq(42)))?;
+    /// let users: Vec<User> = conn.load_native(&compiled).await?;
+    /// ```
+    pub async fn load_native<T: DeserializeOwned + Send>(&self, compiled: &NativeCompiledQuery) -> QueryResult<Vec<T>> {
+        let query = compiled.bind_to(self.client.query(&compiled.sql));
+
+        // Execute query and get bytes cursor with JSONEachRow format
+        let mut cursor = query
+            .fetch_bytes("JSONEachRow")
+            .map_err(|e| Error::QueryError(e.to_string()))?;
+
+        // Pre-allocate with reasonable initial capacity
+        let mut all_bytes = Vec::with_capacity(4096);
+        loop {
+            match cursor.next().await {
+                Ok(Some(chunk)) => {
+                    all_bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => return Err(Error::QueryError(e.to_string())),
+            }
+        }
+
+        // Parse JSONEachRow format: one JSON object per line
+        let text = String::from_utf8(all_bytes)
+            .map_err(|e| Error::DeserializationError(e.to_string()))?;
+
+        // Estimate row count based on newlines for pre-allocation
+        let estimated_rows = text.bytes().filter(|&b| b == b'\n').count().max(1);
+        let mut results = Vec::with_capacity(estimated_rows);
+
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let row: T = parse_json_str(line)
+                .map_err(|e| Error::DeserializationError(format!("{} - line: {}", e, line)))?;
+            results.push(row);
+        }
+
+        Ok(results)
     }
 
     /// Load rows from a raw SQL query using JSON format (for serde types).
@@ -749,8 +895,9 @@ impl ClickHouseConnectionTrait for ClickHouseConnection {
     where
         Q: QueryFragment<ClickHouse> + Send + Sync,
     {
-        let sql = build_sql(query)?;
-        self.execute_raw(&sql).await
+        // Use native parameter binding
+        let compiled = build_sql_native(query)?;
+        self.execute_native(&compiled).await
     }
 
     async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
@@ -758,8 +905,9 @@ impl ClickHouseConnectionTrait for ClickHouseConnection {
         T: ClickHouseRowTrait,
         Q: QueryFragment<ClickHouse> + Send + Sync,
     {
-        let sql = build_sql(&query)?;
-        self.load_json(&sql).await
+        // Use native parameter binding
+        let compiled = build_sql_native(&query)?;
+        self.load_native(&compiled).await
     }
 
     fn build_sql<Q>(&self, query: &Q) -> QueryResult<String>

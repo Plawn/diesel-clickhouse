@@ -551,10 +551,10 @@ mod tests {
 
         // Inline bindings into the SQL for easier test assertions
         let mut sql = builder.finish();
-        for binding in collector.bindings().iter().rev() {
+        for binding in collector.bindable_values().iter().rev() {
             if let Some(pos) = sql.rfind("{p") {
                 if let Some(end) = sql[pos..].find('}') {
-                    sql.replace_range(pos..pos + end + 1, &binding.sql_literal);
+                    sql.replace_range(pos..pos + end + 1, &binding.sql_literal());
                 }
             }
         }

@@ -454,14 +454,16 @@ where
 
 impl<DB: Backend> QueryFragment<DB> for LimitClause {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-        pass.push_sql(&format!(" LIMIT {}", self.0));
+        pass.push_sql(" LIMIT ");
+        pass.push_bindable(&self.0)?;
         Ok(())
     }
 }
 
 impl<DB: Backend> QueryFragment<DB> for OffsetClause {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-        pass.push_sql(&format!(" OFFSET {}", self.0));
+        pass.push_sql(" OFFSET ");
+        pass.push_bindable(&self.0)?;
         Ok(())
     }
 }

@@ -597,6 +597,92 @@ where
 {
 }
 
+// QueryFragment implementations for In/NotIn with Vec and slice
+// Uses native parameter binding for each element
+
+use crate::backend::ToBindableValue;
+
+impl<L, T, DB> QueryFragment<DB> for In<L, Vec<T>>
+where
+    L: QueryFragment<DB>,
+    T: ToBindableValue,
+    DB: Backend,
+{
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+        self.left.walk_ast(pass.reborrow())?;
+        pass.push_sql(" IN (");
+        for (i, value) in self.values.iter().enumerate() {
+            if i > 0 {
+                pass.push_sql(", ");
+            }
+            pass.push_bindable(value)?;
+        }
+        pass.push_sql(")");
+        Ok(())
+    }
+}
+
+impl<L, T, DB> QueryFragment<DB> for NotIn<L, Vec<T>>
+where
+    L: QueryFragment<DB>,
+    T: ToBindableValue,
+    DB: Backend,
+{
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+        self.left.walk_ast(pass.reborrow())?;
+        pass.push_sql(" NOT IN (");
+        for (i, value) in self.values.iter().enumerate() {
+            if i > 0 {
+                pass.push_sql(", ");
+            }
+            pass.push_bindable(value)?;
+        }
+        pass.push_sql(")");
+        Ok(())
+    }
+}
+
+// Also implement for slices
+impl<'a, L, T, DB> QueryFragment<DB> for In<L, &'a [T]>
+where
+    L: QueryFragment<DB>,
+    T: ToBindableValue,
+    DB: Backend,
+{
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+        self.left.walk_ast(pass.reborrow())?;
+        pass.push_sql(" IN (");
+        for (i, value) in self.values.iter().enumerate() {
+            if i > 0 {
+                pass.push_sql(", ");
+            }
+            pass.push_bindable(value)?;
+        }
+        pass.push_sql(")");
+        Ok(())
+    }
+}
+
+impl<'a, L, T, DB> QueryFragment<DB> for NotIn<L, &'a [T]>
+where
+    L: QueryFragment<DB>,
+    T: ToBindableValue,
+    DB: Backend,
+{
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+        self.left.walk_ast(pass.reborrow())?;
+        pass.push_sql(" NOT IN (");
+        for (i, value) in self.values.iter().enumerate() {
+            if i > 0 {
+                pass.push_sql(", ");
+            }
+            pass.push_bindable(value)?;
+        }
+        pass.push_sql(")");
+        Ok(())
+    }
+}
+
 // =============================================================================
 // BETWEEN Operator
 // =============================================================================

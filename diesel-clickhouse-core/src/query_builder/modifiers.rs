@@ -156,7 +156,9 @@ where
 {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         self.query.walk_ast(pass.reborrow())?;
-        pass.push_sql(&format!(" LIMIT {} BY ", self.limit));
+        pass.push_sql(" LIMIT ");
+        pass.push_bindable(&self.limit)?;
+        pass.push_sql(" BY ");
         self.by_expr.walk_ast(pass.reborrow())?;
         Ok(())
     }
@@ -186,7 +188,11 @@ where
 {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         self.query.walk_ast(pass.reborrow())?;
-        pass.push_sql(&format!(" LIMIT {} OFFSET {} BY ", self.limit, self.offset));
+        pass.push_sql(" LIMIT ");
+        pass.push_bindable(&self.limit)?;
+        pass.push_sql(" OFFSET ");
+        pass.push_bindable(&self.offset)?;
+        pass.push_sql(" BY ");
         self.by_expr.walk_ast(pass.reborrow())?;
         Ok(())
     }
@@ -430,11 +436,22 @@ mod tests {
     }
 
     fn to_sql<T: QueryFragment<HttpBackend>>(fragment: &T) -> String {
+        use crate::backend::BindCollector;
         let mut builder = HttpQueryBuilder::default();
         let mut collector = HttpBindCollector::default();
         let pass = AstPass::<HttpBackend>::new(&mut builder, &mut collector);
         fragment.walk_ast(pass).ok();
-        builder.finish()
+
+        // Inline bindings into the SQL for easier test assertions
+        let mut sql = builder.finish();
+        for binding in collector.bindable_values().iter().rev() {
+            if let Some(pos) = sql.rfind("{p") {
+                if let Some(end) = sql[pos..].find('}') {
+                    sql.replace_range(pos..pos + end + 1, &binding.sql_literal());
+                }
+            }
+        }
+        sql
     }
 
     #[test]

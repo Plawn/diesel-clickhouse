@@ -83,7 +83,16 @@ mod query_builder_tests {
         let mut collector = GenericBindCollector::default();
         let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
         fragment.walk_ast(pass).unwrap();
-        builder.finish()
+
+        // Inline bindings into the SQL for easier test assertions
+        // GenericQueryBuilder uses '?' as placeholder
+        let mut sql = builder.finish();
+        for binding in collector.bindable_values().iter().rev() {
+            if let Some(pos) = sql.rfind('?') {
+                sql.replace_range(pos..pos + 1, &binding.sql_literal());
+            }
+        }
+        sql
     }
 
     // Simple table representation for tests
@@ -237,7 +246,16 @@ mod expression_tests {
         let mut collector = GenericBindCollector::default();
         let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
         fragment.walk_ast(pass).unwrap();
-        builder.finish()
+
+        // Inline bindings into the SQL for easier test assertions
+        // GenericQueryBuilder uses '?' as placeholder
+        let mut sql = builder.finish();
+        for binding in collector.bindable_values().iter().rev() {
+            if let Some(pos) = sql.rfind('?') {
+                sql.replace_range(pos..pos + 1, &binding.sql_literal());
+            }
+        }
+        sql
     }
 
     #[test]

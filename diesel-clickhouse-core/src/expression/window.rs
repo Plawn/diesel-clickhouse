@@ -233,7 +233,8 @@ impl FrameBound for Preceding {}
 
 impl<DB: Backend> QueryFragment<DB> for Preceding {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-        pass.push_sql(&format!("{} PRECEDING", self.0));
+        pass.push_bindable(&self.0)?;
+        pass.push_sql(" PRECEDING");
         Ok(())
     }
 }
@@ -246,7 +247,8 @@ impl FrameBound for Following {}
 
 impl<DB: Backend> QueryFragment<DB> for Following {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-        pass.push_sql(&format!("{} FOLLOWING", self.0));
+        pass.push_bindable(&self.0)?;
+        pass.push_sql(" FOLLOWING");
         Ok(())
     }
 }
@@ -460,7 +462,9 @@ impl<QS> AppearsOnTable<QS> for Ntile {}
 
 impl<DB: Backend> QueryFragment<DB> for Ntile {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-        pass.push_sql(&format!("ntile({})", self.buckets));
+        pass.push_sql("ntile(");
+        pass.push_bindable(&self.buckets)?;
+        pass.push_sql(")");
         Ok(())
     }
 }
@@ -514,7 +518,9 @@ where
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         pass.push_sql("lag(");
         self.expr.walk_ast(pass.reborrow())?;
-        pass.push_sql(&format!(", {}, ", self.offset));
+        pass.push_sql(", ");
+        pass.push_bindable(&self.offset)?;
+        pass.push_sql(", ");
         self.default.walk_ast(pass.reborrow())?;
         pass.push_sql(")");
         Ok(())
@@ -570,7 +576,9 @@ where
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         pass.push_sql("lead(");
         self.expr.walk_ast(pass.reborrow())?;
-        pass.push_sql(&format!(", {}, ", self.offset));
+        pass.push_sql(", ");
+        pass.push_bindable(&self.offset)?;
+        pass.push_sql(", ");
         self.default.walk_ast(pass.reborrow())?;
         pass.push_sql(")");
         Ok(())
@@ -723,7 +731,9 @@ where
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         pass.push_sql("nth_value(");
         self.expr.walk_ast(pass.reborrow())?;
-        pass.push_sql(&format!(", {})", self.n));
+        pass.push_sql(", ");
+        pass.push_bindable(&self.n)?;
+        pass.push_sql(")");
         Ok(())
     }
 }
@@ -1116,10 +1126,10 @@ mod tests {
 
         // Inline bindings into the SQL for easier test assertions
         let mut sql = builder.finish();
-        for binding in collector.bindings().iter().rev() {
+        for binding in collector.bindable_values().iter().rev() {
             if let Some(pos) = sql.rfind("{p") {
                 if let Some(end) = sql[pos..].find('}') {
-                    sql.replace_range(pos..pos + end + 1, &binding.sql_literal);
+                    sql.replace_range(pos..pos + end + 1, &binding.sql_literal());
                 }
             }
         }

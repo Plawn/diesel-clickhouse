@@ -12,7 +12,143 @@
 //! with either protocol.
 
 use std::fmt::Debug;
+use serde::Serialize;
 use smallvec::SmallVec;
+
+// =============================================================================
+// Bindable Value - Type-erased value for native parameter binding
+// =============================================================================
+
+/// A type-erased value that can be bound to a clickhouse Query.
+///
+/// This enum holds the actual typed value, allowing us to call `.bind()` with
+/// the correct type at execution time. This enables proper parameter binding
+/// and query plan caching on the ClickHouse server.
+#[derive(Debug, Clone)]
+pub enum BindableValue {
+    // Unsigned integers
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    // Signed integers
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    // Floats
+    F32(f32),
+    F64(f64),
+    // Boolean
+    Bool(bool),
+    // String (owned for lifetime safety)
+    String(String),
+}
+
+impl BindableValue {
+    /// Get the ClickHouse type name for this value.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            BindableValue::U8(_) => "UInt8",
+            BindableValue::U16(_) => "UInt16",
+            BindableValue::U32(_) => "UInt32",
+            BindableValue::U64(_) => "UInt64",
+            BindableValue::I8(_) => "Int8",
+            BindableValue::I16(_) => "Int16",
+            BindableValue::I32(_) => "Int32",
+            BindableValue::I64(_) => "Int64",
+            BindableValue::F32(_) => "Float32",
+            BindableValue::F64(_) => "Float64",
+            BindableValue::Bool(_) => "Bool",
+            BindableValue::String(_) => "String",
+        }
+    }
+
+    /// Get the SQL literal representation (for debugging/logging).
+    pub fn sql_literal(&self) -> String {
+        match self {
+            BindableValue::U8(v) => v.to_string(),
+            BindableValue::U16(v) => v.to_string(),
+            BindableValue::U32(v) => v.to_string(),
+            BindableValue::U64(v) => v.to_string(),
+            BindableValue::I8(v) => v.to_string(),
+            BindableValue::I16(v) => v.to_string(),
+            BindableValue::I32(v) => v.to_string(),
+            BindableValue::I64(v) => v.to_string(),
+            BindableValue::F32(v) => v.to_string(),
+            BindableValue::F64(v) => v.to_string(),
+            BindableValue::Bool(v) => if *v { "true" } else { "false" }.to_string(),
+            BindableValue::String(v) => {
+                let escaped = v.replace('\'', "''");
+                format!("'{}'", escaped)
+            }
+        }
+    }
+}
+
+// Implement Serialize for BindableValue so it can be used with clickhouse's .bind()
+impl Serialize for BindableValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            BindableValue::U8(v) => serializer.serialize_u8(*v),
+            BindableValue::U16(v) => serializer.serialize_u16(*v),
+            BindableValue::U32(v) => serializer.serialize_u32(*v),
+            BindableValue::U64(v) => serializer.serialize_u64(*v),
+            BindableValue::I8(v) => serializer.serialize_i8(*v),
+            BindableValue::I16(v) => serializer.serialize_i16(*v),
+            BindableValue::I32(v) => serializer.serialize_i32(*v),
+            BindableValue::I64(v) => serializer.serialize_i64(*v),
+            BindableValue::F32(v) => serializer.serialize_f32(*v),
+            BindableValue::F64(v) => serializer.serialize_f64(*v),
+            BindableValue::Bool(v) => serializer.serialize_bool(*v),
+            BindableValue::String(v) => serializer.serialize_str(v),
+        }
+    }
+}
+
+/// Trait for converting a value to BindableValue.
+pub trait ToBindableValue {
+    fn to_bindable_value(&self) -> BindableValue;
+}
+
+macro_rules! impl_to_bindable {
+    ($($t:ty => $variant:ident),*) => {
+        $(
+            impl ToBindableValue for $t {
+                fn to_bindable_value(&self) -> BindableValue {
+                    BindableValue::$variant(*self)
+                }
+            }
+        )*
+    };
+}
+
+impl_to_bindable!(
+    u8 => U8, u16 => U16, u32 => U32, u64 => U64,
+    i8 => I8, i16 => I16, i32 => I32, i64 => I64,
+    f32 => F32, f64 => F64, bool => Bool
+);
+
+impl ToBindableValue for String {
+    fn to_bindable_value(&self) -> BindableValue {
+        BindableValue::String(self.clone())
+    }
+}
+
+impl ToBindableValue for str {
+    fn to_bindable_value(&self) -> BindableValue {
+        BindableValue::String(self.to_owned())
+    }
+}
+
+impl ToBindableValue for &str {
+    fn to_bindable_value(&self) -> BindableValue {
+        BindableValue::String((*self).to_owned())
+    }
+}
 
 /// Core backend trait for ClickHouse connections.
 ///
@@ -124,14 +260,20 @@ impl<T: BindValue> BindValue for &T {
 
 /// Trait for collecting bound parameters.
 pub trait BindCollector<'a, DB: Backend>: Default {
-    /// Push a bound value.
+    /// Push a bound value (legacy - for backward compatibility).
     fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error>;
 
     /// Push an unsized bound value (like str).
     fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error>;
 
-    /// Get the collected bindings.
+    /// Push a bindable value for native parameter binding.
+    fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error>;
+
+    /// Get the collected bindings (legacy format).
     fn bindings(&self) -> &[BoundValue<'a>];
+
+    /// Get the collected bindable values for native binding.
+    fn bindable_values(&self) -> &[BindableValue];
 }
 
 /// A bound parameter value.
@@ -216,12 +358,14 @@ pub struct HttpRawValue<'a> {
 #[derive(Debug)]
 pub struct HttpBindCollector<'a> {
     bindings: SmallVec<[BoundValue<'a>; 8]>,
+    bindable_values: SmallVec<[BindableValue; 8]>,
 }
 
 impl<'a> Default for HttpBindCollector<'a> {
     fn default() -> Self {
         Self {
             bindings: SmallVec::new(),
+            bindable_values: SmallVec::new(),
         }
     }
 }
@@ -237,8 +381,17 @@ impl<'a> BindCollector<'a, HttpBackend> for HttpBindCollector<'a> {
         Ok(())
     }
 
+    fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
+        self.bindable_values.push(value);
+        Ok(())
+    }
+
     fn bindings(&self) -> &[BoundValue<'a>] {
         &self.bindings
+    }
+
+    fn bindable_values(&self) -> &[BindableValue] {
+        &self.bindable_values
     }
 }
 
@@ -340,12 +493,14 @@ pub struct NativeRawValue<'a> {
 #[derive(Debug)]
 pub struct NativeBindCollector<'a> {
     bindings: SmallVec<[BoundValue<'a>; 8]>,
+    bindable_values: SmallVec<[BindableValue; 8]>,
 }
 
 impl<'a> Default for NativeBindCollector<'a> {
     fn default() -> Self {
         Self {
             bindings: SmallVec::new(),
+            bindable_values: SmallVec::new(),
         }
     }
 }
@@ -361,8 +516,17 @@ impl<'a> BindCollector<'a, NativeBackend> for NativeBindCollector<'a> {
         Ok(())
     }
 
+    fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
+        self.bindable_values.push(value);
+        Ok(())
+    }
+
     fn bindings(&self) -> &[BoundValue<'a>] {
         &self.bindings
+    }
+
+    fn bindable_values(&self) -> &[BindableValue] {
+        &self.bindable_values
     }
 }
 
@@ -453,12 +617,14 @@ pub struct GenericRawValue<'a> {
 #[derive(Debug)]
 pub struct GenericBindCollector<'a> {
     bindings: SmallVec<[BoundValue<'a>; 8]>,
+    bindable_values: SmallVec<[BindableValue; 8]>,
 }
 
 impl<'a> Default for GenericBindCollector<'a> {
     fn default() -> Self {
         Self {
             bindings: SmallVec::new(),
+            bindable_values: SmallVec::new(),
         }
     }
 }
@@ -474,8 +640,17 @@ impl<'a> BindCollector<'a, ClickHouse> for GenericBindCollector<'a> {
         Ok(())
     }
 
+    fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
+        self.bindable_values.push(value);
+        Ok(())
+    }
+
     fn bindings(&self) -> &[BoundValue<'a>] {
         &self.bindings
+    }
+
+    fn bindable_values(&self) -> &[BindableValue] {
+        &self.bindable_values
     }
 }
 
