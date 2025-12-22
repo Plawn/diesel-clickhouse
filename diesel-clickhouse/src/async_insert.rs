@@ -24,7 +24,7 @@
 
 use std::marker::PhantomData;
 
-use crate::core::backend::{ClickHouse, GenericQueryBuilder, GenericBindCollector, QueryBuilder};
+use crate::core::backend::{BindCollector, ClickHouse, GenericQueryBuilder, GenericBindCollector, QueryBuilder};
 use crate::core::query_builder::{AstPass, Insertable};
 use crate::core::query_source::Table;
 use crate::core::result::{Error, QueryResult};
@@ -242,7 +242,24 @@ impl<'a, T: Table, R: Insertable<T>> AsyncInserter<'a, T, R> {
             builder.push_sql(")");
         }
 
-        sql.push_str(&builder.finish());
+        // Get the SQL with placeholders (?)
+        let values_sql = builder.finish();
+
+        // Replace ? placeholders with actual values
+        let bindings = collector.bindable_values();
+        let mut result_values = String::with_capacity(values_sql.len() * 2);
+        let mut binding_idx = 0;
+
+        for ch in values_sql.chars() {
+            if ch == '?' && binding_idx < bindings.len() {
+                result_values.push_str(&bindings[binding_idx].sql_literal());
+                binding_idx += 1;
+            } else {
+                result_values.push(ch);
+            }
+        }
+
+        sql.push_str(&result_values);
         sql
     }
 }
