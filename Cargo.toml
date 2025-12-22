@@ -78,11 +78,12 @@ keywords = ["clickhouse", "orm", "database", "sql", "async"]
 categories = ["database", "asynchronous"]
 
 [workspace.dependencies]
-# Internal crates
-diesel-clickhouse-core = { path = "diesel-clickhouse-core" }
-diesel-clickhouse-types = { path = "diesel-clickhouse-types" }
-diesel-clickhouse-derive = { path = "diesel-clickhouse-derive" }
-diesel-clickhouse-migrations = { path = "diesel-clickhouse-migrations" }
+# Internal crates (version required for crates.io, path for local dev)
+diesel-clickhouse-types = { version = "0.1.0", path = "diesel-clickhouse-types" }
+diesel-clickhouse-core = { version = "0.1.0", path = "diesel-clickhouse-core" }
+diesel-clickhouse-derive = { version = "0.1.0", path = "diesel-clickhouse-derive" }
+diesel-clickhouse-migrations = { version = "0.1.0", path = "diesel-clickhouse-migrations" }
+diesel-clickhouse = { version = "0.1.0", path = "diesel-clickhouse" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
@@ -115,7 +116,6 @@ ryu = "1"
 # Performance optimizations
 smallvec = "1.13"
 compact_str = "0.8"
-simd-json = "0.14"
 bumpalo = { version = "3.16", features = ["collections"] }
 string-interner = "0.17"
 rayon = "1.10"

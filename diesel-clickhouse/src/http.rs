@@ -23,48 +23,7 @@
 
 use async_trait::async_trait;
 use clickhouse::Client;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
-
-// =============================================================================
-// JSON Parsing (with optional SIMD acceleration)
-// =============================================================================
-
-/// Parse JSON from a string slice.
-/// Uses simd-json when the feature is enabled for faster parsing.
-#[cfg(feature = "simd-json")]
-#[inline]
-fn parse_json_str<T: DeserializeOwned>(s: &str) -> Result<T, String> {
-    // simd-json requires a mutable buffer
-    let mut bytes = s.as_bytes().to_vec();
-    simd_json::from_slice(&mut bytes)
-        .map_err(|e| format!("Failed to parse JSON: {}", e))
-}
-
-#[cfg(not(feature = "simd-json"))]
-#[inline]
-fn parse_json_str<T: DeserializeOwned>(s: &str) -> Result<T, String> {
-    serde_json::from_str(s)
-        .map_err(|e| format!("Failed to parse JSON: {}", e))
-}
-
-/// Parse JSON from a byte slice.
-/// Uses simd-json when the feature is enabled for faster parsing.
-#[cfg(feature = "simd-json")]
-#[inline]
-fn parse_json_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
-    // simd-json requires a mutable buffer
-    let mut bytes = bytes.to_vec();
-    simd_json::from_slice(&mut bytes)
-        .map_err(|e| format!("Failed to parse JSON: {}", e))
-}
-
-#[cfg(not(feature = "simd-json"))]
-#[inline]
-fn parse_json_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
-    serde_json::from_slice(bytes)
-        .map_err(|e| format!("Failed to parse JSON: {}", e))
-}
 
 use crate::core::backend::{BindCollector, ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
 use crate::core::connection::{AsyncConnection, ClickHouseConnection as ClickHouseConnectionTrait};
@@ -712,218 +671,8 @@ impl ClickHouseConnection {
         self.execute_raw(&sql).await
     }
 
-    /// Load rows using native parameter binding.
-    ///
-    /// This is the SOTA method that uses native `.bind()` calls for proper
-    /// parameter binding and query plan caching on the ClickHouse server.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let compiled = build_sql_native(&users::table.filter(users::id.eq(42)))?;
-    /// let users: Vec<User> = conn.load_native(&compiled).await?;
-    /// ```
-    pub async fn load_native<T: DeserializeOwned + Send>(&self, compiled: &NativeCompiledQuery) -> QueryResult<Vec<T>> {
-        let query = compiled.bind_to(self.client.query(&compiled.sql));
-
-        // Execute query and get bytes cursor with JSONEachRow format
-        let mut cursor = query
-            .fetch_bytes("JSONEachRow")
-            .map_err(|e| Error::QueryError(e.to_string()))?;
-
-        // Pre-allocate with reasonable initial capacity
-        let mut all_bytes = Vec::with_capacity(4096);
-        loop {
-            match cursor.next().await {
-                Ok(Some(chunk)) => {
-                    all_bytes.extend_from_slice(&chunk);
-                }
-                Ok(None) => break,
-                Err(e) => return Err(Error::QueryError(e.to_string())),
-            }
-        }
-
-        // Parse JSONEachRow format: one JSON object per line
-        let text = String::from_utf8(all_bytes)
-            .map_err(|e| Error::DeserializationError(e.to_string()))?;
-
-        // Estimate row count based on newlines for pre-allocation
-        let estimated_rows = text.bytes().filter(|&b| b == b'\n').count().max(1);
-        let mut results = Vec::with_capacity(estimated_rows);
-
-        for line in text.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let row: T = parse_json_str(line)
-                .map_err(|e| Error::DeserializationError(format!("{} - line: {}", e, line)))?;
-            results.push(row);
-        }
-
-        Ok(results)
-    }
-
-    /// Load rows from a raw SQL query using JSON format (for serde types).
-    ///
-    /// This method uses ClickHouse's JSONEachRow format to deserialize results
-    /// into any type that implements `serde::Deserialize`.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// #[derive(Debug, Row)]
-    /// struct User {
-    ///     id: u64,
-    ///     name: String,
-    /// }
-    ///
-    /// let users: Vec<User> = conn.load_json("SELECT id, name FROM users").await?;
-    /// ```
-    pub async fn load_json<T: DeserializeOwned + Send>(&self, sql: &str) -> QueryResult<Vec<T>> {
-        // Execute query and get bytes cursor with JSONEachRow format
-        let mut cursor = self.client
-            .query(sql)
-            .fetch_bytes("JSONEachRow")
-            .map_err(|e| Error::QueryError(e.to_string()))?;
-
-        // Pre-allocate with reasonable initial capacity to reduce reallocations
-        // 4KB is a good starting point for typical query results
-        let mut all_bytes = Vec::with_capacity(4096);
-        loop {
-            match cursor.next().await {
-                Ok(Some(chunk)) => {
-                    all_bytes.extend_from_slice(&chunk);
-                }
-                Ok(None) => break,
-                Err(e) => return Err(Error::QueryError(e.to_string())),
-            }
-        }
-
-        // Parse JSONEachRow format: one JSON object per line
-        let text = String::from_utf8(all_bytes)
-            .map_err(|e| Error::DeserializationError(e.to_string()))?;
-
-        // Estimate row count based on newlines for pre-allocation
-        let estimated_rows = text.bytes().filter(|&b| b == b'\n').count().max(1);
-        let mut results = Vec::with_capacity(estimated_rows);
-
-        for line in text.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let row: T = parse_json_str(line)
-                .map_err(|e| Error::DeserializationError(format!("{} - line: {}", e, line)))?;
-            results.push(row);
-        }
-
-        Ok(results)
-    }
-
-    /// Load rows from a raw SQL query using streaming JSON parsing.
-    ///
-    /// This method parses JSON rows as they arrive, reducing memory usage
-    /// for large result sets. Each row is passed to the callback function.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// conn.load_json_streaming("SELECT * FROM large_table", |user: User| {
-    ///     println!("Got user: {:?}", user);
-    ///     Ok(()) // Return Err to stop iteration early
-    /// }).await?;
-    /// ```
-    pub async fn load_json_streaming<T, F>(
-        &self,
-        sql: &str,
-        mut callback: F,
-    ) -> QueryResult<usize>
-    where
-        T: DeserializeOwned + Send,
-        F: FnMut(T) -> QueryResult<()> + Send,
-    {
-        let mut cursor = self.client
-            .query(sql)
-            .fetch_bytes("JSONEachRow")
-            .map_err(|e| Error::QueryError(e.to_string()))?;
-
-        let mut count = 0;
-        let mut buffer = Vec::with_capacity(4096);
-        let mut line_start = 0;
-
-        loop {
-            match cursor.next().await {
-                Ok(Some(chunk)) => {
-                    buffer.extend_from_slice(&chunk);
-
-                    // Process complete lines in the buffer
-                    while let Some(newline_pos) = buffer[line_start..].iter().position(|&b| b == b'\n') {
-                        let line_end = line_start + newline_pos;
-                        let line = &buffer[line_start..line_end];
-
-                        if !line.is_empty() && !line.iter().all(|&b| b == b' ' || b == b'\t' || b == b'\r') {
-                            // Parse the line as JSON
-                            let row: T = parse_json_slice(line)
-                                .map_err(|e| Error::DeserializationError(format!(
-                                    "{} - line: {}",
-                                    e,
-                                    String::from_utf8_lossy(line)
-                                )))?;
-
-                            callback(row)?;
-                            count += 1;
-                        }
-
-                        line_start = line_end + 1;
-                    }
-
-                    // Keep only the incomplete line in the buffer
-                    if line_start > 0 {
-                        buffer.drain(..line_start);
-                        line_start = 0;
-                    }
-                }
-                Ok(None) => {
-                    // Process any remaining data in buffer
-                    if !buffer.is_empty() {
-                        let line = buffer.trim_ascii();
-                        if !line.is_empty() {
-                            let row: T = parse_json_slice(line)
-                                .map_err(|e| Error::DeserializationError(format!(
-                                    "{} - line: {}",
-                                    e,
-                                    String::from_utf8_lossy(line)
-                                )))?;
-                            callback(row)?;
-                            count += 1;
-                        }
-                    }
-                    break;
-                }
-                Err(e) => return Err(Error::QueryError(e.to_string())),
-            }
-        }
-
-        Ok(count)
-    }
-
-    /// Load rows into a Vec using streaming parsing.
-    ///
-    /// This is like `load_json` but uses streaming parsing internally,
-    /// which can be more memory-efficient for very large result sets.
-    pub async fn load_json_streamed<T: DeserializeOwned + Send>(&self, sql: &str) -> QueryResult<Vec<T>> {
-        // Estimate initial capacity from a quick scan
-        let mut results = Vec::with_capacity(1024);
-
-        self.load_json_streaming(sql, |row| {
-            results.push(row);
-            Ok(())
-        }).await?;
-
-        Ok(results)
-    }
-
     // =========================================================================
-    // Native Parameter Binding (SOTA)
+    // Native Parameter Binding
     // =========================================================================
 
     /// Create a bound query with native parameter binding.
@@ -1222,29 +971,6 @@ impl ClickHouseConnection {
     }
 }
 
-/// Trait extension for trimming ASCII whitespace from byte slices.
-trait TrimAscii {
-    fn trim_ascii(&self) -> &[u8];
-}
-
-impl TrimAscii for [u8] {
-    fn trim_ascii(&self) -> &[u8] {
-        let start = self.iter().position(|&b| !b.is_ascii_whitespace()).unwrap_or(self.len());
-        let end = self.iter().rposition(|&b| !b.is_ascii_whitespace()).map(|i| i + 1).unwrap_or(0);
-        if start < end {
-            &self[start..end]
-        } else {
-            &[]
-        }
-    }
-}
-
-impl TrimAscii for Vec<u8> {
-    fn trim_ascii(&self) -> &[u8] {
-        self.as_slice().trim_ascii()
-    }
-}
-
 // =============================================================================
 // Unified ClickHouseConnection Implementation
 // =============================================================================
@@ -1268,17 +994,6 @@ impl ClickHouseConnectionTrait for ClickHouseConnection {
         self.execute_native(&compiled).await
     }
 
-    async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
-    where
-        T: ClickHouseRowTrait,
-        Q: QueryFragment<ClickHouse> + Send + Sync,
-    {
-        // Use native parameter binding with JSONEachRow
-        // Note: For better performance, use load_binary() which uses RowBinary format
-        let compiled = build_sql_native(&query)?;
-        self.load_native(&compiled).await
-    }
-
     fn build_sql<Q>(&self, query: &Q) -> QueryResult<String>
     where
         Q: QueryFragment<ClickHouse>,
@@ -1292,7 +1007,7 @@ impl ClickHouseConnectionTrait for ClickHouseConnection {
 }
 
 // =============================================================================
-// Optimized RowBinary Loading (2-3x faster than JSON)
+// Optimized RowBinary Loading
 // =============================================================================
 
 impl ClickHouseConnection {

@@ -28,6 +28,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 
+use diesel_clickhouse::clickhouse;
 use diesel_clickhouse::Connection;
 use diesel_clickhouse_migrations::{
     FileBasedMigrations, MigrationHarness, MigrationSource, MigrationVersion,
@@ -72,6 +73,18 @@ enum Commands {
     },
     /// Setup the project (create diesel.toml and migrations directory)
     Setup,
+    /// Print the database schema as table! macros
+    PrintSchema {
+        /// Only print schema for these tables (comma-separated)
+        #[arg(short, long)]
+        tables: Option<String>,
+        /// Exclude these tables (comma-separated)
+        #[arg(short, long)]
+        exclude: Option<String>,
+        /// Output file (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -132,6 +145,9 @@ async fn main() -> Result<()> {
         Commands::Setup => run_setup(&config).await,
         Commands::Database { command } => run_database_command(command, &config).await,
         Commands::Migration { command } => run_migration_command(command, &config).await,
+        Commands::PrintSchema { tables, exclude, output } => {
+            run_print_schema(&config, tables, exclude, output).await
+        }
     }
 }
 
@@ -352,4 +368,281 @@ async fn run_migration_command(command: MigrationCommands, config: &Config) -> R
     }
 
     Ok(())
+}
+
+// =============================================================================
+// Print Schema
+// =============================================================================
+
+async fn run_print_schema(
+    config: &Config,
+    tables: Option<String>,
+    exclude: Option<String>,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    eprintln!("{}", "Generating schema...".cyan());
+
+    let conn = Connection::establish(&config.database_url).await?;
+
+    // Get database name from connection
+    let database = conn.database();
+
+    // Parse table filters
+    let include_tables: Option<Vec<&str>> = tables.as_ref().map(|t| t.split(',').map(|s| s.trim()).collect());
+    let exclude_tables: Vec<&str> = exclude.as_ref().map(|t| t.split(',').map(|s| s.trim()).collect()).unwrap_or_default();
+
+    // Get all tables
+    let table_names = get_table_names(&conn, database).await?;
+
+    // Filter tables
+    let table_names: Vec<String> = table_names
+        .into_iter()
+        .filter(|name| {
+            // Skip system tables
+            if name.starts_with('.') || name.starts_with("__") {
+                return false;
+            }
+            // Apply include filter
+            if let Some(ref include) = include_tables {
+                if !include.contains(&name.as_str()) {
+                    return false;
+                }
+            }
+            // Apply exclude filter
+            !exclude_tables.contains(&name.as_str())
+        })
+        .collect();
+
+    if table_names.is_empty() {
+        eprintln!("  {}", "No tables found".yellow());
+        return Ok(());
+    }
+
+    eprintln!("  Found {} table(s)", table_names.len());
+
+    // Generate schema
+    let mut schema = String::new();
+    schema.push_str("// @generated automatically by diesel-clickhouse-cli\n");
+    schema.push_str("// To regenerate: diesel-clickhouse print-schema\n\n");
+
+    for table_name in &table_names {
+        let table_schema = generate_table_schema(&conn, database, table_name).await?;
+        schema.push_str(&table_schema);
+        schema.push('\n');
+    }
+
+    // Output
+    if let Some(path) = output {
+        std::fs::write(&path, &schema)?;
+        eprintln!("  {} Schema written to {}", "✓".green(), path.display());
+    } else {
+        println!("{}", schema);
+    }
+
+    Ok(())
+}
+
+async fn get_table_names(conn: &Connection, database: &str) -> Result<Vec<String>> {
+    let sql = format!(
+        "SELECT name FROM system.tables WHERE database = '{}' ORDER BY name",
+        database
+    );
+
+    // Use HTTP connection (CLI only supports HTTP)
+    let http_conn = conn.as_http().ok_or_else(|| {
+        anyhow::anyhow!("print-schema only supports HTTP connections")
+    })?;
+
+    let names: Vec<String> = http_conn.client().query(&sql).fetch_all().await?;
+    Ok(names)
+}
+
+#[derive(Debug)]
+struct ColumnInfo {
+    name: String,
+    type_name: String,
+    is_in_primary_key: bool,
+    is_in_sorting_key: bool,
+}
+
+async fn get_columns(conn: &Connection, database: &str, table: &str) -> Result<Vec<ColumnInfo>> {
+    let sql = format!(
+        "SELECT name, type, is_in_primary_key, is_in_sorting_key \
+         FROM system.columns \
+         WHERE database = '{}' AND table = '{}' \
+         ORDER BY position",
+        database, table
+    );
+
+    // Use HTTP connection (CLI only supports HTTP)
+    let http_conn = conn.as_http().ok_or_else(|| {
+        anyhow::anyhow!("print-schema only supports HTTP connections")
+    })?;
+
+    #[derive(clickhouse::Row, serde::Deserialize)]
+    struct ColumnRow {
+        name: String,
+        #[serde(rename = "type")]
+        type_name: String,
+        is_in_primary_key: u8,
+        is_in_sorting_key: u8,
+    }
+
+    let rows: Vec<ColumnRow> = http_conn.client().query(&sql).fetch_all().await?;
+    let columns = rows
+        .into_iter()
+        .map(|r| ColumnInfo {
+            name: r.name,
+            type_name: r.type_name,
+            is_in_primary_key: r.is_in_primary_key != 0,
+            is_in_sorting_key: r.is_in_sorting_key != 0,
+        })
+        .collect();
+
+    Ok(columns)
+}
+
+async fn generate_table_schema(conn: &Connection, database: &str, table: &str) -> Result<String> {
+    let columns = get_columns(conn, database, table).await?;
+
+    if columns.is_empty() {
+        return Ok(format!("// Table '{}' has no columns\n", table));
+    }
+
+    // Find primary/sorting key columns
+    let key_columns: Vec<&str> = columns
+        .iter()
+        .filter(|c| c.is_in_primary_key || c.is_in_sorting_key)
+        .map(|c| c.name.as_str())
+        .collect();
+
+    let mut output = String::new();
+
+    // Generate table! macro
+    output.push_str("diesel_clickhouse::table! {\n");
+
+    // Table name with primary key columns
+    if key_columns.is_empty() {
+        output.push_str(&format!("    {} {{\n", table));
+    } else {
+        output.push_str(&format!("    {} ({}) {{\n", table, key_columns.join(", ")));
+    }
+
+    // Columns
+    for col in &columns {
+        let rust_type = clickhouse_type_to_diesel(&col.type_name);
+        output.push_str(&format!("        {} -> {},\n", col.name, rust_type));
+    }
+
+    output.push_str("    }\n");
+    output.push_str("}\n");
+
+    Ok(output)
+}
+
+/// Convert ClickHouse type to diesel-clickhouse type
+fn clickhouse_type_to_diesel(ch_type: &str) -> String {
+    // Handle Nullable
+    if ch_type.starts_with("Nullable(") && ch_type.ends_with(')') {
+        let inner = &ch_type[9..ch_type.len() - 1];
+        return format!("Nullable<{}>", clickhouse_type_to_diesel(inner));
+    }
+
+    // Handle LowCardinality
+    if ch_type.starts_with("LowCardinality(") && ch_type.ends_with(')') {
+        let inner = &ch_type[15..ch_type.len() - 1];
+        return clickhouse_type_to_diesel(inner);
+    }
+
+    // Handle Array
+    if ch_type.starts_with("Array(") && ch_type.ends_with(')') {
+        let inner = &ch_type[6..ch_type.len() - 1];
+        return format!("Array<{}>", clickhouse_type_to_diesel(inner));
+    }
+
+    // Handle DateTime with timezone
+    if ch_type.starts_with("DateTime64(") || ch_type.starts_with("DateTime(") {
+        return "DateTime".to_string();
+    }
+
+    // Handle FixedString
+    if ch_type.starts_with("FixedString(") {
+        return "CHString".to_string();
+    }
+
+    // Handle Decimal
+    if ch_type.starts_with("Decimal(") || ch_type.starts_with("Decimal32(")
+        || ch_type.starts_with("Decimal64(") || ch_type.starts_with("Decimal128(") {
+        return "Decimal".to_string();
+    }
+
+    // Handle Enum
+    if ch_type.starts_with("Enum8(") || ch_type.starts_with("Enum16(") {
+        return "CHString".to_string(); // Enums are typically handled as strings
+    }
+
+    // Handle Map
+    if ch_type.starts_with("Map(") && ch_type.ends_with(')') {
+        // Map(K, V) -> Map<K, V>
+        let inner = &ch_type[4..ch_type.len() - 1];
+        // Split by comma (simple case, doesn't handle nested types with commas)
+        if let Some(comma_pos) = inner.find(", ") {
+            let key_type = &inner[..comma_pos];
+            let val_type = &inner[comma_pos + 2..];
+            return format!(
+                "Map<{}, {}>",
+                clickhouse_type_to_diesel(key_type),
+                clickhouse_type_to_diesel(val_type)
+            );
+        }
+        return "Map".to_string();
+    }
+
+    // Handle Tuple (simplified)
+    if ch_type.starts_with("Tuple(") {
+        return "Tuple".to_string();
+    }
+
+    // Basic types
+    match ch_type {
+        // Integers
+        "UInt8" => "UInt8",
+        "UInt16" => "UInt16",
+        "UInt32" => "UInt32",
+        "UInt64" => "UInt64",
+        "UInt128" => "UInt128",
+        "UInt256" => "UInt256",
+        "Int8" => "Int8",
+        "Int16" => "Int16",
+        "Int32" => "Int32",
+        "Int64" => "Int64",
+        "Int128" => "Int128",
+        "Int256" => "Int256",
+
+        // Floats
+        "Float32" => "Float32",
+        "Float64" => "Float64",
+
+        // Strings
+        "String" => "CHString",
+
+        // Boolean
+        "Bool" => "Bool",
+
+        // Date/Time
+        "Date" => "Date",
+        "Date32" => "Date32",
+        "DateTime" => "DateTime",
+
+        // UUID
+        "UUID" => "UUID",
+
+        // IPv4/IPv6
+        "IPv4" => "IPv4",
+        "IPv6" => "IPv6",
+
+        // Unknown - return as-is
+        _ => ch_type,
+    }
+    .to_string()
 }

@@ -3,6 +3,7 @@ name = "diesel-clickhouse"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description.workspace = true
 keywords.workspace = true
 categories.workspace = true
@@ -40,9 +41,6 @@ native-tls-native = ["clickhouse-rs?/tls"]
 # Tracing
 tracing = ["dep:tracing"]
 
-# SIMD-accelerated JSON parsing
-simd-json = ["dep:simd-json"]
-
 [dependencies]
 diesel-clickhouse-core.workspace = true
 diesel-clickhouse-types.workspace = true
@@ -73,13 +71,12 @@ chrono = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 deadpool = { version = "0.10", optional = true }
 tracing = { version = "0.1", optional = true }
-simd-json = { workspace = true, optional = true }
 url = "2"
 
 # Optional - Migrations
-diesel-clickhouse-migrations = { path = "../diesel-clickhouse-migrations", optional = true }
+diesel-clickhouse-migrations = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
 reqwest = { version = "0.11", features = ["blocking"] }
-diesel-clickhouse-migrations = { path = "../diesel-clickhouse-migrations" }
+diesel-clickhouse-migrations.workspace = true

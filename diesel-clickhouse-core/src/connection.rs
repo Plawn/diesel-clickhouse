@@ -118,67 +118,6 @@ pub trait ClickHouseConnection: Send + Sync {
     where
         Q: QueryFragment<ClickHouse> + Send + Sync;
 
-    /// Load rows from a query.
-    ///
-    /// This is the primary method for fetching data. The row type must implement
-    /// `ClickHouseRow` (which is automatically satisfied by `#[derive(Row)]`).
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// #[derive(Debug, Row)]
-    /// struct User {
-    ///     id: u64,
-    ///     name: String,
-    /// }
-    ///
-    /// let users: Vec<User> = conn.load(
-    ///     users::table.filter(users::active.eq(true))
-    /// ).await?;
-    /// ```
-    async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
-    where
-        T: ClickHouseRow,
-        Q: QueryFragment<ClickHouse> + Send + Sync;
-
-    /// Load a single row from a query.
-    ///
-    /// Returns an error if no rows are found.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let user: User = conn.load_one(
-    ///     users::table.filter(users::id.eq(42))
-    /// ).await?;
-    /// ```
-    async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
-    where
-        T: ClickHouseRow,
-        Q: QueryFragment<ClickHouse> + Send + Sync,
-    {
-        self.load(query).await?.into_iter().next().ok_or(crate::result::Error::NotFound)
-    }
-
-    /// Load an optional single row from a query.
-    ///
-    /// Returns `None` if no rows are found.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let user: Option<User> = conn.load_optional(
-    ///     users::table.filter(users::id.eq(42))
-    /// ).await?;
-    /// ```
-    async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
-    where
-        T: ClickHouseRow,
-        Q: QueryFragment<ClickHouse> + Send + Sync,
-    {
-        Ok(self.load(query).await?.into_iter().next())
-    }
-
     /// Insert data using a query fragment.
     ///
     /// # Example

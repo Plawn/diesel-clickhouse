@@ -3,7 +3,10 @@ name = "diesel-clickhouse-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Core traits and types for diesel-clickhouse"
+keywords = ["clickhouse", "orm", "database", "sql"]
+categories = ["database"]
 
 [features]
 default = ["chrono"]

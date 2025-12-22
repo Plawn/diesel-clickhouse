@@ -90,7 +90,6 @@ use serde::de::DeserializeOwned;
 use crate::core::backend::ClickHouse;
 use crate::core::query_builder::QueryFragment;
 use crate::core::result::{Error, QueryResult};
-use crate::core::row::ClickHouseRow;
 
 /// A unified connection that works with both HTTP and Native backends.
 ///
@@ -504,45 +503,6 @@ impl Connection {
     }
 
     // =========================================================================
-    // Legacy serde-based loading (for backward compatibility)
-    // =========================================================================
-
-    /// Load rows using serde-based deserialization.
-    ///
-    /// This is the legacy method that uses JSON/serde for deserialization.
-    /// For better performance, use `#[row]` attribute and the standard `load()` method.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// #[derive(Debug, Row)]  // Old derive(Row) with serde
-    /// struct User {
-    ///     id: u64,
-    ///     name: String,
-    /// }
-    ///
-    /// let users: Vec<User> = conn.load_serde(query).await?;
-    /// ```
-    pub async fn load_serde<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
-    where
-        T: ClickHouseRow,
-        Q: QueryFragment<ClickHouse> + Send + Sync,
-    {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(conn) => {
-                use crate::core::connection::ClickHouseConnection;
-                conn.load(query).await
-            }
-            #[cfg(feature = "native")]
-            Connection::Native(conn) => {
-                use crate::core::connection::ClickHouseConnection;
-                conn.load(query).await
-            }
-        }
-    }
-
-    // =========================================================================
     // Optimized RowBinary Loading (HTTP only) - kept for explicit access
     // =========================================================================
 
@@ -775,19 +735,25 @@ impl Connection {
             }
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "For Native backend, use stream_native() with ClickHouseRow types.".to_string()
+                "For Native backend, use stream_native() with #[derive(Row)] types.".to_string()
             )),
         }
     }
 
     /// Stream rows from a query (Native backend).
     ///
-    /// For Native backend, the row type must implement `ClickHouseRow`.
+    /// For Native backend, the row type must implement `FromNativeBlock`.
     /// Note: Native backend loads all rows first, then iterates.
     ///
     /// # Example
     ///
     /// ```rust,ignore
+    /// #[derive(Debug, Row)]
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
     /// let mut stream = conn.stream_native::<User, _>(
     ///     users::table.filter(users::active.eq(true))
     /// ).await?;
@@ -799,11 +765,11 @@ impl Connection {
     #[cfg(feature = "native")]
     pub async fn stream_native<T, Q>(&self, query: Q) -> QueryResult<crate::stream::RowStream<T>>
     where
-        T: ClickHouseRow + Send,
-        Q: QueryFragment<ClickHouse> + Send + Sync,
+        T: crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
     {
-        // Load all rows then create iterator (using serde-based loading for ClickHouseRow)
-        let rows: Vec<T> = self.load_serde(query).await?;
+        // Load all rows using optimized binary deserialization, then iterate
+        let rows: Vec<T> = self.load_optimized(query).await?;
         Ok(crate::stream::RowStream::from(rows))
     }
 

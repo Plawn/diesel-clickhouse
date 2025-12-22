@@ -2,8 +2,8 @@
 name = "diesel-clickhouse-cli"
 version.workspace = true
 edition.workspace = true
-authors.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "CLI tool for diesel-clickhouse migrations"
 keywords = ["clickhouse", "migrations", "cli", "database"]
 categories = ["command-line-utilities", "database"]
@@ -13,7 +13,7 @@ name = "diesel-clickhouse"
 path = "src/main.rs"
 
 [dependencies]
-diesel-clickhouse = { path = "../diesel-clickhouse", features = ["http", "migrations"] }
+diesel-clickhouse = { workspace = true, features = ["http", "migrations"] }
 diesel-clickhouse-migrations.workspace = true
 
 # Async runtime
