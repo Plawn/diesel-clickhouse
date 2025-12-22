@@ -28,15 +28,14 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 
+use diesel_clickhouse::Connection;
 use diesel_clickhouse_migrations::{
     FileBasedMigrations, MigrationHarness, MigrationSource, MigrationVersion,
 };
 
 mod config;
-mod connection;
 
 use config::Config;
-use connection::CliConnection;
 
 /// diesel-clickhouse CLI - Migration tool for ClickHouse
 #[derive(Parser)]
@@ -194,7 +193,7 @@ async fn run_database_command(command: DatabaseCommands, config: &Config) -> Res
         DatabaseCommands::Reset => {
             println!("{}", "Resetting database...".cyan());
 
-            let mut conn = CliConnection::connect(&config.database_url).await?;
+            let mut conn = Connection::establish(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             // Revert all migrations
@@ -224,7 +223,7 @@ async fn run_migration_command(command: MigrationCommands, config: &Config) -> R
         MigrationCommands::Run { version } => {
             println!("{}", "Running migrations...".cyan());
 
-            let mut conn = CliConnection::connect(&config.database_url).await?;
+            let mut conn = Connection::establish(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             let applied = if let Some(version) = version {
@@ -247,7 +246,7 @@ async fn run_migration_command(command: MigrationCommands, config: &Config) -> R
         MigrationCommands::Revert { count, all } => {
             println!("{}", "Reverting migrations...".cyan());
 
-            let mut conn = CliConnection::connect(&config.database_url).await?;
+            let mut conn = Connection::establish(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             let count = if all {
@@ -271,7 +270,7 @@ async fn run_migration_command(command: MigrationCommands, config: &Config) -> R
         MigrationCommands::Redo { count } => {
             println!("{}", "Redoing migrations...".cyan());
 
-            let mut conn = CliConnection::connect(&config.database_url).await?;
+            let mut conn = Connection::establish(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             let redone = conn.redo_migrations(&source, count).await?;
@@ -306,7 +305,7 @@ async fn run_migration_command(command: MigrationCommands, config: &Config) -> R
         MigrationCommands::List => {
             println!("{}", "Migrations:".cyan());
 
-            let mut conn = CliConnection::connect(&config.database_url).await?;
+            let mut conn = Connection::establish(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             let applied = conn.applied_migrations().await?;
@@ -335,7 +334,7 @@ async fn run_migration_command(command: MigrationCommands, config: &Config) -> R
         MigrationCommands::Pending => {
             println!("{}", "Pending migrations:".cyan());
 
-            let mut conn = CliConnection::connect(&config.database_url).await?;
+            let mut conn = Connection::establish(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             let pending = conn.pending_migrations(&source).await?;
