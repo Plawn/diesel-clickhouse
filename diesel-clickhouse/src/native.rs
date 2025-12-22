@@ -774,7 +774,7 @@ impl NativeConnection {
         Q: QueryFragment<ClickHouse> + Send,
     {
         let mut results = self.load_optimized(query).await?;
-        results.pop().ok_or_else(|| Error::NotFound)
+        results.pop().ok_or(Error::NotFound)
     }
 
     /// Load an optional single row using optimized deserialization.

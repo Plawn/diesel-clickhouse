@@ -84,9 +84,6 @@
 //! }
 //! ```
 
-#[cfg(feature = "native")]
-use serde::de::DeserializeOwned;
-
 use crate::core::backend::ClickHouse;
 use crate::core::query_builder::QueryFragment;
 use crate::core::result::{Error, QueryResult};
@@ -774,20 +771,18 @@ impl Connection {
     }
 
     // =========================================================================
-    // Unified Fetch Methods (HTTP)
+    // Unified Fetch Methods (aliases for load methods)
     // =========================================================================
 
     /// Fetch all rows from a query.
     ///
-    /// For HTTP backend, row type must derive `clickhouse::Row`.
+    /// This is an alias for `load()` - both methods use optimized binary
+    /// deserialization for each backend.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// use clickhouse::Row;
-    /// use serde::Deserialize;
-    ///
-    /// #[derive(Debug, Row, Deserialize)]
+    /// #[derive(Debug, Row)]
     /// struct User {
     ///     id: u64,
     ///     name: String,
@@ -797,110 +792,119 @@ impl Connection {
     ///     users::table.filter(users::active.eq(true))
     /// ).await?;
     /// ```
-    #[cfg(feature = "http")]
+    #[cfg(all(feature = "http", not(feature = "native")))]
     pub async fn fetch_all<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
     where
-        T: clickhouse::RowOwned + clickhouse::RowRead + Send,
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = self.build_sql(query)?;
-        self.fetch_all_raw(&sql).await
+        self.load(query).await
+    }
+
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    pub async fn fetch_all<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        self.load(query).await
+    }
+
+    #[cfg(all(feature = "http", feature = "native"))]
+    pub async fn fetch_all<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        self.load(query).await
     }
 
     /// Fetch all rows from a raw SQL query.
-    #[cfg(feature = "http")]
+    #[cfg(all(feature = "http", not(feature = "native")))]
     pub async fn fetch_all_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
     where
-        T: clickhouse::RowOwned + clickhouse::RowRead + Send,
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
     {
         match self {
-            Connection::Http(conn) => {
-                conn.client()
-                    .query(sql)
-                    .fetch_all()
-                    .await
-                    .map_err(|e| Error::QueryError(e.to_string()))
-            }
-            #[cfg(feature = "native")]
-            Connection::Native(_) => {
-                Err(Error::QueryError(
-                    "Native backend requires serde::Deserialize. Use fetch_all_native() instead.".to_string()
-                ))
-            }
+            Connection::Http(conn) => conn.load_binary_raw(sql).await,
+        }
+    }
+
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    pub async fn fetch_all_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
+    where
+        T: crate::native::FromNativeBlock + Send,
+    {
+        match self {
+            Connection::Native(conn) => conn.load_optimized_raw(sql).await,
+        }
+    }
+
+    #[cfg(all(feature = "http", feature = "native"))]
+    pub async fn fetch_all_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
+    {
+        match self {
+            Connection::Http(conn) => conn.load_binary_raw(sql).await,
+            Connection::Native(conn) => conn.load_optimized_raw(sql).await,
         }
     }
 
     /// Fetch exactly one row from a query.
-    #[cfg(feature = "http")]
+    #[cfg(all(feature = "http", not(feature = "native")))]
     pub async fn fetch_one<T, Q>(&self, query: Q) -> QueryResult<T>
     where
-        T: clickhouse::RowOwned + clickhouse::RowRead + Send,
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
         Q: QueryFragment<ClickHouse>,
     {
-        let results: Vec<T> = self.fetch_all(query).await?;
-        results.into_iter().next().ok_or(Error::NotFound)
+        self.load_one(query).await
+    }
+
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    pub async fn fetch_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    where
+        T: crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        self.load_one(query).await
+    }
+
+    #[cfg(all(feature = "http", feature = "native"))]
+    pub async fn fetch_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        self.load_one(query).await
     }
 
     /// Fetch zero or one row from a query.
-    #[cfg(feature = "http")]
+    #[cfg(all(feature = "http", not(feature = "native")))]
     pub async fn fetch_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
     where
-        T: clickhouse::RowOwned + clickhouse::RowRead + Send,
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
         Q: QueryFragment<ClickHouse>,
     {
-        let results: Vec<T> = self.fetch_all(query).await?;
-        Ok(results.into_iter().next())
+        self.load_optional(query).await
     }
 
-    // =========================================================================
-    // Unified Fetch Methods (Native only)
-    // =========================================================================
-
-    /// Fetch all rows from a query (native backend).
-    #[cfg(all(feature = "native", not(feature = "http")))]
-    pub async fn fetch_all<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
-    where
-        T: DeserializeOwned,
-        Q: QueryFragment<ClickHouse>,
-    {
-        let sql = self.build_sql(query)?;
-        self.fetch_all_raw(&sql).await
-    }
-
-    /// Fetch all rows from a raw SQL query (native backend).
-    #[cfg(all(feature = "native", not(feature = "http")))]
-    pub async fn fetch_all_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
-    where
-        T: DeserializeOwned,
-    {
-        match self {
-            Connection::Native(conn) => {
-                let block = conn.query_raw(sql).await?;
-                block_to_vec(&block)
-            }
-        }
-    }
-
-    /// Fetch exactly one row (native backend).
-    #[cfg(all(feature = "native", not(feature = "http")))]
-    pub async fn fetch_one<T, Q>(&self, query: Q) -> QueryResult<T>
-    where
-        T: DeserializeOwned,
-        Q: QueryFragment<ClickHouse>,
-    {
-        let results: Vec<T> = self.fetch_all(query).await?;
-        results.into_iter().next().ok_or(Error::NotFound)
-    }
-
-    /// Fetch zero or one row (native backend).
     #[cfg(all(feature = "native", not(feature = "http")))]
     pub async fn fetch_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
     where
-        T: DeserializeOwned,
-        Q: QueryFragment<ClickHouse>,
+        T: crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
     {
-        let results: Vec<T> = self.fetch_all(query).await?;
-        Ok(results.into_iter().next())
+        self.load_optional(query).await
+    }
+
+    #[cfg(all(feature = "http", feature = "native"))]
+    pub async fn fetch_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        self.load_optional(query).await
     }
 
     // =========================================================================
@@ -1033,276 +1037,6 @@ impl Connection {
                 "Zero-copy parsing is only supported on HTTP backend.".to_string()
             )),
         }
-    }
-
-    // =========================================================================
-    // Native-specific fetch (when both features enabled)
-    // =========================================================================
-
-    /// Fetch all rows using native backend with serde deserialization.
-    ///
-    /// Use this when you have both HTTP and Native features enabled
-    /// and want to fetch from the native backend.
-    #[cfg(feature = "native")]
-    pub async fn fetch_all_native<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
-    where
-        T: DeserializeOwned,
-        Q: QueryFragment<ClickHouse>,
-    {
-        let sql = self.build_sql(query)?;
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(_) => {
-                Err(Error::QueryError(
-                    "This is an HTTP connection. Use fetch_all() with clickhouse::Row instead.".to_string()
-                ))
-            }
-            Connection::Native(conn) => {
-                let block = conn.query_raw(&sql).await?;
-                block_to_vec(&block)
-            }
-        }
-    }
-}
-
-/// Convert a native Block to a Vec of deserializable rows.
-#[cfg(feature = "native")]
-fn block_to_vec<T: DeserializeOwned>(
-    block: &clickhouse_rs::Block<clickhouse_rs::types::Complex>,
-) -> QueryResult<Vec<T>> {
-    let row_count = block.row_count();
-    let col_count = block.column_count();
-
-    // Pre-allocate results vector
-    let mut results = Vec::with_capacity(row_count);
-
-    // Cache column metadata outside the row loop to avoid repeated allocations
-    let columns: Vec<_> = block.columns().iter()
-        .map(|col| (col.name().to_string(), col.sql_type()))
-        .collect();
-
-    for row_idx in 0..row_count {
-        let mut map = serde_json::Map::with_capacity(col_count);
-
-        for (col_idx, (col_name, sql_type)) in columns.iter().enumerate() {
-            let value = extract_value(block, row_idx, col_idx, sql_type)?;
-            map.insert(col_name.clone(), value);
-        }
-
-        let row: T = serde_json::from_value(serde_json::Value::Object(map))
-            .map_err(|e| Error::DeserializationError(e.to_string()))?;
-        results.push(row);
-    }
-
-    Ok(results)
-}
-
-/// Helper to convert clickhouse-rs errors.
-#[cfg(feature = "native")]
-fn ch_err(e: clickhouse_rs::errors::Error) -> Error {
-    Error::QueryError(e.to_string())
-}
-
-/// Extract a value from a native Block cell.
-#[cfg(feature = "native")]
-fn extract_value(
-    block: &clickhouse_rs::Block<clickhouse_rs::types::Complex>,
-    row: usize,
-    col: usize,
-    sql_type: &clickhouse_rs::types::SqlType,
-) -> QueryResult<serde_json::Value> {
-    use clickhouse_rs::types::SqlType;
-
-    Ok(match sql_type {
-        SqlType::UInt8 => {
-            let v: u8 = block.get(row, col).map_err(ch_err)?;
-            serde_json::Value::Number(v.into())
-        }
-        SqlType::UInt16 => {
-            let v: u16 = block.get(row, col).map_err(ch_err)?;
-            serde_json::Value::Number(v.into())
-        }
-        SqlType::UInt32 => {
-            let v: u32 = block.get(row, col).map_err(ch_err)?;
-            serde_json::Value::Number(v.into())
-        }
-        SqlType::UInt64 => {
-            let v: u64 = block.get(row, col).map_err(ch_err)?;
-            serde_json::Value::Number(v.into())
-        }
-        SqlType::Int8 => {
-            let v: i8 = block.get(row, col).map_err(ch_err)?;
-            serde_json::Value::Number(v.into())
-        }
-        SqlType::Int16 => {
-            let v: i16 = block.get(row, col).map_err(ch_err)?;
-            serde_json::Value::Number(v.into())
-        }
-        SqlType::Int32 => {
-            let v: i32 = block.get(row, col).map_err(ch_err)?;
-            serde_json::Value::Number(v.into())
-        }
-        SqlType::Int64 => {
-            let v: i64 = block.get(row, col).map_err(ch_err)?;
-            serde_json::Value::Number(v.into())
-        }
-        SqlType::Float32 => {
-            let v: f32 = block.get(row, col).map_err(ch_err)?;
-            serde_json::Number::from_f64(v as f64)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        }
-        SqlType::Float64 => {
-            let v: f64 = block.get(row, col).map_err(ch_err)?;
-            serde_json::Number::from_f64(v)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        }
-        SqlType::String | SqlType::FixedString(_) => {
-            let v: String = block.get(row, col).map_err(ch_err)?;
-            serde_json::Value::String(v)
-        }
-        SqlType::Date => {
-            // Date is stored as days since epoch, get as u16 and format
-            let days: u16 = block.get(row, col).map_err(ch_err)?;
-            // Convert to ISO date string (days since 1970-01-01)
-            let date = chrono_lite::days_to_date(days as i32);
-            serde_json::Value::String(date)
-        }
-        SqlType::DateTime(_) => {
-            // DateTime is stored as seconds since epoch
-            let secs: u32 = block.get(row, col).map_err(ch_err)?;
-            let datetime = chrono_lite::secs_to_datetime(secs as i64);
-            serde_json::Value::String(datetime)
-        }
-        SqlType::Nullable(inner) => {
-            // For Nullable, try to get the inner value. If it fails (NULL), return null.
-            // Note: inner is &'static SqlType
-            match inner {
-                SqlType::String | SqlType::FixedString(_) => {
-                    block.get::<Option<String>, _>(row, col)
-                        .map_err(ch_err)?
-                        .map(serde_json::Value::String)
-                        .unwrap_or(serde_json::Value::Null)
-                }
-                SqlType::UInt64 => {
-                    block.get::<Option<u64>, _>(row, col)
-                        .map_err(ch_err)?
-                        .map(|v| serde_json::Value::Number(v.into()))
-                        .unwrap_or(serde_json::Value::Null)
-                }
-                SqlType::Int64 => {
-                    block.get::<Option<i64>, _>(row, col)
-                        .map_err(ch_err)?
-                        .map(|v| serde_json::Value::Number(v.into()))
-                        .unwrap_or(serde_json::Value::Null)
-                }
-                _ => {
-                    // Fallback: try as optional string
-                    block.get::<Option<String>, _>(row, col)
-                        .unwrap_or(None)
-                        .map(serde_json::Value::String)
-                        .unwrap_or(serde_json::Value::Null)
-                }
-            }
-        }
-        _ => {
-            // Fallback: try as string
-            let v: String = block.get(row, col).unwrap_or_default();
-            serde_json::Value::String(v)
-        }
-    })
-}
-
-/// Simple date/time formatting without chrono dependency.
-/// Uses stack-based formatting to avoid heap allocations.
-#[cfg(feature = "native")]
-mod chrono_lite {
-    /// Write a zero-padded i32 to a string.
-    #[inline]
-    fn write_padded_i32(s: &mut String, value: i32, width: usize) {
-        let mut buf = itoa::Buffer::new();
-        let formatted = buf.format(value);
-        for _ in 0..(width.saturating_sub(formatted.len())) {
-            s.push('0');
-        }
-        s.push_str(formatted);
-    }
-
-    /// Write a zero-padded u32 to a string.
-    #[inline]
-    fn write_padded_u32(s: &mut String, value: u32, width: usize) {
-        let mut buf = itoa::Buffer::new();
-        let formatted = buf.format(value);
-        for _ in 0..(width.saturating_sub(formatted.len())) {
-            s.push('0');
-        }
-        s.push_str(formatted);
-    }
-
-    /// Convert days since epoch to ISO date string.
-    pub fn days_to_date(days: i32) -> String {
-        const DAYS_IN_400_YEARS: i32 = 146097;
-
-        let days = days + 719468; // Adjust for epoch difference
-
-        let era = if days >= 0 { days } else { days - 146096 } / DAYS_IN_400_YEARS;
-        let doe = days - era * DAYS_IN_400_YEARS;
-        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-        let y = yoe + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        let y = if m <= 2 { y + 1 } else { y };
-
-        // Pre-allocate exact size: "YYYY-MM-DD" = 10 chars
-        let mut result = String::with_capacity(10);
-        write_padded_i32(&mut result, y, 4);
-        result.push('-');
-        write_padded_i32(&mut result, m, 2);
-        result.push('-');
-        write_padded_i32(&mut result, d, 2);
-        result
-    }
-
-    /// Convert seconds since epoch to ISO datetime string.
-    pub fn secs_to_datetime(secs: i64) -> String {
-        let days = (secs / 86400) as i32;
-        let day_secs = (secs % 86400) as u32;
-        let hours = day_secs / 3600;
-        let mins = (day_secs % 3600) / 60;
-        let secs_val = day_secs % 60;
-
-        // Pre-allocate exact size: "YYYY-MM-DDTHH:MM:SSZ" = 20 chars
-        let mut result = String::with_capacity(20);
-
-        // Date part inline
-        const DAYS_IN_400_YEARS: i32 = 146097;
-        let days_adj = days + 719468;
-        let era = if days_adj >= 0 { days_adj } else { days_adj - 146096 } / DAYS_IN_400_YEARS;
-        let doe = days_adj - era * DAYS_IN_400_YEARS;
-        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-        let y = yoe + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        let y = if m <= 2 { y + 1 } else { y };
-
-        write_padded_i32(&mut result, y, 4);
-        result.push('-');
-        write_padded_i32(&mut result, m, 2);
-        result.push('-');
-        write_padded_i32(&mut result, d, 2);
-        result.push('T');
-        write_padded_u32(&mut result, hours, 2);
-        result.push(':');
-        write_padded_u32(&mut result, mins, 2);
-        result.push(':');
-        write_padded_u32(&mut result, secs_val, 2);
-        result.push('Z');
-        result
     }
 }
 

@@ -1049,6 +1049,18 @@ impl ClickHouseConnection {
             .await
             .map_err(|e| Error::QueryError(e.to_string()))
     }
+
+    /// Load rows from raw SQL using RowBinary format.
+    pub async fn load_binary_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+    {
+        self.client
+            .query(sql)
+            .fetch_all()
+            .await
+            .map_err(|e| Error::QueryError(e.to_string()))
+    }
 }
 
 #[cfg(test)]

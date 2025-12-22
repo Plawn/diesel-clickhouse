@@ -37,7 +37,9 @@
 //! }
 //! ```
 
-use crate::core::result::{Error, QueryResult};
+use crate::core::result::QueryResult;
+#[cfg(feature = "http")]
+use crate::core::result::Error;
 
 /// A unified stream of rows from a query.
 ///

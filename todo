@@ -22,3 +22,5 @@
 - checker les depdendaces
 - checker les redondances dans le cli
 - still need simd-json ?
+- bug dédoublement
+- pourquoi serde dans l'exemple getting started ?

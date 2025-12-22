@@ -60,9 +60,6 @@ clickhouse = { workspace = true, optional = true, features = ["time"] }
 clickhouse-rs = { version = "1.1.0-alpha.1", optional = true, default-features = false, features = ["tokio_io"] }
 percent-encoding = { version = "2", optional = true }
 
-# Serialization (for native backend block parsing)
-serde_json = "1"
-
 # Zero-copy parsing
 smallvec = "1.11"
 

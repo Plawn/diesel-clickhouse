@@ -167,7 +167,7 @@ async fn main() -> anyhow::Result<()> {
     // SELECT with filters - idiomatic style with .load(&conn)
     let active_users: Vec<User> = users::table
         .filter(users::active.eq(true))
-        .and_filter(users::age.gt(25))
+        .and_filter(users::age.gt(18))
         .order_by(users::age.desc())
         .limit(10)
         .load(&conn)
@@ -252,108 +252,4 @@ async fn main() -> anyhow::Result<()> {
     println!("Done!");
 
     Ok(())
-}
-
-fn demo_mode() {
-    println!("=== Demo Mode (SQL Generation) ===\n");
-
-    // Show embedded migrations
-    println!("=== Embedded Migrations ===");
-    for m in MIGRATIONS.migrations().unwrap() {
-        println!("  {} - {}", m.version, m.name);
-    }
-    println!();
-
-    // SELECT - idiomatic chain
-    let select = users::table
-        .filter(users::active.eq(true))
-        .and_filter(users::age.gt(25))
-        .order_by(users::age.desc())
-        .limit(10);
-    println!(
-        "SELECT:\n  {}\n",
-        select
-            .to_sql_string()
-            .unwrap_or_else(|e| format!("Error: {}", e))
-    );
-
-    // INSERT - single row
-    let new_user = NewUser {
-        id: 1,
-        name: "Alice".into(),
-        email: "alice@example.com".into(),
-        age: 30,
-        active: true,
-    };
-    let insert_one = insert_into(users::table).values(&new_user);
-    println!(
-        "INSERT (single):\n  {}\n",
-        insert_one
-            .to_sql_string()
-            .unwrap_or_else(|e| format!("Error: {}", e))
-    );
-
-    // INSERT - multiple rows
-    let new_users = vec![
-        NewUser {
-            id: 2,
-            name: "Bob".into(),
-            email: "bob@example.com".into(),
-            age: 25,
-            active: true,
-        },
-        NewUser {
-            id: 3,
-            name: "Charlie".into(),
-            email: "charlie@example.com".into(),
-            age: 35,
-            active: false,
-        },
-    ];
-    let insert_batch = insert_into(users::table).values(new_users.as_slice());
-    println!(
-        "INSERT (batch):\n  {}\n",
-        insert_batch
-            .to_sql_string()
-            .unwrap_or_else(|e| format!("Error: {}", e))
-    );
-
-    // UPDATE
-    let upd = update(users::table)
-        .filter(users::id.eq(1u64))
-        .set(users::name.eq("New Name"));
-    println!(
-        "UPDATE:\n  {}\n",
-        upd.to_sql_string()
-            .unwrap_or_else(|e| format!("Error: {}", e))
-    );
-
-    // JOIN
-    let join_query = users::table
-        .select(users::star)
-        .inner_join_on(posts::table, users::id.eq(posts::user_id))
-        .filter(users::active.eq(true))
-        .limit(10);
-    println!(
-        "INNER JOIN:\n  {}\n",
-        join_query
-            .to_sql_string()
-            .unwrap_or_else(|e| format!("Error: {}", e))
-    );
-
-    // ClickHouse-specific
-    println!(
-        "FINAL:\n  {}\n",
-        users::table
-            .final_()
-            .to_sql_string()
-            .unwrap_or_else(|e| format!("Error: {}", e))
-    );
-    println!(
-        "SAMPLE:\n  {}",
-        users::table
-            .sample(0.1)
-            .to_sql_string()
-            .unwrap_or_else(|e| format!("Error: {}", e))
-    );
 }

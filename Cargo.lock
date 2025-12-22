@@ -549,7 +549,6 @@ dependencies = [
  "percent-encoding",
  "reqwest",
  "serde",
- "serde_json",
  "smallvec",
  "tempfile",
  "thiserror 1.0.69",
