@@ -51,12 +51,10 @@ use async_trait::async_trait;
 use clickhouse_rs::{Pool, ClientHandle, Block, types::Complex};
 
 use crate::core::backend::{ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
-use crate::core::connection::{AsyncConnection, ClickHouseConnection as ClickHouseConnectionTrait};
-use crate::core::deserialize::FromRow;
+use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
 use crate::core::escape::escape_identifier;
 use crate::core::query_builder::{AstPass, QueryFragment};
 use crate::core::result::{Error, QueryResult};
-use crate::core::row::ClickHouseRow as ClickHouseRowTrait;
 
 use std::time::Duration;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -648,40 +646,6 @@ impl NativeConnection {
     }
 }
 
-#[async_trait]
-impl AsyncConnection for NativeConnection {
-    type Backend = ClickHouse;
-
-    async fn establish(url: &str) -> QueryResult<Self> {
-        Self::establish(url).await
-    }
-
-    async fn execute(&mut self, sql: &str) -> QueryResult<()> {
-        self.execute_raw(sql).await
-    }
-
-    async fn load<T, U>(&mut self, query: T) -> QueryResult<Vec<U>>
-    where
-        T: QueryFragment<Self::Backend> + Send,
-        U: FromRow + Send,
-    {
-        let sql = build_sql(&query)?;
-        Err(Error::QueryError(format!(
-            "Use conn.query(q).await and process Block directly for: {}",
-            sql
-        )))
-    }
-
-    async fn execute_query<T>(&mut self, query: T) -> QueryResult<usize>
-    where
-        T: QueryFragment<Self::Backend> + Send,
-    {
-        let sql = build_sql(&query)?;
-        self.execute_raw(&sql).await?;
-        Ok(0)
-    }
-}
-
 // =============================================================================
 // Helper Functions
 // =============================================================================
@@ -850,18 +814,6 @@ impl ClickHouseConnectionTrait for NativeConnection {
     {
         let sql = build_sql(query)?;
         self.execute_raw(&sql).await
-    }
-
-    async fn load<T, Q>(&self, _query: Q) -> QueryResult<Vec<T>>
-    where
-        T: ClickHouseRowTrait,
-        Q: QueryFragment<ClickHouse> + Send + Sync,
-    {
-        // JSON-based loading has been removed in favor of binary formats.
-        // Use Connection::load() which uses optimized Block deserialization.
-        Err(Error::QueryError(
-            "ClickHouseConnectionTrait::load() is deprecated. Use Connection::load() with #[derive(Row)] instead.".to_string()
-        ))
     }
 
     fn build_sql<Q>(&self, query: &Q) -> QueryResult<String>

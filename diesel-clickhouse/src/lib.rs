@@ -55,7 +55,7 @@
 //! }
 //!
 //! // Query with ClickHouse-specific features
-//! async fn query_events(conn: &mut impl AsyncConnection) -> Result<Vec<Event>, Error> {
+//! async fn query_events(conn: &Connection) -> Result<Vec<Event>, Error> {
 //!     events::table
 //!         .filter(events::user_id.eq(42))
 //!         .prewhere(events::timestamp.gt(now() - days(7)))
@@ -128,7 +128,6 @@ pub use core::expression::{Expression, SelectableExpression, ExpressionMethods};
 pub use core::query_source::{Table, Column, QuerySource};
 pub use core::query_builder::{QueryFragment, insert_into, update, delete, UpdateStatement, DeleteStatement, AsChangeset, Assign, Assignments, Insertable as InsertableTrait};
 pub use core::query_dsl::{QueryDsl, ClickHouseQueryDsl};
-pub use core::connection::AsyncConnection;
 // Re-export the unified connection trait with a cleaner name
 pub use core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
 pub use core::deserialize::FromRow;

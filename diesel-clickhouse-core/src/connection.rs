@@ -3,11 +3,11 @@
 //! This module provides the core connection abstraction for diesel-clickhouse:
 //!
 //! - [`ClickHouseConnection`] - The main unified connection trait that works with both backends
-//! - [`AsyncConnection`] - Lower-level async connection trait (for internal use)
 //!
 //! # Usage
 //!
-//! The recommended way to use connections is through the [`ClickHouseConnection`] trait:
+//! The recommended way to use connections is through the [`ClickHouseConnection`] trait
+//! and the unified `Connection` type:
 //!
 //! ```rust,ignore
 //! use diesel_clickhouse::prelude::*;
@@ -18,16 +18,14 @@
 //!     name: String,
 //! }
 //!
-//! async fn get_users(conn: &impl ClickHouseConnection) -> QueryResult<Vec<User>> {
+//! async fn get_users(conn: &Connection) -> QueryResult<Vec<User>> {
 //!     conn.load(users::table.filter(users::active.eq(true))).await
 //! }
 //! ```
 
-use crate::backend::{Backend, ClickHouse};
-use crate::deserialize::FromRow;
+use crate::backend::ClickHouse;
 use crate::query_builder::QueryFragment;
 use crate::result::QueryResult;
-use crate::row::ClickHouseRow;
 
 // =============================================================================
 // Unified ClickHouse Connection Trait
@@ -151,68 +149,8 @@ pub trait ClickHouseConnection: Send + Sync {
 }
 
 // =============================================================================
-// Legacy AsyncConnection Trait (for internal use)
+// Connection Settings
 // =============================================================================
-
-/// Async connection trait for ClickHouse (legacy, for internal use).
-///
-/// Prefer using [`ClickHouseConnection`] in new code.
-#[async_trait::async_trait]
-pub trait AsyncConnection: Send + Sized {
-    /// The backend type for this connection.
-    type Backend: Backend;
-
-    /// Establish a new connection.
-    async fn establish(url: &str) -> QueryResult<Self>;
-
-    /// Execute a raw SQL query.
-    async fn execute(&mut self, sql: &str) -> QueryResult<()>;
-
-    /// Execute a query and load results.
-    async fn load<T, U>(&mut self, query: T) -> QueryResult<Vec<U>>
-    where
-        T: QueryFragment<Self::Backend> + Send,
-        U: FromRow + Send;
-
-    /// Execute a query and return affected row count.
-    async fn execute_query<T>(&mut self, query: T) -> QueryResult<usize>
-    where
-        T: QueryFragment<Self::Backend> + Send;
-
-    /// Begin a batch insert operation.
-    fn batch_insert<T>(&mut self, table_name: &str) -> BatchInserter<'_, Self>
-    where
-        Self: Sized,
-    {
-        BatchInserter::new(table_name)
-    }
-
-    /// Ping the connection to verify it's alive.
-    async fn ping(&mut self) -> QueryResult<()> {
-        self.execute("SELECT 1").await
-    }
-}
-
-/// A batch insert helper.
-pub struct BatchInserter<'a, C> {
-    table_name: String,
-    _conn: std::marker::PhantomData<&'a C>,
-}
-
-impl<'a, C: AsyncConnection> BatchInserter<'a, C> {
-    /// Create a new batch inserter.
-    pub fn new(table_name: &str) -> Self {
-        Self {
-            table_name: table_name.to_string(),
-            _conn: std::marker::PhantomData,
-        }
-    }
-
-    /// Get the table name.
-    pub fn table_name(&self) -> &str {
-        &self.table_name
-    }
-}
 
 /// Settings for a connection.
 #[derive(Debug, Clone)]
@@ -255,87 +193,4 @@ pub enum Compression {
     Lz4Hc,
     /// Zstandard compression.
     Zstd,
-}
-
-/// Transaction handle placeholder.
-///
-/// # ⚠️ ClickHouse Transaction Limitations
-///
-/// **ClickHouse does NOT support traditional ACID transactions** like PostgreSQL/MySQL.
-/// This struct exists for API compatibility but provides **no actual transactional guarantees**.
-///
-/// ## What ClickHouse Offers Instead
-///
-/// - **Atomicity per INSERT**: Each INSERT statement is atomic
-/// - **ReplacingMergeTree**: For deduplication (use FINAL to get latest)
-/// - **CollapsingMergeTree**: For implementing delete/update patterns
-/// - **Lightweight deletes**: `ALTER TABLE DELETE` (async background operation)
-///
-/// ## Behavior of This Struct
-///
-/// - `commit()`: No-op, always succeeds
-/// - `rollback()`: No-op, does nothing (data already written is NOT rolled back)
-/// - `drop()`: No-op
-///
-/// ## Recommendations
-///
-/// For transactional semantics in ClickHouse:
-/// 1. Design your schema to be append-only
-/// 2. Use ReplacingMergeTree + FINAL for latest state
-/// 3. Use batch inserts (atomic per batch)
-/// 4. Consider external coordination (e.g., Redis locks) for complex workflows
-#[deprecated(
-    since = "0.2.0",
-    note = "ClickHouse does not support transactions. This struct is a no-op placeholder. \
-            Use batch inserts for atomicity or ReplacingMergeTree for deduplication."
-)]
-pub struct Transaction<'a, C: AsyncConnection> {
-    conn: &'a mut C,
-    committed: bool,
-}
-
-#[allow(deprecated)]
-impl<'a, C: AsyncConnection> Transaction<'a, C> {
-    /// Create a new transaction.
-    ///
-    /// # Note
-    /// This does NOT start an actual database transaction.
-    pub fn new(conn: &'a mut C) -> Self {
-        Self {
-            conn,
-            committed: false,
-        }
-    }
-
-    /// Commit the transaction.
-    ///
-    /// # Note
-    /// This is a **no-op**. ClickHouse does not support transactions.
-    /// Data written before calling this is already persisted.
-    pub async fn commit(mut self) -> QueryResult<()> {
-        self.committed = true;
-        Ok(())
-    }
-
-    /// Rollback the transaction.
-    ///
-    /// # Note
-    /// This is a **no-op**. ClickHouse does not support rollback.
-    /// Data written is NOT reverted.
-    pub async fn rollback(self) -> QueryResult<()> {
-        // ClickHouse has no rollback capability
-        Ok(())
-    }
-
-    /// Get the inner connection.
-    pub fn conn(&mut self) -> &mut C {
-        self.conn
-    }
-}
-
-#[allow(deprecated)]
-impl<'a, C: AsyncConnection> Drop for Transaction<'a, C> {
-    fn drop(&mut self) {
-        // No-op: ClickHouse has no transaction rollback
-    }
 }

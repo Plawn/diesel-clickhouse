@@ -36,7 +36,7 @@ This is a **workspace** with 6 crates forming a Diesel-inspired async ORM for Cl
 ```
 diesel-clickhouse-types    → SQL type system (UInt64, DateTime, Array, Map, etc.)
         ↓
-diesel-clickhouse-core     → Core traits: Backend, Expression, QueryDsl, AsyncConnection
+diesel-clickhouse-core     → Core traits: Backend, Expression, QueryDsl, ClickHouseConnection
         ↓
 diesel-clickhouse-derive   → Proc macros: #[derive(Queryable, Insertable)], table! macro
         ↓
@@ -67,7 +67,7 @@ The `Connection` enum in `unified.rs` provides a unified API over both backends.
 - `Backend`: Protocol abstraction (HttpBackend, NativeBackend)
 - `Expression` / `SelectableExpression`: SQL expression building
 - `QueryFragment`: SQL generation via `AstPass::push_sql()`
-- `AsyncConnection`: Async query execution
+- `ClickHouseConnection`: Connection trait for both backends
 - `FromRow` / `ToRow`: Deserialization/serialization of rows
 
 ## Development Rules

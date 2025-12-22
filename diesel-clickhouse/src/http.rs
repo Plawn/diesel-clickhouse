@@ -26,12 +26,10 @@ use clickhouse::Client;
 use serde::Serialize;
 
 use crate::core::backend::{BindCollector, ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
-use crate::core::connection::{AsyncConnection, ClickHouseConnection as ClickHouseConnectionTrait};
-use crate::core::deserialize::FromRow;
+use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
 use crate::core::escape::escape_identifier;
 use crate::core::query_builder::{AstPass, QueryFragment};
 use crate::core::result::{Error, QueryResult};
-use crate::core::row::ClickHouseRow as ClickHouseRowTrait;
 
 // Re-export clickhouse Row for convenience (for users who need direct clickhouse crate access)
 pub use clickhouse::Row as NativeClickHouseRow;
@@ -355,42 +353,6 @@ impl ClickHouseConnection {
         Q: QueryFragment<ClickHouse>,
     {
         build_sql(query)
-    }
-}
-
-#[async_trait]
-impl AsyncConnection for ClickHouseConnection {
-    type Backend = ClickHouse;
-
-    async fn establish(url: &str) -> QueryResult<Self> {
-        Self::new(url).await
-    }
-
-    async fn execute(&mut self, sql: &str) -> QueryResult<()> {
-        self.execute_raw(sql).await
-    }
-
-    async fn load<T, U>(&mut self, query: T) -> QueryResult<Vec<U>>
-    where
-        T: QueryFragment<Self::Backend> + Send,
-        U: FromRow + Send,
-    {
-        let sql = build_sql(&query)?;
-        // Direct load through FromRow is not supported - use client().query() instead
-        // This is because clickhouse crate requires specific Row derive
-        Err(Error::QueryError(format!(
-            "Use conn.client().query(\"{}\").fetch_all::<YourRowType>().await instead",
-            sql
-        )))
-    }
-
-    async fn execute_query<T>(&mut self, query: T) -> QueryResult<usize>
-    where
-        T: QueryFragment<Self::Backend> + Send,
-    {
-        let sql = build_sql(&query)?;
-        self.execute_raw(&sql).await?;
-        Ok(0) // ClickHouse doesn't easily return affected rows
     }
 }
 

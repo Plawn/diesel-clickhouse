@@ -48,7 +48,7 @@ pub use query_source::{Table, Column, QuerySource};
 pub use query_builder::{QueryFragment, AstPass, update, delete, UpdateStatement, DeleteStatement, AsChangeset, Assign, Assignments};
 pub use backend::QueryBuilder;
 pub use query_dsl::{QueryDsl, ClickHouseQueryDsl, RunQueryDsl, FindStatement};
-pub use connection::{AsyncConnection, ClickHouseConnection};
+pub use connection::ClickHouseConnection;
 pub use deserialize::FromRow;
 pub use serialize::ToRow;
 pub use row::{ClickHouseRow, InsertableRow, QueryableRow};
@@ -60,7 +60,7 @@ pub mod prelude {
     pub use super::expression::{Expression, SelectableExpression, ExpressionMethods};
     pub use super::query_source::{Table, Column, QuerySource, JoinDsl, ArrayJoinDsl};
     pub use super::query_dsl::{QueryDsl, ClickHouseQueryDsl, RunQueryDsl};
-    pub use super::connection::{AsyncConnection, ClickHouseConnection};
+    pub use super::connection::ClickHouseConnection;
     pub use super::deserialize::FromRow;
     pub use super::serialize::ToRow;
     pub use super::row::{ClickHouseRow, InsertableRow, QueryableRow};
