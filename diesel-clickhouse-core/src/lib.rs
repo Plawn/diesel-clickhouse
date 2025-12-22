@@ -41,7 +41,7 @@ pub mod interner;
 pub use diesel_clickhouse_types as types;
 
 // Re-export core items
-pub use backend::{Backend, HttpBackend, NativeBackend, BindValue};
+pub use backend::{Backend, HttpBackend, NativeBackend};
 pub use result::{Error, QueryResult};
 pub use expression::{Expression, SelectableExpression, AppearsOnTable, BoxableExpression};
 pub use query_source::{Table, Column, QuerySource};

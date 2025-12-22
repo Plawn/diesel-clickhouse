@@ -168,137 +168,13 @@ pub trait Backend: Sized + Send + Sync + Debug + Clone + Copy + 'static {
     fn name() -> &'static str;
 }
 
-/// Trait for values that can be bound as query parameters.
-pub trait BindValue {
-    /// The ClickHouse type name for this value.
-    fn type_name(&self) -> &'static str;
-
-    /// Serialize the value to bytes.
-    fn to_bytes(&self) -> Vec<u8>;
-
-    /// Serialize the value to SQL literal string.
-    fn to_sql_literal(&self) -> String;
-}
-
-// Implement BindValue for integer types using itoa for fast formatting
-macro_rules! impl_bind_value_int {
-    ($($t:ty => $name:literal),*) => {
-        $(
-            impl BindValue for $t {
-                fn type_name(&self) -> &'static str { $name }
-                fn to_bytes(&self) -> Vec<u8> { self.to_le_bytes().to_vec() }
-                fn to_sql_literal(&self) -> String {
-                    let mut buf = itoa::Buffer::new();
-                    buf.format(*self).to_owned()
-                }
-            }
-        )*
-    };
-}
-
-// Implement BindValue for float types using ryu for fast formatting
-macro_rules! impl_bind_value_float {
-    ($($t:ty => $name:literal),*) => {
-        $(
-            impl BindValue for $t {
-                fn type_name(&self) -> &'static str { $name }
-                fn to_bytes(&self) -> Vec<u8> { self.to_le_bytes().to_vec() }
-                fn to_sql_literal(&self) -> String {
-                    let mut buf = ryu::Buffer::new();
-                    buf.format_finite(*self).to_owned()
-                }
-            }
-        )*
-    };
-}
-
-impl_bind_value_int!(
-    u8 => "UInt8", u16 => "UInt16", u32 => "UInt32", u64 => "UInt64",
-    i8 => "Int8", i16 => "Int16", i32 => "Int32", i64 => "Int64"
-);
-
-impl_bind_value_float!(
-    f32 => "Float32", f64 => "Float64"
-);
-
-impl BindValue for bool {
-    fn type_name(&self) -> &'static str { "Bool" }
-    fn to_bytes(&self) -> Vec<u8> { vec![if *self { 1 } else { 0 }] }
-    fn to_sql_literal(&self) -> String { (if *self { "true" } else { "false" }).to_owned() }
-}
-
-impl BindValue for str {
-    fn type_name(&self) -> &'static str { "String" }
-    fn to_bytes(&self) -> Vec<u8> { self.as_bytes().to_vec() }
-    fn to_sql_literal(&self) -> String {
-        // Pre-allocate: original length + 2 quotes + potential escapes
-        let mut result = String::with_capacity(self.len() + 2);
-        result.push('\'');
-        if self.contains('\'') {
-            result.push_str(&self.replace('\'', "''"));
-        } else {
-            result.push_str(self);
-        }
-        result.push('\'');
-        result
-    }
-}
-
-impl BindValue for String {
-    fn type_name(&self) -> &'static str { "String" }
-    fn to_bytes(&self) -> Vec<u8> { self.as_bytes().to_vec() }
-    fn to_sql_literal(&self) -> String {
-        self.as_str().to_sql_literal()
-    }
-}
-
-impl<T: BindValue> BindValue for &T {
-    fn type_name(&self) -> &'static str { (*self).type_name() }
-    fn to_bytes(&self) -> Vec<u8> { (*self).to_bytes() }
-    fn to_sql_literal(&self) -> String { (*self).to_sql_literal() }
-}
-
 /// Trait for collecting bound parameters.
 pub trait BindCollector<'a, DB: Backend>: Default {
-    /// Push a bound value (legacy - for backward compatibility).
-    fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error>;
-
-    /// Push an unsized bound value (like str).
-    fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error>;
-
     /// Push a bindable value for native parameter binding.
     fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error>;
 
-    /// Get the collected bindings (legacy format).
-    fn bindings(&self) -> &[BoundValue<'a>];
-
     /// Get the collected bindable values for native binding.
     fn bindable_values(&self) -> &[BindableValue];
-}
-
-/// A bound parameter value.
-#[derive(Debug, Clone)]
-pub struct BoundValue<'a> {
-    /// The serialized bytes of the value.
-    pub bytes: std::borrow::Cow<'a, [u8]>,
-    /// The ClickHouse type name.
-    pub type_name: &'static str,
-    /// SQL literal representation.
-    pub sql_literal: String,
-    /// Phantom lifetime.
-    _phantom: std::marker::PhantomData<&'a ()>,
-}
-
-impl<'a> BoundValue<'a> {
-    /// Create a new bound value.
-    pub fn new<T: BindValue + ?Sized>(value: &T) -> Self {
-        Self {
-            bytes: std::borrow::Cow::Owned(value.to_bytes()),
-            type_name: value.type_name(),
-            sql_literal: value.to_sql_literal(),
-            _phantom: std::marker::PhantomData,
-        }
-    }
 }
 
 /// Trait for building SQL query strings.
@@ -350,47 +226,17 @@ fn push_escaped_identifier(sql: &mut String, identifier: &str) {
 ///
 /// This struct provides the shared implementation for all backend-specific
 /// bind collectors, avoiding code duplication.
-#[derive(Debug)]
-pub struct CommonBindCollector<'a> {
-    bindings: SmallVec<[BoundValue<'a>; 8]>,
+#[derive(Debug, Default)]
+pub struct CommonBindCollector {
     bindable_values: SmallVec<[BindableValue; 8]>,
 }
 
-impl<'a> Default for CommonBindCollector<'a> {
-    fn default() -> Self {
-        Self {
-            bindings: SmallVec::new(),
-            bindable_values: SmallVec::new(),
-        }
-    }
-}
-
-impl<'a> CommonBindCollector<'a> {
-    /// Push a bound value.
-    #[inline]
-    pub fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.bindings.push(BoundValue::new(value));
-        Ok(())
-    }
-
-    /// Push an unsized bound value (like str).
-    #[inline]
-    pub fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.bindings.push(BoundValue::new(value));
-        Ok(())
-    }
-
+impl CommonBindCollector {
     /// Push a bindable value for native parameter binding.
     #[inline]
     pub fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
         self.bindable_values.push(value);
         Ok(())
-    }
-
-    /// Get the collected bindings (legacy format).
-    #[inline]
-    pub fn bindings(&self) -> &[BoundValue<'a>] {
-        &self.bindings
     }
 
     /// Get the collected bindable values for native binding.
@@ -416,7 +262,7 @@ pub struct HttpBackend;
 
 impl Backend for HttpBackend {
     type RawValue<'a> = HttpRawValue<'a>;
-    type BindCollector<'a> = HttpBindCollector<'a>;
+    type BindCollector<'a> = HttpBindCollector;
     type QueryBuilder = HttpQueryBuilder;
 
     fn name() -> &'static str {
@@ -437,27 +283,12 @@ pub struct HttpRawValue<'a> {
 ///
 /// Wraps CommonBindCollector to provide HTTP-specific BindCollector implementation.
 #[derive(Debug, Default)]
-pub struct HttpBindCollector<'a>(CommonBindCollector<'a>);
+pub struct HttpBindCollector(CommonBindCollector);
 
-impl<'a> BindCollector<'a, HttpBackend> for HttpBindCollector<'a> {
-    #[inline]
-    fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.0.push_bound_value(value)
-    }
-
-    #[inline]
-    fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.0.push_bound_value_unsized(value)
-    }
-
+impl<'a> BindCollector<'a, HttpBackend> for HttpBindCollector {
     #[inline]
     fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
         self.0.push_bindable_value(value)
-    }
-
-    #[inline]
-    fn bindings(&self) -> &[BoundValue<'a>] {
-        self.0.bindings()
     }
 
     #[inline]
@@ -528,7 +359,7 @@ pub struct NativeBackend;
 
 impl Backend for NativeBackend {
     type RawValue<'a> = NativeRawValue<'a>;
-    type BindCollector<'a> = NativeBindCollector<'a>;
+    type BindCollector<'a> = NativeBindCollector;
     type QueryBuilder = NativeQueryBuilder;
 
     fn name() -> &'static str {
@@ -549,27 +380,12 @@ pub struct NativeRawValue<'a> {
 ///
 /// Wraps CommonBindCollector to provide Native-specific BindCollector implementation.
 #[derive(Debug, Default)]
-pub struct NativeBindCollector<'a>(CommonBindCollector<'a>);
+pub struct NativeBindCollector(CommonBindCollector);
 
-impl<'a> BindCollector<'a, NativeBackend> for NativeBindCollector<'a> {
-    #[inline]
-    fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.0.push_bound_value(value)
-    }
-
-    #[inline]
-    fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.0.push_bound_value_unsized(value)
-    }
-
+impl<'a> BindCollector<'a, NativeBackend> for NativeBindCollector {
     #[inline]
     fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
         self.0.push_bindable_value(value)
-    }
-
-    #[inline]
-    fn bindings(&self) -> &[BoundValue<'a>] {
-        self.0.bindings()
     }
 
     #[inline]
@@ -636,7 +452,7 @@ pub struct ClickHouse;
 
 impl Backend for ClickHouse {
     type RawValue<'a> = GenericRawValue<'a>;
-    type BindCollector<'a> = GenericBindCollector<'a>;
+    type BindCollector<'a> = GenericBindCollector;
     type QueryBuilder = GenericQueryBuilder;
 
     fn name() -> &'static str {
@@ -654,27 +470,12 @@ pub struct GenericRawValue<'a> {
 ///
 /// Wraps CommonBindCollector to provide generic BindCollector implementation.
 #[derive(Debug, Default)]
-pub struct GenericBindCollector<'a>(CommonBindCollector<'a>);
+pub struct GenericBindCollector(CommonBindCollector);
 
-impl<'a> BindCollector<'a, ClickHouse> for GenericBindCollector<'a> {
-    #[inline]
-    fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.0.push_bound_value(value)
-    }
-
-    #[inline]
-    fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.0.push_bound_value_unsized(value)
-    }
-
+impl<'a> BindCollector<'a, ClickHouse> for GenericBindCollector {
     #[inline]
     fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
         self.0.push_bindable_value(value)
-    }
-
-    #[inline]
-    fn bindings(&self) -> &[BoundValue<'a>] {
-        self.0.bindings()
     }
 
     #[inline]

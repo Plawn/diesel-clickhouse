@@ -1,6 +1,6 @@
 //! AST traversal pass for SQL generation.
 
-use crate::backend::{Backend, BindableValue, BindCollector, BindValue, QueryBuilder, ToBindableValue};
+use crate::backend::{Backend, BindableValue, BindCollector, QueryBuilder, ToBindableValue};
 
 /// A pass through the query AST for generating SQL.
 pub struct AstPass<'a, 'b, DB: Backend> {
@@ -40,24 +40,11 @@ impl<'a, 'b, DB: Backend> AstPass<'a, 'b, DB> {
         self.builder.push_bind_param();
     }
 
-    /// Push a bind parameter marker and collect the value (legacy).
-    pub fn push_bind_param_value<T: BindValue>(&mut self, value: &'b T) -> crate::result::QueryResult<()> {
-        self.builder.push_bind_param();
-        self.collector.push_bound_value(value)
-    }
-
-    /// Push a bind parameter marker and collect an unsized value (like str).
-    pub fn push_bind_param_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'b T) -> crate::result::QueryResult<()> {
-        self.builder.push_bind_param();
-        self.collector.push_bound_value_unsized(value)
-    }
-
     /// Push a bind parameter and collect a bindable value for native binding.
     ///
-    /// This is the SOTA way to bind values as it:
-    /// 1. Adds a `?` placeholder to the SQL
-    /// 2. Collects the typed value for native `.bind()` at execution time
-    /// 3. Enables query plan caching on the ClickHouse server
+    /// This adds a `?` placeholder to the SQL and collects the typed value
+    /// for native `.bind()` at execution time, enabling query plan caching
+    /// on the ClickHouse server.
     pub fn push_bindable<T: ToBindableValue>(&mut self, value: &T) -> crate::result::QueryResult<()> {
         self.builder.push_bind_param();
         self.collector.push_bindable_value(value.to_bindable_value())

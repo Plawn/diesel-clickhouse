@@ -231,8 +231,9 @@ mod time_impl {
             let days = u16::from_le_bytes(bytes) as i32;
 
             TimeDate::from_ordinal_date(1970, 1)
+                .ok()
                 .and_then(|epoch| epoch.checked_add(time::Duration::days(days as i64)))
-                .map_err(|_| DeserializeError::InvalidData("Invalid date value".into()))
+                .ok_or_else(|| DeserializeError::InvalidData("Invalid date value".into()))
         }
     }
 

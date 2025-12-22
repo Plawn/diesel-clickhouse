@@ -307,6 +307,15 @@ mod run_query_dsl;
 #[cfg(any(feature = "http", feature = "native"))]
 pub use run_query_dsl::RunQueryDsl;
 
+/// Unified streaming interface for query results.
+///
+/// Provides `RowStream` for processing large result sets row by row.
+#[cfg(any(feature = "http", feature = "native"))]
+pub mod stream;
+
+#[cfg(any(feature = "http", feature = "native"))]
+pub use stream::RowStream;
+
 /// Batch insertion utilities.
 ///
 /// Provides `BatchInserter` for efficient bulk inserts.
@@ -325,15 +334,6 @@ pub mod pool;
 #[cfg(any(feature = "http", feature = "native"))]
 pub use pool::{Pool, PoolConfig, PooledConnection};
 
-/// Prepared statement cache.
-///
-/// Provides `PreparedCache` for caching compiled SQL queries.
-#[cfg(any(feature = "http", feature = "native"))]
-pub mod prepared;
-
-#[cfg(any(feature = "http", feature = "native"))]
-pub use prepared::{PreparedCache, PreparedStatement, QueryTemplate, global_cache};
-
 /// Async insert mode support.
 ///
 /// Provides `AsyncInserter` for high-throughput inserts using ClickHouse's
@@ -343,33 +343,6 @@ pub mod async_insert;
 
 #[cfg(any(feature = "http", feature = "native"))]
 pub use async_insert::{AsyncInsertConfig, AsyncInserter, BufferedAsyncInserter, AsyncInsertExt};
-
-/// Metrics and tracing instrumentation.
-///
-/// Provides `MetricsCollector` for observability and performance monitoring.
-#[cfg(any(feature = "http", feature = "native"))]
-pub mod metrics;
-
-#[cfg(any(feature = "http", feature = "native"))]
-pub use metrics::{MetricsCollector, QueryMetrics, MetricsSnapshot, QueryTimer, global_metrics, InstrumentExt};
-
-/// Zero-copy parsing utilities.
-///
-/// Provides zero-copy parsers for TSV, CSV, and JSON formats.
-pub mod zero_copy;
-
-pub use zero_copy::{ZeroCopyParser, ZeroCopyRow, BorrowedValue, TsvParser, CsvParser, JsonRowParser, ParseError};
-
-/// Parallel processing for large result sets.
-///
-/// Provides utilities for processing large results in parallel using Rayon.
-pub mod parallel;
-
-pub use parallel::{ParallelProcessor, ChunkProcessor, ParallelConfig, ParallelExt, ParallelStats};
-
-// Re-export arena and interner from core
-pub use core::arena::{QueryArena, ArenaQueryBuilder, with_arena};
-pub use core::interner::{ColumnInterner, InternedSchema, Symbol, global_interner, intern, resolve};
 
 /// Migrations module.
 ///

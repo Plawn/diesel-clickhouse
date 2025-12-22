@@ -308,48 +308,6 @@ pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryRe
     Ok(sql)
 }
 
-/// A compiled query with SQL and collected bind values (legacy format).
-#[derive(Debug, Clone)]
-pub struct CompiledQuery {
-    /// The SQL string with `?` placeholders.
-    pub sql: String,
-    /// The collected bind values (SQL literals for now).
-    pub bindings: Vec<String>,
-}
-
-impl CompiledQuery {
-    /// Get the number of bind parameters.
-    pub fn param_count(&self) -> usize {
-        self.bindings.len()
-    }
-
-    /// Check if there are any bind parameters.
-    pub fn has_bindings(&self) -> bool {
-        !self.bindings.is_empty()
-    }
-}
-
-/// Build SQL with bindings from a QueryFragment (legacy).
-///
-/// Returns both the SQL string (with `?` placeholders) and the collected bind values.
-pub fn build_sql_with_bindings<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<CompiledQuery> {
-    let mut builder = GenericQueryBuilder::default();
-    let mut collector = GenericBindCollector::default();
-    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-    fragment.walk_ast(pass)?;
-
-    let bindings = collector
-        .bindings()
-        .iter()
-        .map(|b| b.sql_literal.clone())
-        .collect();
-
-    Ok(CompiledQuery {
-        sql: builder.finish(),
-        bindings,
-    })
-}
-
 // Re-export for convenience
 pub use crate::core::backend::BindableValue;
 
@@ -486,6 +444,75 @@ impl ClickHouseConnection {
     {
         let sql = build_sql(&query)?;
         Ok(self.client.query(&sql))
+    }
+
+    /// Stream rows from a query using a cursor.
+    ///
+    /// This method returns a `RowCursor` that allows you to process results
+    /// row by row without loading everything into memory. Ideal for large result sets.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::prelude::*;
+    ///
+    /// #[derive(Debug, Row)]
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
+    /// // Stream results row by row
+    /// let mut cursor = conn.stream::<User, _>(
+    ///     users::table.filter(users::active.eq(true))
+    /// )?;
+    ///
+    /// while let Some(user) = cursor.next().await? {
+    ///     println!("User: {} - {}", user.id, user.name);
+    /// }
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// The row type `T` must implement `clickhouse::Row` (via `#[derive(Row)]`).
+    /// Cursors may return errors after producing some rows. Use
+    /// `client.with_option("wait_end_of_query", "1")` for server-side buffering
+    /// if you need to ensure all rows succeed before processing.
+    pub fn stream<T, Q>(&self, query: Q) -> QueryResult<clickhouse::query::RowCursor<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead,
+        Q: QueryFragment<ClickHouse>,
+    {
+        let sql = build_sql(&query)?;
+        self.client
+            .query(&sql)
+            .fetch::<T>()
+            .map_err(|e| Error::QueryError(e.to_string()))
+    }
+
+    /// Stream rows from a query with native parameter binding.
+    ///
+    /// Like `stream()`, but uses native parameter binding for better
+    /// query plan caching on the server.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let compiled = build_sql_native(&users::table.filter(users::id.eq(42)))?;
+    /// let mut cursor = conn.stream_native::<User>(&compiled)?;
+    ///
+    /// while let Some(user) = cursor.next().await? {
+    ///     println!("User: {}", user.name);
+    /// }
+    /// ```
+    pub fn stream_native<T>(&self, compiled: &NativeCompiledQuery) -> QueryResult<clickhouse::query::RowCursor<T>>
+    where
+        T: clickhouse::Row,
+    {
+        let query = compiled.bind_to(self.client.query(&compiled.sql));
+        query
+            .fetch::<T>()
+            .map_err(|e| Error::QueryError(e.to_string()))
     }
 
     /// Create an inserter for a table.

@@ -425,6 +425,83 @@ impl Connection {
     }
 
     // =========================================================================
+    // Streaming Methods
+    // =========================================================================
+
+    /// Stream rows from a query.
+    ///
+    /// Returns a `RowStream` that allows you to process results row by row.
+    /// Works with both HTTP and Native backends.
+    ///
+    /// - **HTTP**: True streaming (rows fetched incrementally from server)
+    /// - **Native**: Block-based (all rows loaded, then iterated)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::prelude::*;
+    ///
+    /// #[derive(Debug, Row)]
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
+    /// // Stream results row by row (works with both backends!)
+    /// let mut stream = conn.stream::<User, _>(
+    ///     users::table.filter(users::active.eq(true))
+    /// ).await?;
+    ///
+    /// while let Some(user) = stream.next().await? {
+    ///     println!("User: {} - {}", user.id, user.name);
+    /// }
+    /// ```
+    #[cfg(feature = "http")]
+    pub async fn stream<T, Q>(&self, query: Q) -> QueryResult<crate::stream::RowStream<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+    {
+        match self {
+            Connection::Http(conn) => {
+                let cursor = conn.stream(query)?;
+                Ok(crate::stream::RowStream::Http(cursor))
+            }
+            #[cfg(feature = "native")]
+            Connection::Native(_) => Err(Error::QueryError(
+                "For Native backend, use stream_native() with ClickHouseRow types.".to_string()
+            )),
+        }
+    }
+
+    /// Stream rows from a query (Native backend).
+    ///
+    /// For Native backend, the row type must implement `ClickHouseRow`.
+    /// Note: Native backend loads all rows first, then iterates.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut stream = conn.stream_native::<User, _>(
+    ///     users::table.filter(users::active.eq(true))
+    /// ).await?;
+    ///
+    /// while let Some(user) = stream.next().await? {
+    ///     println!("User: {}", user.name);
+    /// }
+    /// ```
+    #[cfg(feature = "native")]
+    pub async fn stream_native<T, Q>(&self, query: Q) -> QueryResult<crate::stream::RowStream<T>>
+    where
+        T: ClickHouseRow + Send,
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        // Load all rows then create iterator
+        let rows: Vec<T> = self.load(query).await?;
+        Ok(crate::stream::RowStream::from(rows))
+    }
+
+    // =========================================================================
     // Unified Fetch Methods (HTTP)
     // =========================================================================
 
