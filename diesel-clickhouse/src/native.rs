@@ -57,7 +57,7 @@ use crate::core::query_builder::{AstPass, QueryFragment};
 use crate::core::result::{Error, QueryResult};
 
 use std::time::Duration;
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 
 // Re-export clickhouse-rs types for convenience
 pub use clickhouse_rs::{Block as NativeBlock, row, types};
@@ -234,9 +234,17 @@ impl NativeClientBuilder {
             Error::ConnectionError("password is required".to_string()))?;
 
         // URL-encode user, password, and database to handle special characters
-        let encoded_user = utf8_percent_encode(&user, NON_ALPHANUMERIC).to_string();
-        let encoded_password = utf8_percent_encode(&password, NON_ALPHANUMERIC).to_string();
-        let encoded_database = utf8_percent_encode(&database, NON_ALPHANUMERIC).to_string();
+        // Only encode characters that have special meaning in URLs
+        const URL_SPECIAL: &AsciiSet = &CONTROLS
+            .add(b':')  // separates user:password and host:port
+            .add(b'@')  // separates userinfo from host
+            .add(b'/')  // path separator
+            .add(b'?')  // query separator
+            .add(b'#'); // fragment separator
+
+        let encoded_user = utf8_percent_encode(&user, URL_SPECIAL).to_string();
+        let encoded_password = utf8_percent_encode(&password, URL_SPECIAL).to_string();
+        let encoded_database = utf8_percent_encode(&database, URL_SPECIAL).to_string();
 
         // Build URL with query parameters
         let mut url = format!(
@@ -254,15 +262,15 @@ impl NativeClientBuilder {
         if self.compression == NativeCompression::Lz4 {
             params.push("compression=lz4".to_string());
         }
-        if let Some(t) = self.connection_timeout {
-            params.push(format!("connection_timeout={}ms", t.as_millis()));
-        }
-        if let Some(t) = self.ping_timeout {
-            params.push(format!("ping_timeout={}ms", t.as_millis()));
-        }
-        if let Some(t) = self.query_timeout {
-            params.push(format!("query_timeout={}s", t.as_secs()));
-        }
+        // Add timeouts with defaults (clickhouse-rs requires these)
+        let connection_timeout = self.connection_timeout.unwrap_or(Duration::from_secs(5));
+        params.push(format!("connection_timeout={}ms", connection_timeout.as_millis()));
+
+        let ping_timeout = self.ping_timeout.unwrap_or(Duration::from_secs(3));
+        params.push(format!("ping_timeout={}ms", ping_timeout.as_millis()));
+
+        let query_timeout = self.query_timeout.unwrap_or(Duration::from_secs(180));
+        params.push(format!("query_timeout={}s", query_timeout.as_secs()));
         if let Some(min) = self.pool_min {
             params.push(format!("pool_min={}", min));
         }
@@ -417,6 +425,16 @@ impl<T: BlockValue> BlockValue for Option<T> {
             Ok(v) => Ok(Some(v)),
             Err(_) => Ok(None), // Assume error means NULL for Nullable columns
         }
+    }
+}
+
+impl<T> BlockValue for Vec<T>
+where
+    for<'a> Vec<T>: clickhouse_rs::types::FromSql<'a>,
+{
+    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
+        block.get(row_idx, column)
+            .map_err(|e| Error::DeserializationError(format!("Failed to get Vec column '{}': {}", column, e)))
     }
 }
 

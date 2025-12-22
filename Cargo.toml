@@ -17,10 +17,12 @@ path = "examples/advanced_queries.rs"
 [[example]]
 name = "complex_types"
 path = "examples/complex_types.rs"
+required-features = ["native"]
 
 [[example]]
 name = "getting_started"
 path = "examples/getting_started.rs"
+required-features = ["native"]
 
 [[example]]
 name = "migrations_example"
@@ -37,6 +39,16 @@ path = "examples/batch_inserts.rs"
 [[example]]
 name = "async_inserts"
 path = "examples/async_inserts.rs"
+
+[[example]]
+name = "native_test"
+path = "examples/native_test.rs"
+required-features = ["native"]
+
+# [[example]]
+# name = "getting_started_native"
+# path = "examples/getting_started_native.rs"
+
 
 # Dependencies for examples (workspace root package)
 [package]

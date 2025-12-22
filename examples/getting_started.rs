@@ -93,23 +93,22 @@ async fn main() -> anyhow::Result<()> {
     // let url = std::env::var("CLICKHOUSE_URL")
     //     .unwrap_or_else(|_| "http://default:default@localhost:8123/test_db".to_string());
 
-    let mut conn = Connection::http()
+    let mut conn = Connection::native()
         .host("localhost")
         .user("default")
         .password("default")
         .database("test_db")
-        .port(8123)
+        .port(9000)
         .build()
         .await?;
+    // Clean up any existing data from previous runs
+    conn.execute("TRUNCATE TABLE IF EXISTS posts").await?;
+    conn.execute("TRUNCATE TABLE IF EXISTS users").await?;
 
     // Run migrations
     println!("Running migrations...");
     let applied = conn.run_pending_migrations(&MIGRATIONS).await?;
     println!("Applied {} migrations", applied.len());
-
-    // Clean up any existing data from previous runs
-    conn.execute("TRUNCATE TABLE IF EXISTS posts").await?;
-    conn.execute("TRUNCATE TABLE IF EXISTS users").await?;
 
     // INSERT users - idiomatic Diesel style with .execute(&conn)
     let new_users = vec![
@@ -228,9 +227,9 @@ async fn main() -> anyhow::Result<()> {
     struct UserWithPosts {
         id: u64,
         name: String,
-        post_titles: Vec<String>,              // uses .alias() in query
+        post_titles: Vec<String>, // uses .alias() in query
         #[serde(rename = "count(id)")]
-        post_count: u64,                       // uses serde rename
+        post_count: u64, // uses serde rename
     }
 
     let users_with_all_posts: Vec<UserWithPosts> = users::table
@@ -238,7 +237,7 @@ async fn main() -> anyhow::Result<()> {
             users::id,
             users::name,
             group_array(posts::title).alias("post_titles"), // SQL: groupArray(title) AS post_titles
-            count(posts::id),                               // SQL: count(id) - matched by serde rename
+            count(posts::id), // SQL: count(id) - matched by serde rename
         ))
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
         .filter(users::active.eq(true))
