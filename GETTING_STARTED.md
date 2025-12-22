@@ -107,18 +107,24 @@ let user = NewUser {
     active: true,
 };
 
-conn.insert(insert_into(users::table).values(&user)).await?;
+insert_into(users::table)
+    .values(&user)
+    .execute(&conn)
+    .await?;
 ```
 
 ### Multiple rows
 
 ```rust
-let users = vec![
+let new_users = vec![
     NewUser { id: 2, name: "Bob".into(), email: "bob@example.com".into(), age: 25, active: true },
     NewUser { id: 3, name: "Charlie".into(), email: "charlie@example.com".into(), age: 35, active: false },
 ];
 
-conn.insert(insert_into(users::table).values(users.as_slice())).await?;
+insert_into(users::table)
+    .values(new_users.as_slice())
+    .execute(&conn)
+    .await?;
 ```
 
 ## 6. Query Data
@@ -126,35 +132,47 @@ conn.insert(insert_into(users::table).values(users.as_slice())).await?;
 ### Select all
 
 ```rust
-let all_users: Vec<User> = conn.load(users::table).await?;
+let all_users: Vec<User> = users::table
+    .load(&conn)
+    .await?;
 ```
 
 ### With filters
 
 ```rust
-let active_users: Vec<User> = conn.load(
-    users::table
-        .filter(users::active.eq(true))
-        .filter(users::age.gt(25))
-        .order_by(users::name.asc())
-        .limit(10)
-).await?;
+let active_users: Vec<User> = users::table
+    .filter(users::active.eq(true).and(users::age.gt(25)))
+    .order_by(users::name.asc())
+    .limit(10)
+    .load(&conn)
+    .await?;
+
+// Alternative: chain with and_filter()
+let active_users: Vec<User> = users::table
+    .filter(users::active.eq(true))
+    .and_filter(users::age.gt(25))
+    .order_by(users::name.asc())
+    .limit(10)
+    .load(&conn)
+    .await?;
 ```
 
-### Get one row
+### Get first row
 
 ```rust
-let user: User = conn.load_one(
-    users::table.filter(users::id.eq(1))
-).await?;
+let user: User = users::table
+    .filter(users::id.eq(1))
+    .first(&conn)
+    .await?;
 ```
 
 ### Optional (might not exist)
 
 ```rust
-let maybe_user: Option<User> = conn.load_optional(
-    users::table.filter(users::id.eq(999))
-).await?;
+let maybe_user: Option<User> = users::table
+    .filter(users::id.eq(999))
+    .get_result(&conn)
+    .await?;
 ```
 
 ## 7. Update Data
@@ -209,14 +227,18 @@ async fn main() -> anyhow::Result<()> {
 
     // Insert
     let user = NewUser { id: 1, name: "Alice".into(), age: 30, active: true };
-    conn.insert(insert_into(users::table).values(&user)).await?;
+    insert_into(users::table)
+        .values(&user)
+        .execute(&conn)
+        .await?;
 
     // Query
-    let users: Vec<User> = conn.load(
-        users::table.filter(users::active.eq(true))
-    ).await?;
+    let active_users: Vec<User> = users::table
+        .filter(users::active.eq(true).and(users::age.gt(18)))
+        .load(&conn)
+        .await?;
 
-    println!("Found {} active users", users.len());
+    println!("Found {} active users", active_users.len());
     Ok(())
 }
 ```
@@ -226,25 +248,28 @@ async fn main() -> anyhow::Result<()> {
 ### FINAL (deduplicate ReplacingMergeTree)
 
 ```rust
-let users: Vec<User> = conn.load(
-    users::table.final_()
-).await?;
+let users: Vec<User> = users::table
+    .final_()
+    .load(&conn)
+    .await?;
 ```
 
 ### SAMPLE (random sampling)
 
 ```rust
-let sample: Vec<User> = conn.load(
-    users::table.sample(0.1)  // 10% of data
-).await?;
+let sample: Vec<User> = users::table
+    .sample(0.1)  // 10% of data
+    .load(&conn)
+    .await?;
 ```
 
 ### PREWHERE (optimized filtering)
 
 ```rust
-let users: Vec<User> = conn.load(
-    users::table.prewhere(users::active.eq(true))
-).await?;
+let users: Vec<User> = users::table
+    .prewhere(users::active.eq(true))
+    .load(&conn)
+    .await?;
 ```
 
 ## Next Steps

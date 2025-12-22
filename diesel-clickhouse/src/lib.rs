@@ -127,7 +127,7 @@ pub use core::result::{Error, QueryResult};
 pub use core::expression::{Expression, SelectableExpression, ExpressionMethods};
 pub use core::query_source::{Table, Column, QuerySource};
 pub use core::query_builder::{QueryFragment, insert_into, update, delete, UpdateStatement, DeleteStatement, AsChangeset, Assign, Assignments, Insertable as InsertableTrait};
-pub use core::query_dsl::{QueryDsl, ClickHouseQueryDsl, RunQueryDsl};
+pub use core::query_dsl::{QueryDsl, ClickHouseQueryDsl};
 pub use core::connection::AsyncConnection;
 // Re-export the unified connection trait with a cleaner name
 pub use core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
@@ -170,7 +170,7 @@ pub mod prelude {
 
     // HTTP execution traits
     #[cfg(feature = "http")]
-    pub use crate::http::{ExecuteMut, InsertDsl, ToSql};
+    pub use crate::http::{InsertDsl, ToSql};
 
     // Native execution traits
     #[cfg(all(feature = "native", not(feature = "http")))]
@@ -179,6 +179,10 @@ pub mod prelude {
     // Unified connection
     #[cfg(any(feature = "http", feature = "native"))]
     pub use crate::Connection;
+
+    // RunQueryDsl for idiomatic query execution
+    #[cfg(any(feature = "http", feature = "native"))]
+    pub use crate::RunQueryDsl;
 }
 
 /// DSL helpers and functions.
@@ -293,6 +297,15 @@ mod unified;
 
 #[cfg(any(feature = "http", feature = "native"))]
 pub use unified::Connection;
+
+/// RunQueryDsl for idiomatic Diesel-style query execution.
+///
+/// Allows calling `.load()`, `.first()`, `.execute()` directly on queries.
+#[cfg(any(feature = "http", feature = "native"))]
+mod run_query_dsl;
+
+#[cfg(any(feature = "http", feature = "native"))]
+pub use run_query_dsl::RunQueryDsl;
 
 /// Batch insertion utilities.
 ///

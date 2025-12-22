@@ -7,7 +7,7 @@
 //! Prerequisites: docker-compose up -d
 
 use diesel_clickhouse::prelude::*;
-use diesel_clickhouse::http::ClickHouseConnection;
+use diesel_clickhouse::Connection;
 use diesel_clickhouse::{update, insert_into};
 use diesel_clickhouse::migrations::{EmbeddedMigrations, MigrationHarness, MigrationSource};
 use include_dir::include_dir;
@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
     let url = std::env::var("CLICKHOUSE_URL")
         .unwrap_or_else(|_| "http://localhost:8123/test_db".to_string());
 
-    let mut conn = match ClickHouseConnection::new(&url).await {
+    let conn = match Connection::establish(&url).await {
         Ok(conn) => conn,
         Err(e) => {
             eprintln!("Connection failed: {} (run: docker-compose up -d)\n", e);
@@ -101,49 +101,59 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Run migrations - simple one-liner!
+    // Run migrations - access underlying HTTP connection for migrations
     println!("Running migrations...");
-    let applied = conn.run_pending_migrations(&MIGRATIONS).await?;
-    println!("Applied {} migrations", applied.len());
+    if let Some(mut http_conn) = conn.as_http().cloned() {
+        let applied = http_conn.run_pending_migrations(&MIGRATIONS).await?;
+        println!("Applied {} migrations", applied.len());
+    }
 
-    // INSERT users - using unified query builder API
+    // INSERT users - idiomatic Diesel style with .execute(&conn)
     let new_users = vec![
         NewUser { id: 1, name: "Alice".into(), email: "alice@example.com".into(), age: 30, active: true },
         NewUser { id: 2, name: "Bob".into(), email: "bob@example.com".into(), age: 25, active: true },
         NewUser { id: 3, name: "Charlie".into(), email: "charlie@example.com".into(), age: 35, active: false },
     ];
-    conn.execute_statement(&insert_into(users::table).values(new_users.as_slice())).await?;
+    insert_into(users::table)
+        .values(new_users.as_slice())
+        .execute(&conn)
+        .await?;
     println!("Inserted {} users", new_users.len());
 
-    // INSERT posts - same unified approach
+    // INSERT posts
     let new_posts = vec![
         NewPost { id: 1, user_id: 1, title: "Hello World".into(), content: "My first post".into() },
         NewPost { id: 2, user_id: 1, title: "Rust is great".into(), content: "I love Rust".into() },
         NewPost { id: 3, user_id: 2, title: "ClickHouse tips".into(), content: "Fast analytics".into() },
     ];
-    conn.execute_statement(&insert_into(posts::table).values(new_posts.as_slice())).await?;
+    insert_into(posts::table)
+        .values(new_posts.as_slice())
+        .execute(&conn)
+        .await?;
     println!("Inserted {} posts", new_posts.len());
 
-    // SELECT with filters - using unified load() method
-    let active_users: Vec<User> = conn.load(
-        users::table
-            .filter(users::active.eq(true))
-            .and_filter(users::age.gt(25))
-            .order_by(users::age.desc())
-            .limit(10)
-    ).await?;
+    // SELECT with filters - idiomatic style with .load(&conn)
+    let active_users: Vec<User> = users::table
+        .filter(users::active.eq(true))
+        .and_filter(users::age.gt(25))
+        .order_by(users::age.desc())
+        .limit(10)
+        .load(&conn)
+        .await?;
     println!("Active users over 25: {:?}", active_users.iter().map(|u| &u.name).collect::<Vec<_>>());
 
-    // SELECT first - using unified load_one() method
-    let alice: User = conn.load_one(
-        users::table.filter(users::name.eq("Alice"))
-    ).await?;
+    // SELECT first - using .first(&conn)
+    let alice: User = users::table
+        .filter(users::name.eq("Alice"))
+        .first(&conn)
+        .await?;
     println!("Found: {} ({})", alice.name, alice.email);
 
-    // SELECT optional - using unified load_optional() method
-    let maybe_user: Option<User> = conn.load_optional(
-        users::table.filter(users::name.eq("Unknown"))
-    ).await?;
+    // SELECT optional - using .get_result(&conn)
+    let maybe_user: Option<User> = users::table
+        .filter(users::name.eq("Unknown"))
+        .get_result(&conn)
+        .await?;
     println!("Unknown user: {:?}", maybe_user);
 
     // JOIN - users with their posts (one row per post)
@@ -153,12 +163,12 @@ async fn main() -> anyhow::Result<()> {
         post_title: String,
     }
 
-    let users_with_posts: Vec<UserWithPost> = conn.load(
-        users::table
-            .select((users::name, posts::title))
-            .inner_join_on(posts::table, users::id.eq(posts::user_id))
-            .filter(users::active.eq(true))
-    ).await?;
+    let users_with_posts: Vec<UserWithPost> = users::table
+        .select((users::name, posts::title))
+        .inner_join_on(posts::table, users::id.eq(posts::user_id))
+        .filter(users::active.eq(true))
+        .load(&conn)
+        .await?;
     println!("Users with posts (flat):");
     for uwp in &users_with_posts {
         println!("  {} wrote: {}", uwp.user_name, uwp.post_title);
@@ -173,24 +183,24 @@ async fn main() -> anyhow::Result<()> {
         post_count: u64,
     }
 
-    let users_with_all_posts: Vec<UserWithPosts> = conn.load(
-        users::table
-            .select((
-                users::id,
-                users::name,
-                group_array(posts::title),  // Accumulate titles into array
-                count(posts::id),           // Count posts
-            ))
-            .inner_join_on(posts::table, users::id.eq(posts::user_id))
-            .filter(users::active.eq(true))
-            .group_by((users::id, users::name))
-    ).await?;
+    let users_with_all_posts: Vec<UserWithPosts> = users::table
+        .select((
+            users::id,
+            users::name,
+            group_array(posts::title),  // Accumulate titles into array
+            count(posts::id),           // Count posts
+        ))
+        .inner_join_on(posts::table, users::id.eq(posts::user_id))
+        .filter(users::active.eq(true))
+        .group_by((users::id, users::name))
+        .load(&conn)
+        .await?;
     println!("\nUsers with all their posts (grouped):");
     for u in &users_with_all_posts {
         println!("  {} ({} posts): {:?}", u.user_name, u.post_count, u.post_titles);
     }
 
-    // UPDATE
+    // UPDATE - idiomatic style
     update(users::table)
         .filter(users::id.eq(1u64))
         .set(users::name.eq("Alice Updated"))
@@ -198,8 +208,8 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Cleanup
-    conn.execute_raw("TRUNCATE TABLE posts").await?;
-    conn.execute_raw("TRUNCATE TABLE users").await?;
+    conn.execute("TRUNCATE TABLE posts").await?;
+    conn.execute("TRUNCATE TABLE users").await?;
     println!("Done!");
 
     Ok(())
@@ -215,7 +225,7 @@ fn demo_mode() {
     }
     println!();
 
-    // SELECT
+    // SELECT - idiomatic chain
     let select = users::table
         .filter(users::active.eq(true))
         .and_filter(users::age.gt(25))
@@ -223,7 +233,7 @@ fn demo_mode() {
         .limit(10);
     println!("SELECT:\n  {}\n", select.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
-    // INSERT - single row (NEW!)
+    // INSERT - single row
     let new_user = NewUser {
         id: 1,
         name: "Alice".into(),
@@ -234,7 +244,7 @@ fn demo_mode() {
     let insert_one = insert_into(users::table).values(&new_user);
     println!("INSERT (single):\n  {}\n", insert_one.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
-    // INSERT - multiple rows (NEW!)
+    // INSERT - multiple rows
     let new_users = vec![
         NewUser { id: 2, name: "Bob".into(), email: "bob@example.com".into(), age: 25, active: true },
         NewUser { id: 3, name: "Charlie".into(), email: "charlie@example.com".into(), age: 35, active: false },
@@ -248,33 +258,13 @@ fn demo_mode() {
         .set(users::name.eq("New Name"));
     println!("UPDATE:\n  {}\n", upd.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
-    // JOIN - inner join with custom ON clause (NEW!)
-    // Use .select() to start a SelectStatement, then add join
+    // JOIN
     let join_query = users::table
         .select(users::star)
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
         .filter(users::active.eq(true))
         .limit(10);
     println!("INNER JOIN:\n  {}\n", join_query.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
-
-    // JOIN - left join (NEW!)
-    let left_join = users::table
-        .select(users::star)
-        .left_join_on(posts::table, users::id.eq(posts::user_id))
-        .filter(users::age.gt(18));
-    println!("LEFT JOIN:\n  {}\n", left_join.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
-
-    // JOIN with groupArray - one-to-many accumulation (NEW!)
-    let grouped_join = users::table
-        .select((
-            users::id,
-            users::name,
-            group_array(posts::title),
-            count(posts::id),
-        ))
-        .inner_join_on(posts::table, users::id.eq(posts::user_id))
-        .group_by((users::id, users::name));
-    println!("JOIN + GROUP BY + groupArray:\n  {}\n", grouped_join.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
 
     // ClickHouse-specific
     println!("FINAL:\n  {}\n", users::table.final_().to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));

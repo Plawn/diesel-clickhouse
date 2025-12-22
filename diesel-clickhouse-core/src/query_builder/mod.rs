@@ -8,6 +8,7 @@ mod delete;
 mod clickhouse;
 pub mod set_operations;
 pub mod with;
+pub mod modifiers;
 
 pub use ast_pass::*;
 pub use select::*;
@@ -26,6 +27,11 @@ pub use with::{
     WithQueriesBuilder, with_queries,
     DynamicWithBuilder, dynamic_with,
     WithDsl,
+};
+pub use modifiers::{
+    Distinct, DistinctOn, DistinctDsl,
+    LimitBy, LimitOffsetBy, LimitByDsl,
+    Alias, AliasDsl,
 };
 
 use crate::backend::Backend;

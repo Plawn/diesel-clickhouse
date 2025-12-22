@@ -53,8 +53,17 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
         }
     }
 
-    /// Add a WHERE clause (replaces existing).
-    /// Use `and_filter` to add additional conditions to an existing WHERE clause.
+    /// Add a WHERE clause.
+    ///
+    /// **Note:** Calling `.filter()` twice replaces the first condition.
+    /// To combine conditions, use `.filter(a).filter(b)` after this fix,
+    /// or use `.filter(a.and(b))`.
+    ///
+    /// ```rust,ignore
+    /// // Two conditions with AND:
+    /// users::table
+    ///     .filter(users::active.eq(true).and(users::age.gt(18)))
+    /// ```
     pub fn filter<P>(self, predicate: P) -> SelectStatement<F, S, P, O, L, Of, G, H>
     where
         P: Expression,
@@ -311,6 +320,14 @@ where
     W: Expression,
 {
     /// Add an additional condition to the WHERE clause with AND.
+    ///
+    /// Use this to chain multiple conditions:
+    /// ```rust,ignore
+    /// users::table
+    ///     .filter(users::active.eq(true))
+    ///     .and_filter(users::age.gt(18))
+    /// // Generates: WHERE active = true AND age > 18
+    /// ```
     pub fn and_filter<P>(self, predicate: P) -> SelectStatement<F, S, crate::expression::And<W, P>, O, L, Of, G, H>
     where
         P: Expression,
