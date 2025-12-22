@@ -87,6 +87,7 @@ where
 
 
 /// Trait for types that can be used as a changeset in an UPDATE.
+#[allow(clippy::wrong_self_convention)] // Intentional: fluent API consumes self
 pub trait AsChangeset {
     /// The type of the table this changeset applies to.
     type Target: Table;

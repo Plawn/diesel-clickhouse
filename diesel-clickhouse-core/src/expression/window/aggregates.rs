@@ -58,6 +58,7 @@ where
 }
 
 /// Extension trait for using aggregates as window functions.
+#[allow(clippy::wrong_self_convention)] // Intentional: fluent API consumes self
 pub trait WindowAggregateExt: Sized {
     /// Convert this aggregate to a window aggregate.
     fn as_window(self) -> WindowAggregate<Self> {

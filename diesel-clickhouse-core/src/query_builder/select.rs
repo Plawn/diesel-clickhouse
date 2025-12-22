@@ -1,5 +1,8 @@
 //! SELECT statement builder.
 
+// Complex generic types are intentional for type-safe query building
+#![allow(clippy::type_complexity)]
+
 use crate::backend::Backend;
 use crate::expression::Expression;
 use crate::query_source::{Join, Inner, Left, Right, JoinTo, ArrayJoin};

@@ -320,6 +320,87 @@ pub trait QueryBuilder: Default {
 }
 
 // =============================================================================
+// Common helpers to avoid duplication
+// =============================================================================
+
+/// Default capacity for SQL query strings.
+const DEFAULT_SQL_CAPACITY: usize = 256;
+
+/// Push an escaped identifier to a SQL string.
+/// ClickHouse uses backticks for identifiers, and backticks within
+/// identifiers are escaped by doubling them.
+#[inline]
+fn push_escaped_identifier(sql: &mut String, identifier: &str) {
+    sql.push('`');
+    if identifier.contains('`') {
+        for c in identifier.chars() {
+            if c == '`' {
+                sql.push_str("``");
+            } else {
+                sql.push(c);
+            }
+        }
+    } else {
+        sql.push_str(identifier);
+    }
+    sql.push('`');
+}
+
+/// Common bind collector implementation.
+///
+/// This struct provides the shared implementation for all backend-specific
+/// bind collectors, avoiding code duplication.
+#[derive(Debug)]
+pub struct CommonBindCollector<'a> {
+    bindings: SmallVec<[BoundValue<'a>; 8]>,
+    bindable_values: SmallVec<[BindableValue; 8]>,
+}
+
+impl<'a> Default for CommonBindCollector<'a> {
+    fn default() -> Self {
+        Self {
+            bindings: SmallVec::new(),
+            bindable_values: SmallVec::new(),
+        }
+    }
+}
+
+impl<'a> CommonBindCollector<'a> {
+    /// Push a bound value.
+    #[inline]
+    pub fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
+        self.bindings.push(BoundValue::new(value));
+        Ok(())
+    }
+
+    /// Push an unsized bound value (like str).
+    #[inline]
+    pub fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
+        self.bindings.push(BoundValue::new(value));
+        Ok(())
+    }
+
+    /// Push a bindable value for native parameter binding.
+    #[inline]
+    pub fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
+        self.bindable_values.push(value);
+        Ok(())
+    }
+
+    /// Get the collected bindings (legacy format).
+    #[inline]
+    pub fn bindings(&self) -> &[BoundValue<'a>] {
+        &self.bindings
+    }
+
+    /// Get the collected bindable values for native binding.
+    #[inline]
+    pub fn bindable_values(&self) -> &[BindableValue] {
+        &self.bindable_values
+    }
+}
+
+// =============================================================================
 // HTTP Backend
 // =============================================================================
 
@@ -354,44 +435,34 @@ pub struct HttpRawValue<'a> {
 
 /// Bind collector for HTTP backend.
 ///
-/// Uses SmallVec to store up to 8 bindings on the stack without allocation.
-#[derive(Debug)]
-pub struct HttpBindCollector<'a> {
-    bindings: SmallVec<[BoundValue<'a>; 8]>,
-    bindable_values: SmallVec<[BindableValue; 8]>,
-}
-
-impl<'a> Default for HttpBindCollector<'a> {
-    fn default() -> Self {
-        Self {
-            bindings: SmallVec::new(),
-            bindable_values: SmallVec::new(),
-        }
-    }
-}
+/// Wraps CommonBindCollector to provide HTTP-specific BindCollector implementation.
+#[derive(Debug, Default)]
+pub struct HttpBindCollector<'a>(CommonBindCollector<'a>);
 
 impl<'a> BindCollector<'a, HttpBackend> for HttpBindCollector<'a> {
+    #[inline]
     fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.bindings.push(BoundValue::new(value));
-        Ok(())
+        self.0.push_bound_value(value)
     }
 
+    #[inline]
     fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.bindings.push(BoundValue::new(value));
-        Ok(())
+        self.0.push_bound_value_unsized(value)
     }
 
+    #[inline]
     fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
-        self.bindable_values.push(value);
-        Ok(())
+        self.0.push_bindable_value(value)
     }
 
+    #[inline]
     fn bindings(&self) -> &[BoundValue<'a>] {
-        &self.bindings
+        self.0.bindings()
     }
 
+    #[inline]
     fn bindable_values(&self) -> &[BindableValue] {
-        &self.bindable_values
+        self.0.bindable_values()
     }
 }
 
@@ -405,39 +476,25 @@ pub struct HttpQueryBuilder {
 impl Default for HttpQueryBuilder {
     fn default() -> Self {
         Self {
-            // Pre-allocate for typical query size
-            sql: String::with_capacity(256),
+            sql: String::with_capacity(DEFAULT_SQL_CAPACITY),
             param_count: 0,
         }
     }
 }
 
 impl QueryBuilder for HttpQueryBuilder {
+    #[inline]
     fn push_sql(&mut self, sql: &str) {
         self.sql.push_str(sql);
     }
 
+    #[inline]
     fn push_identifier(&mut self, identifier: &str) {
-        // ClickHouse uses backticks for identifiers
-        self.sql.push('`');
-        // Fast path: no escaping needed if no backticks
-        if identifier.contains('`') {
-            for c in identifier.chars() {
-                if c == '`' {
-                    self.sql.push_str("``");
-                } else {
-                    self.sql.push(c);
-                }
-            }
-        } else {
-            self.sql.push_str(identifier);
-        }
-        self.sql.push('`');
+        push_escaped_identifier(&mut self.sql, identifier);
     }
 
     fn push_bind_param(&mut self) {
         // ClickHouse HTTP uses {name:Type} format for parameters
-        // Build without format! macro for efficiency
         self.sql.push_str("{p");
         let mut buf = itoa::Buffer::new();
         self.sql.push_str(buf.format(self.param_count));
@@ -449,6 +506,7 @@ impl QueryBuilder for HttpQueryBuilder {
         self.sql
     }
 
+    #[inline]
     fn sql(&self) -> &str {
         &self.sql
     }
@@ -489,44 +547,34 @@ pub struct NativeRawValue<'a> {
 
 /// Bind collector for Native backend.
 ///
-/// Uses SmallVec to store up to 8 bindings on the stack without allocation.
-#[derive(Debug)]
-pub struct NativeBindCollector<'a> {
-    bindings: SmallVec<[BoundValue<'a>; 8]>,
-    bindable_values: SmallVec<[BindableValue; 8]>,
-}
-
-impl<'a> Default for NativeBindCollector<'a> {
-    fn default() -> Self {
-        Self {
-            bindings: SmallVec::new(),
-            bindable_values: SmallVec::new(),
-        }
-    }
-}
+/// Wraps CommonBindCollector to provide Native-specific BindCollector implementation.
+#[derive(Debug, Default)]
+pub struct NativeBindCollector<'a>(CommonBindCollector<'a>);
 
 impl<'a> BindCollector<'a, NativeBackend> for NativeBindCollector<'a> {
+    #[inline]
     fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.bindings.push(BoundValue::new(value));
-        Ok(())
+        self.0.push_bound_value(value)
     }
 
+    #[inline]
     fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.bindings.push(BoundValue::new(value));
-        Ok(())
+        self.0.push_bound_value_unsized(value)
     }
 
+    #[inline]
     fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
-        self.bindable_values.push(value);
-        Ok(())
+        self.0.push_bindable_value(value)
     }
 
+    #[inline]
     fn bindings(&self) -> &[BoundValue<'a>] {
-        &self.bindings
+        self.0.bindings()
     }
 
+    #[inline]
     fn bindable_values(&self) -> &[BindableValue] {
-        &self.bindable_values
+        self.0.bindable_values()
     }
 }
 
@@ -540,31 +588,21 @@ pub struct NativeQueryBuilder {
 impl Default for NativeQueryBuilder {
     fn default() -> Self {
         Self {
-            sql: String::with_capacity(256),
+            sql: String::with_capacity(DEFAULT_SQL_CAPACITY),
             param_count: 0,
         }
     }
 }
 
 impl QueryBuilder for NativeQueryBuilder {
+    #[inline]
     fn push_sql(&mut self, sql: &str) {
         self.sql.push_str(sql);
     }
 
+    #[inline]
     fn push_identifier(&mut self, identifier: &str) {
-        self.sql.push('`');
-        if identifier.contains('`') {
-            for c in identifier.chars() {
-                if c == '`' {
-                    self.sql.push_str("``");
-                } else {
-                    self.sql.push(c);
-                }
-            }
-        } else {
-            self.sql.push_str(identifier);
-        }
-        self.sql.push('`');
+        push_escaped_identifier(&mut self.sql, identifier);
     }
 
     fn push_bind_param(&mut self) {
@@ -579,6 +617,7 @@ impl QueryBuilder for NativeQueryBuilder {
         self.sql
     }
 
+    #[inline]
     fn sql(&self) -> &str {
         &self.sql
     }
@@ -613,44 +652,34 @@ pub struct GenericRawValue<'a> {
 
 /// Generic bind collector.
 ///
-/// Uses SmallVec to store up to 8 bindings on the stack without allocation.
-#[derive(Debug)]
-pub struct GenericBindCollector<'a> {
-    bindings: SmallVec<[BoundValue<'a>; 8]>,
-    bindable_values: SmallVec<[BindableValue; 8]>,
-}
-
-impl<'a> Default for GenericBindCollector<'a> {
-    fn default() -> Self {
-        Self {
-            bindings: SmallVec::new(),
-            bindable_values: SmallVec::new(),
-        }
-    }
-}
+/// Wraps CommonBindCollector to provide generic BindCollector implementation.
+#[derive(Debug, Default)]
+pub struct GenericBindCollector<'a>(CommonBindCollector<'a>);
 
 impl<'a> BindCollector<'a, ClickHouse> for GenericBindCollector<'a> {
+    #[inline]
     fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.bindings.push(BoundValue::new(value));
-        Ok(())
+        self.0.push_bound_value(value)
     }
 
+    #[inline]
     fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
-        self.bindings.push(BoundValue::new(value));
-        Ok(())
+        self.0.push_bound_value_unsized(value)
     }
 
+    #[inline]
     fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
-        self.bindable_values.push(value);
-        Ok(())
+        self.0.push_bindable_value(value)
     }
 
+    #[inline]
     fn bindings(&self) -> &[BoundValue<'a>] {
-        &self.bindings
+        self.0.bindings()
     }
 
+    #[inline]
     fn bindable_values(&self) -> &[BindableValue] {
-        &self.bindable_values
+        self.0.bindable_values()
     }
 }
 
@@ -663,32 +692,23 @@ pub struct GenericQueryBuilder {
 impl Default for GenericQueryBuilder {
     fn default() -> Self {
         Self {
-            sql: String::with_capacity(256),
+            sql: String::with_capacity(DEFAULT_SQL_CAPACITY),
         }
     }
 }
 
 impl QueryBuilder for GenericQueryBuilder {
+    #[inline]
     fn push_sql(&mut self, sql: &str) {
         self.sql.push_str(sql);
     }
 
+    #[inline]
     fn push_identifier(&mut self, identifier: &str) {
-        self.sql.push('`');
-        if identifier.contains('`') {
-            for c in identifier.chars() {
-                if c == '`' {
-                    self.sql.push_str("``");
-                } else {
-                    self.sql.push(c);
-                }
-            }
-        } else {
-            self.sql.push_str(identifier);
-        }
-        self.sql.push('`');
+        push_escaped_identifier(&mut self.sql, identifier);
     }
 
+    #[inline]
     fn push_bind_param(&mut self) {
         self.sql.push('?');
     }
@@ -697,6 +717,7 @@ impl QueryBuilder for GenericQueryBuilder {
         self.sql
     }
 
+    #[inline]
     fn sql(&self) -> &str {
         &self.sql
     }

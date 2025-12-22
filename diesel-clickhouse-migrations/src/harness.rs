@@ -89,7 +89,7 @@ pub trait MigrationHarness: MigrationConnection {
             let trimmed = statement.trim();
             if !trimmed.is_empty() && !trimmed.starts_with("--") {
                 self.execute(trimmed).await.map_err(|e| {
-                    MigrationError::sql_error(&migration.version.to_string(), e.to_string())
+                    MigrationError::sql_error(migration.version.to_string(), e.to_string())
                 })?;
             }
         }
@@ -102,7 +102,7 @@ pub trait MigrationHarness: MigrationConnection {
         let insert_sql = format!(
             "{} ('{}', '{}', '{}')",
             table.insert_sql(),
-            escape_sql_string(&migration.version.to_string()),
+            escape_sql_string(migration.version.as_ref()),
             escape_sql_string(&now),
             escape_sql_string(&checksum)
         );
@@ -125,7 +125,7 @@ pub trait MigrationHarness: MigrationConnection {
             let trimmed = statement.trim();
             if !trimmed.is_empty() && !trimmed.starts_with("--") {
                 self.execute(trimmed).await.map_err(|e| {
-                    MigrationError::sql_error(&migration.version.to_string(), e.to_string())
+                    MigrationError::sql_error(migration.version.to_string(), e.to_string())
                 })?;
             }
         }

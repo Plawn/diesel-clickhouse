@@ -82,7 +82,7 @@ impl ColumnInterner {
         // Fast path: check if already interned (read lock)
         {
             let interner = self.inner.read()
-                .map_err(|_| InternerError("ColumnInterner RwLock poisoned".to_string()))?;
+                .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
             if let Some(sym) = interner.get(s) {
                 return Ok(sym);
             }
@@ -90,7 +90,7 @@ impl ColumnInterner {
 
         // Slow path: intern the string (write lock)
         let mut interner = self.inner.write()
-            .map_err(|_| InternerError("ColumnInterner RwLock poisoned".to_string()))?;
+            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
         Ok(interner.get_or_intern(s))
     }
 
@@ -101,7 +101,7 @@ impl ColumnInterner {
     #[inline]
     pub fn get(&self, s: &str) -> InternerResult<Option<Symbol>> {
         let interner = self.inner.read()
-            .map_err(|_| InternerError("ColumnInterner RwLock poisoned".to_string()))?;
+            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
         Ok(interner.get(s))
     }
 
@@ -112,7 +112,7 @@ impl ColumnInterner {
     #[inline]
     pub fn resolve(&self, sym: Symbol) -> InternerResult<Option<String>> {
         let interner = self.inner.read()
-            .map_err(|_| InternerError("ColumnInterner RwLock poisoned".to_string()))?;
+            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
         Ok(interner.resolve(sym).map(|s| s.to_owned()))
     }
 
@@ -127,7 +127,7 @@ impl ColumnInterner {
         F: FnOnce(&str) -> R,
     {
         let interner = self.inner.read()
-            .map_err(|_| InternerError("ColumnInterner RwLock poisoned".to_string()))?;
+            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
         Ok(interner.resolve(sym).map(f))
     }
 
@@ -136,7 +136,7 @@ impl ColumnInterner {
     /// Returns an error if the internal RwLock is poisoned.
     pub fn len(&self) -> InternerResult<usize> {
         let interner = self.inner.read()
-            .map_err(|_| InternerError("ColumnInterner RwLock poisoned".to_string()))?;
+            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
         Ok(interner.len())
     }
 
@@ -154,7 +154,7 @@ impl ColumnInterner {
     /// Returns an error if the internal RwLock is poisoned.
     pub fn clear(&self) -> InternerResult<()> {
         let mut interner = self.inner.write()
-            .map_err(|_| InternerError("ColumnInterner RwLock poisoned".to_string()))?;
+            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
         *interner = StringInterner::<DefaultBackend>::new();
         Ok(())
     }

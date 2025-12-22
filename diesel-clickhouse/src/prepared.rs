@@ -125,7 +125,7 @@ impl PreparedCache {
         // Fast path: check with read lock first (no mutation, just peek)
         {
             let cache = self.cache.read()
-                .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
+                .map_err(|e| Error::QueryError(format!("PreparedCache RwLock poisoned: {}", e)))?;
             if let Some(stmt) = cache.peek(&key) {
                 self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return Ok(Arc::clone(stmt));
@@ -145,7 +145,7 @@ impl PreparedCache {
         // Insert with write lock
         {
             let mut cache = self.cache.write()
-                .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
+                .map_err(|e| Error::QueryError(format!("PreparedCache RwLock poisoned: {}", e)))?;
 
             // Check again in case another thread inserted while we were building
             if let Some(existing) = cache.get(&key) {
@@ -178,7 +178,7 @@ impl PreparedCache {
     /// Returns an error if the internal RwLock is poisoned.
     pub fn stats(&self) -> QueryResult<CacheStats> {
         let cache = self.cache.read()
-            .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
+            .map_err(|e| Error::QueryError(format!("PreparedCache RwLock poisoned: {}", e)))?;
         Ok(CacheStats {
             size: cache.len(),
             max_size: cache.cap().get(),
@@ -192,7 +192,7 @@ impl PreparedCache {
     /// Returns an error if the internal RwLock is poisoned.
     pub fn clear(&self) -> QueryResult<()> {
         self.cache.write()
-            .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?
+            .map_err(|e| Error::QueryError(format!("PreparedCache RwLock poisoned: {}", e)))?
             .clear();
         Ok(())
     }
@@ -205,7 +205,7 @@ impl PreparedCache {
     /// Returns an error if the internal RwLock is poisoned.
     pub fn get(&self, name: &str) -> QueryResult<Option<Arc<PreparedStatement>>> {
         let cache = self.cache.read()
-            .map_err(|_| Error::QueryError("PreparedCache RwLock poisoned".to_string()))?;
+            .map_err(|e| Error::QueryError(format!("PreparedCache RwLock poisoned: {}", e)))?;
         // Note: This is O(n) because we're searching by name only, not by full key.
         // For O(1) lookup, use prepare() with the same type parameter.
         for (key, stmt) in cache.iter() {
@@ -280,9 +280,9 @@ impl PreparedStatement {
     ///     q.bind(42u64).bind("alice")
     /// }).fetch_all().await?;
     /// ```
-    pub fn execute_with<'a, F>(
+    pub fn execute_with<F>(
         &self,
-        conn: &'a ClickHouseConnection,
+        conn: &ClickHouseConnection,
         bind_fn: F,
     ) -> clickhouse::query::Query
     where
@@ -299,7 +299,7 @@ impl PreparedStatement {
     /// let stmt = PreparedStatement::new("count_users", "SELECT count() FROM users");
     /// let count: u64 = stmt.execute(&conn).fetch_one().await?;
     /// ```
-    pub fn execute<'a>(&self, conn: &'a ClickHouseConnection) -> clickhouse::query::Query {
+    pub fn execute(&self, conn: &ClickHouseConnection) -> clickhouse::query::Query {
         conn.bound_query(&self.sql)
     }
 

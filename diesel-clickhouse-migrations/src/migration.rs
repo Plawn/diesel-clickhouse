@@ -35,7 +35,7 @@ impl MigrationVersion {
     /// - `NNNNN_name` (sequential)
     pub fn from_directory_name(name: &str) -> Option<Self> {
         let parts: Vec<&str> = name.splitn(2, '_').collect();
-        if parts.len() >= 1 {
+        if !parts.is_empty() {
             let version = parts[0];
             // Validate it's numeric
             if version.chars().all(|c| c.is_ascii_digit()) {

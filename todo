@@ -9,3 +9,4 @@
 - audit performance prepared queries
   - vérification de l'utilisation de bind params
 - audit les perfos
+- remove legacy and duplications

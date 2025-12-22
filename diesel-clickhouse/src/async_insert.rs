@@ -222,7 +222,7 @@ impl<'a, T: Table, R: Insertable<T>> AsyncInserter<'a, T, R> {
             sql.push(')');
         }
 
-        sql.push_str(" ");
+        sql.push(' ');
         sql.push_str(&self.config.to_settings_sql());
         sql.push_str(" VALUES ");
 
@@ -308,7 +308,7 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     pub async fn push(&self, row: R) -> QueryResult<()> {
         let should_flush = {
             let mut buffer = self.buffer.lock()
-                .map_err(|_| Error::QueryError("BufferedAsyncInserter Mutex poisoned".to_string()))?;
+                .map_err(|e| Error::QueryError(format!("BufferedAsyncInserter Mutex poisoned: {}", e)))?;
             buffer.push(row);
             buffer.len() >= self.buffer_size
         };
@@ -326,7 +326,7 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     pub async fn flush_buffer(&self) -> QueryResult<()> {
         let rows: Vec<R> = {
             let mut buffer = self.buffer.lock()
-                .map_err(|_| Error::QueryError("BufferedAsyncInserter Mutex poisoned".to_string()))?;
+                .map_err(|e| Error::QueryError(format!("BufferedAsyncInserter Mutex poisoned: {}", e)))?;
             std::mem::take(&mut *buffer)
         };
 
@@ -348,7 +348,7 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     /// Returns an error if the internal Mutex is poisoned.
     pub fn buffered_count(&self) -> QueryResult<usize> {
         let buffer = self.buffer.lock()
-            .map_err(|_| Error::QueryError("BufferedAsyncInserter Mutex poisoned".to_string()))?;
+            .map_err(|e| Error::QueryError(format!("BufferedAsyncInserter Mutex poisoned: {}", e)))?;
         Ok(buffer.len())
     }
 

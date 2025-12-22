@@ -238,6 +238,7 @@ impl CombinedMigrations {
     }
 
     /// Add a migration source.
+    #[allow(clippy::should_implement_trait)] // Intentional: builder pattern, not std::ops::Add
     pub fn add<S: MigrationSource + Send + Sync + 'static>(mut self, source: S) -> Self {
         self.sources.push(Box::new(source));
         self

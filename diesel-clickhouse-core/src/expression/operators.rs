@@ -643,7 +643,7 @@ where
 }
 
 // Also implement for slices
-impl<'a, L, T, DB> QueryFragment<DB> for In<L, &'a [T]>
+impl<L, T, DB> QueryFragment<DB> for In<L, &[T]>
 where
     L: QueryFragment<DB>,
     T: ToBindableValue,
@@ -663,7 +663,7 @@ where
     }
 }
 
-impl<'a, L, T, DB> QueryFragment<DB> for NotIn<L, &'a [T]>
+impl<L, T, DB> QueryFragment<DB> for NotIn<L, &[T]>
 where
     L: QueryFragment<DB>,
     T: ToBindableValue,

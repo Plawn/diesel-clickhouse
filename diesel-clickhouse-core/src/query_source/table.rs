@@ -4,6 +4,7 @@ use diesel_clickhouse_types::SqlType;
 use crate::expression::{Expression, SelectableExpression};
 
 /// A source of data in a query (typically a table).
+#[allow(clippy::wrong_self_convention)] // from_clause returns clause, not constructs from it
 pub trait QuerySource: Clone + Copy {
     /// The type representing the FROM clause.
     type FromClause;

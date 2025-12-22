@@ -178,10 +178,10 @@ impl<T: Send + Sync> ParallelProcessor<T> {
         if self.config.should_parallelize(self.items.len()) {
             self.items
                 .par_iter()
-                .fold(|| identity.clone(), |acc, item| fold_op(acc, item))
-                .reduce(|| identity.clone(), |a, b| combine_op(a, b))
+                .fold(|| identity.clone(), &fold_op)
+                .reduce(|| identity.clone(), &combine_op)
         } else {
-            self.items.iter().fold(identity, |acc, item| fold_op(acc, item))
+            self.items.iter().fold(identity, fold_op)
         }
     }
 

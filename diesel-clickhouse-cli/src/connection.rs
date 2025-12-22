@@ -39,7 +39,7 @@ impl CliConnection {
         let client = reqwest::Client::new();
 
         // Test connection
-        let test_query = format!("SELECT 1");
+        let test_query = "SELECT 1";
         let response = client
             .post(&base_url)
             .query(&[("database", &database)])

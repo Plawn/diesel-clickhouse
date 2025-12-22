@@ -484,6 +484,7 @@ where
 // =============================================================================
 
 /// Extension trait for converting queries to subqueries.
+#[allow(clippy::wrong_self_convention)] // Intentional: fluent API consumes self
 pub trait AsSubquery: Sized {
     /// The SQL type of the subquery result.
     type SqlType: SqlType;

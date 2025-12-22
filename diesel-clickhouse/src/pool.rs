@@ -46,7 +46,7 @@ impl Default for PoolConfig {
             min_idle: Some(1),
             connection_timeout_ms: 30_000,
             idle_timeout_ms: Some(600_000), // 10 minutes
-            max_lifetime_ms: Some(1800_000), // 30 minutes
+            max_lifetime_ms: Some(1_800_000), // 30 minutes
         }
     }
 }
@@ -229,8 +229,8 @@ impl Pool {
             self.inner.available.acquire(),
         )
         .await
-        .map_err(|_| Error::ConnectionError("Pool connection timeout".to_owned()))?
-        .map_err(|_| Error::ConnectionError("Pool closed".to_owned()))?;
+        .map_err(|e| Error::ConnectionError(format!("Pool connection timeout: {}", e)))?
+        .map_err(|e| Error::ConnectionError(format!("Pool closed: {}", e)))?;
 
         // Forget the permit - we'll add it back when the connection is returned
         permit.forget();

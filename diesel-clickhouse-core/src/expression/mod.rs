@@ -345,6 +345,7 @@ impl<E: Expression, A> Expression for Aliased<E, A> {
 impl<E: SelectableExpression<QS>, A, QS> SelectableExpression<QS> for Aliased<E, A> {}
 
 /// Extension trait for adding an alias to an expression.
+#[allow(clippy::wrong_self_convention)] // Intentional: fluent API consumes self
 pub trait AsExpression<ST: SqlType> {
     /// The expression type.
     type Expression: Expression<SqlType = ST>;

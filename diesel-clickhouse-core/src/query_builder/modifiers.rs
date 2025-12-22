@@ -62,9 +62,9 @@ where
         let sql = crate::backend::QueryBuilder::finish(inner_builder);
 
         // Replace "SELECT " with "SELECT DISTINCT "
-        if sql.starts_with("SELECT ") {
+        if let Some(rest) = sql.strip_prefix("SELECT ") {
             pass.push_sql("SELECT DISTINCT ");
-            pass.push_sql(&sql[7..]);
+            pass.push_sql(rest);
         } else {
             // Fallback: just prepend DISTINCT
             pass.push_sql("DISTINCT ");
@@ -111,11 +111,11 @@ where
         let sql = crate::backend::QueryBuilder::finish(inner_builder);
 
         // Replace "SELECT " with "SELECT DISTINCT ON (expr) "
-        if sql.starts_with("SELECT ") {
+        if let Some(rest) = sql.strip_prefix("SELECT ") {
             pass.push_sql("SELECT DISTINCT ON (");
             self.on_expr.walk_ast(pass.reborrow())?;
             pass.push_sql(") ");
-            pass.push_sql(&sql[7..]);
+            pass.push_sql(rest);
         } else {
             pass.push_sql("DISTINCT ON (");
             self.on_expr.walk_ast(pass.reborrow())?;

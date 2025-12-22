@@ -106,6 +106,7 @@ pub trait ExpressionMethods: Expression + Sized {
 impl<T: Expression> ExpressionMethods for T {}
 
 /// Extension methods for nullable expressions.
+#[allow(clippy::wrong_self_convention)] // Intentional: fluent API consumes self
 pub trait NullableExpressionMethods: Expression + Sized {
     /// Check if the value is NULL.
     fn is_null(self) -> IsNull<Self> {

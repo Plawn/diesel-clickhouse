@@ -22,6 +22,9 @@
 //!     )
 //! ```
 
+// Complex generic types are intentional for type-safe CTE building
+#![allow(clippy::type_complexity)]
+
 use crate::backend::Backend;
 use crate::result::QueryResult;
 
@@ -410,6 +413,7 @@ pub fn dynamic_with<Q>() -> DynamicWithBuilder<Q> {
 // =============================================================================
 
 /// Extension trait for wrapping a query in a WITH clause.
+#[allow(clippy::wrong_self_convention)] // Intentional: fluent API consumes self
 pub trait WithDsl: Sized {
     /// Wrap this query in a WITH clause as a CTE.
     ///
