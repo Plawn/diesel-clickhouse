@@ -881,6 +881,187 @@ impl ClickHouseConnection {
     }
 }
 
+// =============================================================================
+// Zero-Copy API
+// =============================================================================
+
+impl ClickHouseConnection {
+    /// Load rows using zero-copy parsing with a callback.
+    ///
+    /// This method uses ClickHouse's TabSeparated format and processes rows
+    /// without allocating owned data structures. Each row is passed to the
+    /// callback as a `ZeroCopyRow` containing borrowed references into the
+    /// response buffer.
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - The SQL query to execute
+    /// * `columns` - Column names in the order they appear in the SELECT clause
+    /// * `callback` - Function called for each row
+    ///
+    /// # Returns
+    ///
+    /// The number of rows processed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::prelude::*;
+    ///
+    /// // Process rows without allocating String/Vec for each row
+    /// let count = conn.load_zero_copy(
+    ///     "SELECT id, name, score FROM users WHERE active = 1",
+    ///     &["id", "name", "score"],
+    ///     |row| {
+    ///         let id: u64 = row.get_u64("id")?;
+    ///         let name: &str = row.get_str("name")?;  // Borrowed!
+    ///         let score: f64 = row.get_f64("score")?;
+    ///
+    ///         println!("User {}: {} (score: {})", id, name, score);
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// println!("Processed {} rows", count);
+    /// ```
+    ///
+    /// # Performance Notes
+    ///
+    /// - Uses TabSeparated format (faster to parse than JSON)
+    /// - No allocations per row (values are borrowed from response buffer)
+    /// - Ideal for large result sets with simple data access patterns
+    /// - For complex nested types (Array, Map), consider using `load_json()` instead
+    pub async fn load_zero_copy<F>(
+        &self,
+        sql: &str,
+        columns: &[&str],
+        callback: F,
+    ) -> QueryResult<usize>
+    where
+        F: for<'a, 'b> FnMut(crate::zero_copy::ZeroCopyRow<'a, 'b>) -> QueryResult<()>,
+    {
+        // Execute query with TabSeparated format (no header)
+        let mut cursor = self.client
+            .query(sql)
+            .fetch_bytes("TabSeparated")
+            .map_err(|e| Error::QueryError(e.to_string()))?;
+
+        // Collect all bytes (we need the full buffer for zero-copy)
+        let mut all_bytes = Vec::with_capacity(4096);
+        loop {
+            match cursor.next().await {
+                Ok(Some(chunk)) => {
+                    all_bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => return Err(Error::QueryError(e.to_string())),
+            }
+        }
+
+        // Parse using zero-copy TSV parser
+        let parser = crate::zero_copy::TsvParser::new(&all_bytes, columns);
+        parser.for_each(callback)
+    }
+
+    /// Load rows using zero-copy streaming parsing with a callback.
+    ///
+    /// Unlike `load_zero_copy`, this method processes rows as chunks arrive
+    /// from the network, which can reduce memory usage for very large result sets.
+    /// However, rows that span chunk boundaries require buffering.
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - The SQL query to execute
+    /// * `columns` - Column names in the order they appear in the SELECT clause
+    /// * `callback` - Function called for each row
+    ///
+    /// # Returns
+    ///
+    /// The number of rows processed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Stream-process a very large result set
+    /// let count = conn.load_zero_copy_streaming(
+    ///     "SELECT * FROM huge_table",
+    ///     &["id", "data"],
+    ///     |row| {
+    ///         // Process each row as it arrives
+    ///         let id = row.get_u64("id")?;
+    ///         // ...
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    pub async fn load_zero_copy_streaming<F>(
+        &self,
+        sql: &str,
+        columns: &[&str],
+        mut callback: F,
+    ) -> QueryResult<usize>
+    where
+        F: for<'a, 'b> FnMut(crate::zero_copy::ZeroCopyRow<'a, 'b>) -> QueryResult<()>,
+    {
+        let mut cursor = self.client
+            .query(sql)
+            .fetch_bytes("TabSeparated")
+            .map_err(|e| Error::QueryError(e.to_string()))?;
+
+        let mut parser = crate::zero_copy::StreamingTsvParser::new(columns);
+        let mut total_count = 0;
+
+        loop {
+            match cursor.next().await {
+                Ok(Some(chunk)) => {
+                    let count = parser.process_chunk(&chunk, &mut callback)?;
+                    total_count += count;
+                }
+                Ok(None) => {
+                    // Process any remaining data
+                    let count = parser.finish(&mut callback)?;
+                    total_count += count;
+                    break;
+                }
+                Err(e) => return Err(Error::QueryError(e.to_string())),
+            }
+        }
+
+        Ok(total_count)
+    }
+
+    /// Load rows from a query fragment using zero-copy parsing.
+    ///
+    /// This is a convenience method that builds SQL from a query fragment
+    /// and then uses zero-copy parsing.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let count = conn.load_zero_copy_query(
+    ///     users::table.filter(users::active.eq(true)).select((users::id, users::name)),
+    ///     &["id", "name"],
+    ///     |row| {
+    ///         let id = row.get_u64("id")?;
+    ///         let name = row.get_str("name")?;
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    pub async fn load_zero_copy_query<Q, F>(
+        &self,
+        query: Q,
+        columns: &[&str],
+        callback: F,
+    ) -> QueryResult<usize>
+    where
+        Q: QueryFragment<ClickHouse>,
+        F: for<'a, 'b> FnMut(crate::zero_copy::ZeroCopyRow<'a, 'b>) -> QueryResult<()>,
+    {
+        let sql = build_sql(&query)?;
+        self.load_zero_copy(&sql, columns, callback).await
+    }
+}
+
 /// Trait extension for trimming ASCII whitespace from byte slices.
 trait TrimAscii {
     fn trim_ascii(&self) -> &[u8];
@@ -932,7 +1113,8 @@ impl ClickHouseConnectionTrait for ClickHouseConnection {
         T: ClickHouseRowTrait,
         Q: QueryFragment<ClickHouse> + Send + Sync,
     {
-        // Use native parameter binding
+        // Use native parameter binding with JSONEachRow
+        // Note: For better performance, use load_binary() which uses RowBinary format
         let compiled = build_sql_native(&query)?;
         self.load_native(&compiled).await
     }
@@ -946,6 +1128,89 @@ impl ClickHouseConnectionTrait for ClickHouseConnection {
 
     fn database(&self) -> &str {
         &self.database
+    }
+}
+
+// =============================================================================
+// Optimized RowBinary Loading (2-3x faster than JSON)
+// =============================================================================
+
+impl ClickHouseConnection {
+    /// Load rows using RowBinary format (optimized, 2-3x faster than JSON).
+    ///
+    /// This method uses the native RowBinary format which is significantly
+    /// faster than JSONEachRow. The row type must derive `clickhouse::Row`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::prelude::*;
+    ///
+    /// #[derive(Debug, Row)]  // Generates both serde and clickhouse::Row
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
+    /// // Fast RowBinary loading
+    /// let users: Vec<User> = conn.load_binary(
+    ///     users::table.filter(users::active.eq(true))
+    /// ).await?;
+    /// ```
+    ///
+    /// # Performance
+    ///
+    /// RowBinary format provides:
+    /// - 2-3x faster parsing than JSON
+    /// - Lower memory allocations
+    /// - Native type handling without string conversion
+    pub async fn load_binary<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+    {
+        let compiled = build_sql_native(&query)?;
+        self.load_binary_native(&compiled).await
+    }
+
+    /// Load rows using RowBinary with a pre-compiled query.
+    pub async fn load_binary_native<T>(&self, compiled: &NativeCompiledQuery) -> QueryResult<Vec<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+    {
+        let query = compiled.bind_to(self.client.query(&compiled.sql));
+        query
+            .fetch_all()
+            .await
+            .map_err(|e| Error::QueryError(e.to_string()))
+    }
+
+    /// Load a single row using RowBinary format.
+    pub async fn load_binary_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+    {
+        let compiled = build_sql_native(&query)?;
+        let query = compiled.bind_to(self.client.query(&compiled.sql));
+        query
+            .fetch_one()
+            .await
+            .map_err(|e| Error::QueryError(e.to_string()))
+    }
+
+    /// Load an optional row using RowBinary format.
+    pub async fn load_binary_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+    {
+        let compiled = build_sql_native(&query)?;
+        let query = compiled.bind_to(self.client.query(&compiled.sql));
+        query
+            .fetch_optional()
+            .await
+            .map_err(|e| Error::QueryError(e.to_string()))
     }
 }
 

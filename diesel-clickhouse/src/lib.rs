@@ -316,6 +316,34 @@ pub mod stream;
 #[cfg(any(feature = "http", feature = "native"))]
 pub use stream::RowStream;
 
+/// Zero-copy parsing for query results.
+///
+/// Provides a callback-based API for processing rows without allocating
+/// owned data structures. Ideal for large result sets where allocation
+/// overhead matters.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::zero_copy::{ZeroCopyRow, BorrowedValue};
+///
+/// conn.load_zero_copy(
+///     "SELECT id, name FROM users",
+///     &["id", "name"],
+///     |row: ZeroCopyRow<'_>| {
+///         let id = row.get_u64("id")?;
+///         let name = row.get_str("name")?;  // Borrowed, no allocation!
+///         println!("{}: {}", id, name);
+///         Ok(())
+///     }
+/// ).await?;
+/// ```
+#[cfg(feature = "http")]
+pub mod zero_copy;
+
+#[cfg(feature = "http")]
+pub use zero_copy::{ZeroCopyRow, BorrowedValue, TsvParser, StreamingTsvParser};
+
 /// Batch insertion utilities.
 ///
 /// Provides `BatchInserter` for efficient bulk inserts.

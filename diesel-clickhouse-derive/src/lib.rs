@@ -91,8 +91,8 @@ pub fn table(input: TokenStream) -> TokenStream {
 /// This derive macro generates implementations that work with both
 /// HTTP and Native backends:
 ///
-/// - Generates `serde::Deserialize` for serde-based deserialization (Native backend)
-/// - Generates `clickhouse::Row` for HTTP backend (when `http` feature is enabled)
+/// - Generates `serde::Serialize` and `serde::Deserialize`
+/// - Generates `FromNativeBlock` for Native backend direct deserialization
 ///
 /// # Example
 ///
@@ -106,8 +106,25 @@ pub fn table(input: TokenStream) -> TokenStream {
 ///     email: Option<String>,
 /// }
 ///
-/// // Works with unified Connection - both HTTP and Native
+/// // Works with both backends
 /// let users: Vec<User> = conn.load(users::table.filter(users::active.eq(true))).await?;
+/// ```
+///
+/// # For Maximum HTTP Performance
+///
+/// Add `clickhouse::Row` derive for RowBinary format (2-3x faster):
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::{Row, clickhouse};
+///
+/// #[derive(Debug, Row, clickhouse::Row)]
+/// struct User {
+///     id: u64,
+///     name: String,
+/// }
+///
+/// // Now you can use load_binary() for best performance
+/// let users: Vec<User> = conn.load_binary(query).await?;
 /// ```
 ///
 /// # Attributes
@@ -115,27 +132,11 @@ pub fn table(input: TokenStream) -> TokenStream {
 /// - `#[column_name = "..."]` - Rename a field for the database column
 /// - `#[serde(rename = "...")]` - Also supported for serde compatibility
 ///
-/// ```rust,ignore
-/// #[derive(Debug, Row)]
-/// struct User {
-///     id: u64,
-///     #[column_name = "user_name"]
-///     name: String,
-/// }
-/// ```
-///
 /// # Generated Code
 ///
-/// For a struct like:
-/// ```rust,ignore
-/// #[derive(Row)]
-/// struct User { id: u64, name: String }
-/// ```
-///
-/// The macro generates:
 /// - `impl serde::Serialize for User`
 /// - `impl serde::Deserialize for User`
-/// - `impl clickhouse::Row for User` (when http feature is enabled)
+/// - `impl FromNativeBlock for User` (Native backend, direct Block access)
 #[proc_macro_derive(Row, attributes(column_name, serde))]
 pub fn derive_row(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -174,8 +175,6 @@ pub fn derive_row(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         // Implement serde::Deserialize by delegation
-        // The struct fields are deserialized using serde's standard mechanism
-        // with rename attributes for column name mapping
         impl<'de> ::serde::Deserialize<'de> for #name #where_clause
         where
             #(#field_types: ::serde::Deserialize<'de>,)*
@@ -184,7 +183,6 @@ pub fn derive_row(input: TokenStream) -> TokenStream {
             where
                 D: ::serde::Deserializer<'de>,
             {
-                // Use an intermediate struct with serde derives
                 #[derive(::serde::Deserialize)]
                 struct __DieselClickhouseRowHelper {
                     #(
@@ -218,6 +216,20 @@ pub fn derive_row(input: TokenStream) -> TokenStream {
             }
         }
 
+        // Implement FromNativeBlock for direct Native backend deserialization
+        #[cfg(feature = "native")]
+        impl ::diesel_clickhouse::native::FromNativeBlock for #name {
+            fn from_block_row(
+                block: &::diesel_clickhouse::native::ComplexBlock,
+                row_idx: usize,
+            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
+                Ok(Self {
+                    #(
+                        #field_names: ::diesel_clickhouse::native::BlockValue::get_value(block, row_idx, #column_names)?,
+                    )*
+                })
+            }
+        }
     };
 
     TokenStream::from(expanded)

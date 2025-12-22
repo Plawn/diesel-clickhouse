@@ -14,3 +14,4 @@
 - remove legacy and duplications
 - zero copy parsing ?
 - async code insert ?
+- utiliser le format binaire rapide pour les deux backends
