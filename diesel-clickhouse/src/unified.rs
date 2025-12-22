@@ -88,6 +88,83 @@ use crate::core::backend::ClickHouse;
 use crate::core::query_builder::QueryFragment;
 use crate::core::result::{Error, QueryResult};
 
+// =============================================================================
+// Macros to reduce cfg duplication for load methods
+// =============================================================================
+
+/// Generates load methods with proper cfg attributes for each backend combination.
+/// This macro eliminates the need to write 3 versions of each method manually.
+macro_rules! impl_load_methods {
+    // Pattern for methods that delegate to self.load()
+    (
+        $(#[$meta:meta])*
+        delegate fn $name:ident(&$self:ident, $query:ident) -> $ret:ty $body:block
+    ) => {
+        $(#[$meta])*
+        #[cfg(all(feature = "http", not(feature = "native")))]
+        pub async fn $name<T, Q>(&$self, $query: Q) -> QueryResult<$ret>
+        where
+            T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+            Q: QueryFragment<ClickHouse>,
+        $body
+
+        #[cfg(all(feature = "native", not(feature = "http")))]
+        pub async fn $name<T, Q>(&$self, $query: Q) -> QueryResult<$ret>
+        where
+            T: crate::native::FromNativeBlock + Send,
+            Q: QueryFragment<ClickHouse> + Send,
+        $body
+
+        #[cfg(all(feature = "http", feature = "native"))]
+        pub async fn $name<T, Q>(&$self, $query: Q) -> QueryResult<$ret>
+        where
+            T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
+            Q: QueryFragment<ClickHouse> + Send,
+        $body
+    };
+
+    // Pattern for raw SQL methods that delegate to backend-specific methods
+    (
+        $(#[$meta:meta])*
+        raw fn $name:ident(&$self:ident, $sql:ident: &str) -> $ret:ty {
+            http($http_conn:ident) => $http_body:expr,
+            native($native_conn:ident) => $native_body:expr $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[cfg(all(feature = "http", not(feature = "native")))]
+        pub async fn $name<T>(&$self, $sql: &str) -> QueryResult<$ret>
+        where
+            T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+        {
+            match $self {
+                Connection::Http($http_conn) => $http_body,
+            }
+        }
+
+        #[cfg(all(feature = "native", not(feature = "http")))]
+        pub async fn $name<T>(&$self, $sql: &str) -> QueryResult<$ret>
+        where
+            T: crate::native::FromNativeBlock + Send,
+        {
+            match $self {
+                Connection::Native($native_conn) => $native_body,
+            }
+        }
+
+        #[cfg(all(feature = "http", feature = "native"))]
+        pub async fn $name<T>(&$self, $sql: &str) -> QueryResult<$ret>
+        where
+            T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
+        {
+            match $self {
+                Connection::Http($http_conn) => $http_body,
+                Connection::Native($native_conn) => $native_body,
+            }
+        }
+    };
+}
+
 /// A unified connection that works with both HTTP and Native backends.
 ///
 /// The connection type is determined by the URL scheme:
@@ -423,80 +500,38 @@ impl Connection {
         }
     }
 
-    /// Load a single row from a query.
-    ///
-    /// Returns an error if no rows are found.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let user: User = conn.load_one(
-    ///     users::table.filter(users::id.eq(42))
-    /// ).await?;
-    /// ```
-    #[cfg(all(feature = "http", not(feature = "native")))]
-    pub async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
-        Q: QueryFragment<ClickHouse>,
-    {
-        self.load(query).await?.into_iter().next().ok_or(Error::NotFound)
+    impl_load_methods! {
+        /// Load a single row from a query.
+        ///
+        /// Returns an error if no rows are found.
+        ///
+        /// # Example
+        ///
+        /// ```rust,ignore
+        /// let user: User = conn.load_one(
+        ///     users::table.filter(users::id.eq(42))
+        /// ).await?;
+        /// ```
+        delegate fn load_one(&self, query) -> T {
+            self.load(query).await?.into_iter().next().ok_or(Error::NotFound)
+        }
     }
 
-    #[cfg(all(feature = "native", not(feature = "http")))]
-    pub async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
-    where
-        T: crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        self.load(query).await?.into_iter().next().ok_or(Error::NotFound)
-    }
-
-    #[cfg(all(feature = "http", feature = "native"))]
-    pub async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        self.load(query).await?.into_iter().next().ok_or(Error::NotFound)
-    }
-
-    /// Load an optional single row from a query.
-    ///
-    /// Returns `None` if no rows are found.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let user: Option<User> = conn.load_optional(
-    ///     users::table.filter(users::id.eq(42))
-    /// ).await?;
-    /// ```
-    #[cfg(all(feature = "http", not(feature = "native")))]
-    pub async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
-        Q: QueryFragment<ClickHouse>,
-    {
-        Ok(self.load(query).await?.into_iter().next())
-    }
-
-    #[cfg(all(feature = "native", not(feature = "http")))]
-    pub async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
-    where
-        T: crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        Ok(self.load(query).await?.into_iter().next())
-    }
-
-    #[cfg(all(feature = "http", feature = "native"))]
-    pub async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        Ok(self.load(query).await?.into_iter().next())
+    impl_load_methods! {
+        /// Load an optional single row from a query.
+        ///
+        /// Returns `None` if no rows are found.
+        ///
+        /// # Example
+        ///
+        /// ```rust,ignore
+        /// let user: Option<User> = conn.load_optional(
+        ///     users::table.filter(users::id.eq(42))
+        /// ).await?;
+        /// ```
+        delegate fn load_optional(&self, query) -> Option<T> {
+            Ok(self.load(query).await?.into_iter().next())
+        }
     }
 
     // =========================================================================
@@ -771,140 +806,35 @@ impl Connection {
     }
 
     // =========================================================================
-    // Unified Fetch Methods (aliases for load methods)
+    // Fetch Methods (aliases for load methods)
     // =========================================================================
 
-    /// Fetch all rows from a query.
-    ///
-    /// This is an alias for `load()` - both methods use optimized binary
-    /// deserialization for each backend.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// #[derive(Debug, Row)]
-    /// struct User {
-    ///     id: u64,
-    ///     name: String,
-    /// }
-    ///
-    /// let users: Vec<User> = conn.fetch_all(
-    ///     users::table.filter(users::active.eq(true))
-    /// ).await?;
-    /// ```
-    #[cfg(all(feature = "http", not(feature = "native")))]
-    pub async fn fetch_all<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
-        Q: QueryFragment<ClickHouse>,
-    {
-        self.load(query).await
-    }
-
-    #[cfg(all(feature = "native", not(feature = "http")))]
-    pub async fn fetch_all<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
-    where
-        T: crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        self.load(query).await
-    }
-
-    #[cfg(all(feature = "http", feature = "native"))]
-    pub async fn fetch_all<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        self.load(query).await
-    }
-
-    /// Fetch all rows from a raw SQL query.
-    #[cfg(all(feature = "http", not(feature = "native")))]
-    pub async fn fetch_all_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
-    {
-        match self {
-            Connection::Http(conn) => conn.load_binary_raw(sql).await,
+    impl_load_methods! {
+        /// Fetch all rows from a query (alias for `load()`).
+        delegate fn fetch_all(&self, query) -> Vec<T> {
+            self.load(query).await
         }
     }
 
-    #[cfg(all(feature = "native", not(feature = "http")))]
-    pub async fn fetch_all_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
-    where
-        T: crate::native::FromNativeBlock + Send,
-    {
-        match self {
-            Connection::Native(conn) => conn.load_optimized_raw(sql).await,
+    impl_load_methods! {
+        raw fn fetch_all_raw(&self, sql: &str) -> Vec<T> {
+            http(conn) => conn.load_binary_raw(sql).await,
+            native(conn) => conn.load_optimized_raw(sql).await,
         }
     }
 
-    #[cfg(all(feature = "http", feature = "native"))]
-    pub async fn fetch_all_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
-    {
-        match self {
-            Connection::Http(conn) => conn.load_binary_raw(sql).await,
-            Connection::Native(conn) => conn.load_optimized_raw(sql).await,
+    impl_load_methods! {
+        /// Fetch exactly one row from a query (alias for `load_one()`).
+        delegate fn fetch_one(&self, query) -> T {
+            self.load_one(query).await
         }
     }
 
-    /// Fetch exactly one row from a query.
-    #[cfg(all(feature = "http", not(feature = "native")))]
-    pub async fn fetch_one<T, Q>(&self, query: Q) -> QueryResult<T>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
-        Q: QueryFragment<ClickHouse>,
-    {
-        self.load_one(query).await
-    }
-
-    #[cfg(all(feature = "native", not(feature = "http")))]
-    pub async fn fetch_one<T, Q>(&self, query: Q) -> QueryResult<T>
-    where
-        T: crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        self.load_one(query).await
-    }
-
-    #[cfg(all(feature = "http", feature = "native"))]
-    pub async fn fetch_one<T, Q>(&self, query: Q) -> QueryResult<T>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        self.load_one(query).await
-    }
-
-    /// Fetch zero or one row from a query.
-    #[cfg(all(feature = "http", not(feature = "native")))]
-    pub async fn fetch_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
-        Q: QueryFragment<ClickHouse>,
-    {
-        self.load_optional(query).await
-    }
-
-    #[cfg(all(feature = "native", not(feature = "http")))]
-    pub async fn fetch_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
-    where
-        T: crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        self.load_optional(query).await
-    }
-
-    #[cfg(all(feature = "http", feature = "native"))]
-    pub async fn fetch_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        self.load_optional(query).await
+    impl_load_methods! {
+        /// Fetch zero or one row from a query (alias for `load_optional()`).
+        delegate fn fetch_optional(&self, query) -> Option<T> {
+            self.load_optional(query).await
+        }
     }
 
     // =========================================================================

@@ -3,12 +3,74 @@
 //! This example demonstrates how to configure connection pools for efficient
 //! connection management in high-concurrency applications.
 //!
-//! Run with: cargo run --example connection_pooling
+//! Run with:
+//!   cargo run --example connection_pooling --features http
+//!   cargo run --example connection_pooling --features native
+//!
+//! Prerequisites: docker-compose up -d
 
-use diesel_clickhouse::pool::PoolConfig;
+use diesel_clickhouse::pool::{Pool, PoolConfig};
+use diesel_clickhouse::Connection;
 
-fn main() {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     println!("=== Connection Pooling Example ===\n");
+
+    // -------------------------------------------------------------------------
+    // 0. Create pool using builder API (NEW!)
+    // -------------------------------------------------------------------------
+    println!("0. Creating pool with builder API:");
+
+    #[cfg(feature = "http")]
+    let pool = {
+        println!("   Using HTTP backend");
+        Pool::builder(
+            Connection::http()
+                .host("localhost")
+                .port(8123)
+                .user("default")
+                .password("default")
+                .database("test_db"),
+        )
+        .max_size(10)
+        .min_idle(2)
+        .connection_timeout_ms(30_000)
+        .build()
+        .await?
+    };
+
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    let pool = {
+        println!("   Using Native backend");
+        Pool::builder(
+            Connection::native()
+                .host("localhost")
+                .port(9000)
+                .user("default")
+                .password("default")
+                .database("test_db"),
+        )
+        .max_size(10)
+        .min_idle(2)
+        .connection_timeout_ms(30_000)
+        .build()
+        .await?
+    };
+
+    println!("   Pool created: max_size={}, idle={}",
+        pool.config().max_size,
+        pool.idle_count().await);
+
+    // Use the pool
+    {
+        let conn = pool.get().await?;
+        conn.execute("SELECT 1").await?;
+        println!("   Query executed successfully\n");
+    }
+
+    // Alternative: create pool from URL
+    println!("   Alternative - create from URL:");
+    println!("   Pool::new(\"http://localhost:8123/test_db\", PoolConfig::default()).await?;\n");
 
     // -------------------------------------------------------------------------
     // 1. Default Pool Configuration
@@ -200,6 +262,8 @@ fn main() {
     println!();
 
     println!("=== End of Connection Pooling Example ===");
+
+    Ok(())
 }
 
 fn num_cpus() -> usize {

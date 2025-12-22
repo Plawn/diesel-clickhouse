@@ -56,7 +56,9 @@ struct Event {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut conn = HttpConnection::establish("http://localhost:8123/default").await?;
+    // HTTP backend
+    let conn = Connection::establish("http://localhost:8123/default").await?;
+    // Or Native backend: Connection::establish("tcp://localhost:9000/default").await?;
 
     // Simple query
     let events: Vec<Event> = events::table
@@ -64,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(events::user_id.eq(42))
         .order_by(events::timestamp.desc())
         .limit(100)
-        .load(&mut conn)
+        .load(&conn)
         .await?;
 
     Ok(())
@@ -88,10 +90,9 @@ let new_events = vec![
     NewEvent { id: 2, user_id: 42, event_type: "view".into(), timestamp: now },
 ];
 
-insert_into(events::table)
-    .values(&new_events)
-    .execute(&mut conn)
-    .await?;
+conn.insert(
+    insert_into(events::table).values(&new_events)
+).await?;
 ```
 
 ## ClickHouse-Specific Features
@@ -101,10 +102,10 @@ insert_into(events::table)
 Deduplicate rows from ReplacingMergeTree, CollapsingMergeTree, etc:
 
 ```rust
-let results = events::table
+let results: Vec<Event> = events::table
     .filter(events::user_id.eq(42))
     .final_()  // Apply FINAL modifier
-    .load(&mut conn)
+    .load(&conn)
     .await?;
 ```
 
@@ -113,10 +114,10 @@ let results = events::table
 Filter data before reading columns (more efficient than WHERE for column-oriented storage):
 
 ```rust
-let results = events::table
+let results: Vec<Event> = events::table
     .prewhere(events::timestamp.gt(cutoff_date))  // Fast partition pruning
     .filter(events::event_type.eq("purchase"))    // Regular WHERE
-    .load(&mut conn)
+    .load(&conn)
     .await?;
 ```
 
@@ -125,10 +126,10 @@ let results = events::table
 Sample a fraction of data for approximate queries:
 
 ```rust
-let results = events::table
+let count: u64 = events::table
     .sample(0.1)  // 10% of data
     .select(count_star())
-    .first(&mut conn)
+    .first(&conn)
     .await?;
 ```
 
@@ -137,11 +138,11 @@ let results = events::table
 Get totals row for aggregations:
 
 ```rust
-let results = events::table
+let results: Vec<(String, u64)> = events::table
     .select((events::event_type, count_star()))
     .group_by(events::event_type)
     .with_totals()
-    .load(&mut conn)
+    .load(&conn)
     .await?;
 ```
 
@@ -150,10 +151,8 @@ let results = events::table
 Specify output format:
 
 ```rust
-let json = events::table
-    .format("JSONEachRow")
-    .load_raw(&mut conn)
-    .await?;
+// Use raw SQL for custom formats
+let json = conn.execute("SELECT * FROM events FORMAT JSONEachRow").await?;
 ```
 
 ### Query Settings
@@ -161,10 +160,10 @@ let json = events::table
 Apply ClickHouse settings to a query:
 
 ```rust
-let results = events::table
+let results: Vec<Event> = events::table
     .settings("max_threads", "4")
     .settings("max_memory_usage", "10000000000")
-    .load(&mut conn)
+    .load(&conn)
     .await?;
 ```
 
@@ -271,7 +270,7 @@ embed_migrations!("migrations");
 
 #[tokio::main]
 async fn main() {
-    let mut conn = HttpConnection::establish(url).await.unwrap();
+    let mut conn = Connection::establish(url).await.unwrap();
     MIGRATIONS.run(&mut conn).await.unwrap();
 }
 ```
@@ -463,10 +462,13 @@ diesel-clickhouse = { version = "0.1", features = ["chrono", "uuid"] }
 
 See the [`examples/`](examples/) directory for complete examples:
 
-- [`basic_queries.rs`](examples/basic_queries.rs) - Basic SELECT, INSERT, UPDATE
+- [`getting_started.rs`](examples/getting_started.rs) - Basic setup and queries
 - [`advanced_queries.rs`](examples/advanced_queries.rs) - FINAL, PREWHERE, SAMPLE
-- [`migrations.rs`](examples/migrations.rs) - Migration usage
 - [`complex_types.rs`](examples/complex_types.rs) - Arrays, Maps, Tuples
+- [`migrations_example.rs`](examples/migrations_example.rs) - Migration usage
+- [`async_inserts.rs`](examples/async_inserts.rs) - High-throughput async inserts
+- [`connection_pooling.rs`](examples/connection_pooling.rs) - Connection pool usage
+- [`native_test.rs`](examples/native_test.rs) - Native TCP protocol (requires `native` feature)
 
 ## Running Tests
 

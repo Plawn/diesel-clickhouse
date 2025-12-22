@@ -33,10 +33,6 @@ name = "connection_pooling"
 path = "examples/connection_pooling.rs"
 
 [[example]]
-name = "batch_inserts"
-path = "examples/batch_inserts.rs"
-
-[[example]]
 name = "async_inserts"
 path = "examples/async_inserts.rs"
 
@@ -44,10 +40,6 @@ path = "examples/async_inserts.rs"
 name = "native_test"
 path = "examples/native_test.rs"
 required-features = ["native"]
-
-# [[example]]
-# name = "getting_started_native"
-# path = "examples/getting_started_native.rs"
 
 
 # Dependencies for examples (workspace root package)
