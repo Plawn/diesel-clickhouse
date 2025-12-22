@@ -9,9 +9,12 @@
   - supprimer ce qui a pas de sens
   - supprimer les migrations qui servent à rien
 - audit performance prepared queries
-  - vérification de l'utilisation de bind params
+  - vérification de l'utilisation de bind params -> OK
 - audit les perfos
 - remove legacy and duplications
 - zero copy parsing ?
 - async code insert ?
 - utiliser le format binaire rapide pour les deux backends
+- update the examples -> OK
+- ensure the integrations tests work end to end
+- voir sir on peut implementer la macro #row avec un derive plutot -> Non

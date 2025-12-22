@@ -323,31 +323,168 @@ impl Connection {
     }
 
     // =========================================================================
-    // Unified Load Method (NEW - works with #[derive(Row)])
+    // Unified Load Method - Optimized binary deserialization
     // =========================================================================
 
-    /// Load rows from a query using the unified Row trait.
+    /// Load rows from a query using optimized binary deserialization.
     ///
-    /// This is the recommended way to fetch data. The row type must implement
-    /// `ClickHouseRow`, which is automatically provided by `#[derive(Row)]`.
+    /// This is the recommended way to fetch data. The row type must be marked
+    /// with `#[row]` attribute, which generates optimal deserialization for
+    /// each backend:
+    ///
+    /// - **HTTP**: Uses RowBinary format (2-3x faster than JSON)
+    /// - **Native**: Uses direct Block deserialization (no JSON intermediate)
     ///
     /// # Example
     ///
     /// ```rust,ignore
     /// use diesel_clickhouse::prelude::*;
     ///
-    /// #[derive(Debug, Row)]
+    /// #[row]
+    /// #[derive(Debug)]
     /// struct User {
     ///     id: u64,
     ///     name: String,
     /// }
     ///
-    /// // Works with both HTTP and Native connections!
+    /// // Works optimally with both HTTP and Native connections!
     /// let users: Vec<User> = conn.load(
     ///     users::table.filter(users::active.eq(true))
     /// ).await?;
     /// ```
+    #[cfg(all(feature = "http", not(feature = "native")))]
     pub async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+    {
+        match self {
+            Connection::Http(conn) => conn.load_binary(query).await,
+        }
+    }
+
+    /// Load rows from a query using optimized binary deserialization.
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    pub async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        match self {
+            Connection::Native(conn) => conn.load_optimized(query).await,
+        }
+    }
+
+    /// Load rows from a query using optimized binary deserialization.
+    #[cfg(all(feature = "http", feature = "native"))]
+    pub async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        match self {
+            Connection::Http(conn) => conn.load_binary(query).await,
+            Connection::Native(conn) => conn.load_optimized(query).await,
+        }
+    }
+
+    /// Load a single row from a query.
+    ///
+    /// Returns an error if no rows are found.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user: User = conn.load_one(
+    ///     users::table.filter(users::id.eq(42))
+    /// ).await?;
+    /// ```
+    #[cfg(all(feature = "http", not(feature = "native")))]
+    pub async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+    {
+        self.load(query).await?.into_iter().next().ok_or(Error::NotFound)
+    }
+
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    pub async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    where
+        T: crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        self.load(query).await?.into_iter().next().ok_or(Error::NotFound)
+    }
+
+    #[cfg(all(feature = "http", feature = "native"))]
+    pub async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        self.load(query).await?.into_iter().next().ok_or(Error::NotFound)
+    }
+
+    /// Load an optional single row from a query.
+    ///
+    /// Returns `None` if no rows are found.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user: Option<User> = conn.load_optional(
+    ///     users::table.filter(users::id.eq(42))
+    /// ).await?;
+    /// ```
+    #[cfg(all(feature = "http", not(feature = "native")))]
+    pub async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+    {
+        Ok(self.load(query).await?.into_iter().next())
+    }
+
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    pub async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
+    where
+        T: crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        Ok(self.load(query).await?.into_iter().next())
+    }
+
+    #[cfg(all(feature = "http", feature = "native"))]
+    pub async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        Ok(self.load(query).await?.into_iter().next())
+    }
+
+    // =========================================================================
+    // Legacy serde-based loading (for backward compatibility)
+    // =========================================================================
+
+    /// Load rows using serde-based deserialization.
+    ///
+    /// This is the legacy method that uses JSON/serde for deserialization.
+    /// For better performance, use `#[row]` attribute and the standard `load()` method.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[derive(Debug, Row)]  // Old derive(Row) with serde
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
+    /// let users: Vec<User> = conn.load_serde(query).await?;
+    /// ```
+    pub async fn load_serde<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
     where
         T: ClickHouseRow,
         Q: QueryFragment<ClickHouse> + Send + Sync,
@@ -366,46 +503,8 @@ impl Connection {
         }
     }
 
-    /// Load a single row from a query.
-    ///
-    /// Returns an error if no rows are found.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let user: User = conn.load_one(
-    ///     users::table.filter(users::id.eq(42))
-    /// ).await?;
-    /// ```
-    pub async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
-    where
-        T: ClickHouseRow,
-        Q: QueryFragment<ClickHouse> + Send + Sync,
-    {
-        self.load(query).await?.into_iter().next().ok_or(Error::NotFound)
-    }
-
-    /// Load an optional single row from a query.
-    ///
-    /// Returns `None` if no rows are found.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let user: Option<User> = conn.load_optional(
-    ///     users::table.filter(users::id.eq(42))
-    /// ).await?;
-    /// ```
-    pub async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
-    where
-        T: ClickHouseRow,
-        Q: QueryFragment<ClickHouse> + Send + Sync,
-    {
-        Ok(self.load(query).await?.into_iter().next())
-    }
-
     // =========================================================================
-    // Optimized RowBinary Loading (HTTP only, 2-3x faster)
+    // Optimized RowBinary Loading (HTTP only) - kept for explicit access
     // =========================================================================
 
     /// Load rows using RowBinary format (2-3x faster than JSON).
@@ -664,8 +763,8 @@ impl Connection {
         T: ClickHouseRow + Send,
         Q: QueryFragment<ClickHouse> + Send + Sync,
     {
-        // Load all rows then create iterator
-        let rows: Vec<T> = self.load(query).await?;
+        // Load all rows then create iterator (using serde-based loading for ClickHouseRow)
+        let rows: Vec<T> = self.load_serde(query).await?;
         Ok(crate::stream::RowStream::from(rows))
     }
 

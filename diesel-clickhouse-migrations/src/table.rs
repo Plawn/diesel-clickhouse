@@ -66,10 +66,10 @@ impl MigrationsTable {
         )
     }
 
-    /// SQL to select all run migrations.
+    /// SQL to select all run migration versions.
     pub fn select_all_sql(&self) -> String {
         format!(
-            "SELECT version, run_on, checksum FROM {} FINAL ORDER BY version",
+            "SELECT version FROM {} FINAL ORDER BY version",
             escape_identifier(&self.name)
         )
     }

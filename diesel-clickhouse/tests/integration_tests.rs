@@ -402,18 +402,25 @@ mod clickhouse_integration {
 
     /// Get the ClickHouse URL from environment or use default.
     fn get_clickhouse_url() -> String {
-        env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123/test_db".to_string())
+        env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://default:default@localhost:8123/test_db".to_string())
+    }
+
+    /// Get base URL without database for raw HTTP tests.
+    fn get_clickhouse_base_url() -> String {
+        env::var("CLICKHOUSE_BASE_URL").unwrap_or_else(|_| "http://localhost:8123".to_string())
     }
 
     /// Check if ClickHouse is available for integration tests.
     fn clickhouse_available() -> bool {
-        let url = get_clickhouse_url();
+        let url = get_clickhouse_base_url();
         let client = reqwest::blocking::Client::new();
         client
             .get(&url)
+            .basic_auth("default", Some("default"))
             .query(&[("query", "SELECT 1")])
             .send()
-            .is_ok()
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
     }
 
     #[test]
@@ -423,12 +430,13 @@ mod clickhouse_integration {
             return;
         }
 
-        let url = get_clickhouse_url();
+        let url = get_clickhouse_base_url();
         let client = reqwest::blocking::Client::new();
 
         // Simple query
         let response = client
             .get(&url)
+            .basic_auth("default", Some("default"))
             .query(&[("query", "SELECT 1 + 1")])
             .send()
             .unwrap();
@@ -445,7 +453,7 @@ mod clickhouse_integration {
             return;
         }
 
-        let url = get_clickhouse_url();
+        let url = get_clickhouse_base_url();
         let client = reqwest::blocking::Client::new();
         let table_name = format!("test_table_{}", std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -459,6 +467,7 @@ mod clickhouse_integration {
         );
         let response = client
             .post(&url)
+            .basic_auth("default", Some("default"))
             .body(create_sql)
             .send()
             .unwrap();
@@ -471,6 +480,7 @@ mod clickhouse_integration {
         );
         let response = client
             .post(&url)
+            .basic_auth("default", Some("default"))
             .body(insert_sql)
             .send()
             .unwrap();
@@ -480,6 +490,7 @@ mod clickhouse_integration {
         let select_sql = format!("SELECT count() FROM {}", table_name);
         let response = client
             .get(&url)
+            .basic_auth("default", Some("default"))
             .query(&[("query", &select_sql)])
             .send()
             .unwrap();
@@ -491,6 +502,7 @@ mod clickhouse_integration {
         let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
         let response = client
             .post(&url)
+            .basic_auth("default", Some("default"))
             .body(drop_sql)
             .send()
             .unwrap();
@@ -504,7 +516,7 @@ mod clickhouse_integration {
             return;
         }
 
-        let url = get_clickhouse_url();
+        let url = get_clickhouse_base_url();
         let client = reqwest::blocking::Client::new();
 
         // Test various ClickHouse types
@@ -520,6 +532,7 @@ mod clickhouse_integration {
         for (query, expected) in test_cases {
             let response = client
                 .get(&url)
+                .basic_auth("default", Some("default"))
                 .query(&[("query", query)])
                 .send()
                 .unwrap();
@@ -543,7 +556,7 @@ mod clickhouse_integration {
             return;
         }
 
-        let url = get_clickhouse_url();
+        let url = get_clickhouse_base_url();
         let client = reqwest::blocking::Client::new();
         let table_name = format!("test_final_{}", std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -555,18 +568,19 @@ mod clickhouse_integration {
             "CREATE TABLE IF NOT EXISTS {} (id UInt64, value String, version UInt32) ENGINE = ReplacingMergeTree(version) ORDER BY id",
             table_name
         );
-        client.post(&url).body(create_sql).send().unwrap();
+        client.post(&url).basic_auth("default", Some("default")).body(create_sql).send().unwrap();
 
         // Insert duplicate rows with different versions
         let insert1 = format!("INSERT INTO {} VALUES (1, 'old', 1)", table_name);
         let insert2 = format!("INSERT INTO {} VALUES (1, 'new', 2)", table_name);
-        client.post(&url).body(insert1).send().unwrap();
-        client.post(&url).body(insert2).send().unwrap();
+        client.post(&url).basic_auth("default", Some("default")).body(insert1).send().unwrap();
+        client.post(&url).basic_auth("default", Some("default")).body(insert2).send().unwrap();
 
         // Query without FINAL (may return both)
         let select_no_final = format!("SELECT count() FROM {}", table_name);
         let response = client
             .get(&url)
+            .basic_auth("default", Some("default"))
             .query(&[("query", &select_no_final)])
             .send()
             .unwrap();
@@ -576,6 +590,7 @@ mod clickhouse_integration {
         let select_final = format!("SELECT count() FROM {} FINAL", table_name);
         let response = client
             .get(&url)
+            .basic_auth("default", Some("default"))
             .query(&[("query", &select_final)])
             .send()
             .unwrap();
@@ -587,6 +602,208 @@ mod clickhouse_integration {
 
         // Cleanup
         let drop_sql = format!("DROP TABLE IF EXISTS {}", table_name);
-        client.post(&url).body(drop_sql).send().unwrap();
+        client.post(&url).basic_auth("default", Some("default")).body(drop_sql).send().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_zero_copy_load() {
+        use diesel_clickhouse::http::ClickHouseConnection;
+
+        let url = get_clickhouse_url();
+        let conn = match ClickHouseConnection::new(&url).await {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("ClickHouse not available, skipping integration test");
+                return;
+            }
+        };
+        let table_name = format!("test_zero_copy_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis());
+
+        // Create table
+        conn.execute_raw(&format!(
+            "CREATE TABLE IF NOT EXISTS {} (id UInt64, name String, score Float64) ENGINE = MergeTree ORDER BY id",
+            table_name
+        )).await.unwrap();
+
+        // Insert data
+        conn.execute_raw(&format!(
+            "INSERT INTO {} VALUES (1, 'Alice', 95.5), (2, 'Bob', 87.3), (3, 'Charlie', 92.1)",
+            table_name
+        )).await.unwrap();
+
+        // Test zero-copy load
+        let mut results: Vec<(u64, String, f64)> = Vec::new();
+        let count = conn.load_zero_copy(
+            &format!("SELECT id, name, score FROM {} ORDER BY id", table_name),
+            &["id", "name", "score"],
+            |row| {
+                let id = row.get_u64("id")?;
+                let name = row.get_str("name")?.to_string();
+                let score = row.get_f64("score")?;
+                results.push((id, name, score));
+                Ok(())
+            }
+        ).await.unwrap();
+
+        assert_eq!(count, 3);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], (1, "Alice".to_string(), 95.5));
+        assert_eq!(results[1], (2, "Bob".to_string(), 87.3));
+        assert_eq!(results[2], (3, "Charlie".to_string(), 92.1));
+
+        // Cleanup
+        conn.execute_raw(&format!("DROP TABLE IF EXISTS {}", table_name)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_zero_copy_streaming() {
+        use diesel_clickhouse::http::ClickHouseConnection;
+
+        let url = get_clickhouse_url();
+        let conn = match ClickHouseConnection::new(&url).await {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("ClickHouse not available, skipping integration test");
+                return;
+            }
+        };
+        let table_name = format!("test_zero_copy_stream_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis());
+
+        // Create table with more data for streaming test
+        conn.execute_raw(&format!(
+            "CREATE TABLE IF NOT EXISTS {} (id UInt64, value String) ENGINE = MergeTree ORDER BY id",
+            table_name
+        )).await.unwrap();
+
+        // Insert more rows to better test streaming
+        conn.execute_raw(&format!(
+            "INSERT INTO {} SELECT number, concat('value_', toString(number)) FROM numbers(100)",
+            table_name
+        )).await.unwrap();
+
+        // Test streaming zero-copy load
+        let mut sum: u64 = 0;
+        let count = conn.load_zero_copy_streaming(
+            &format!("SELECT id, value FROM {} ORDER BY id", table_name),
+            &["id", "value"],
+            |row| {
+                let id = row.get_u64("id")?;
+                sum += id;
+                Ok(())
+            }
+        ).await.unwrap();
+
+        assert_eq!(count, 100);
+        // Sum of 0..100 = 4950
+        assert_eq!(sum, 4950);
+
+        // Cleanup
+        conn.execute_raw(&format!("DROP TABLE IF EXISTS {}", table_name)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_zero_copy_with_nulls() {
+        use diesel_clickhouse::http::ClickHouseConnection;
+
+        let url = get_clickhouse_url();
+        let conn = match ClickHouseConnection::new(&url).await {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("ClickHouse not available, skipping integration test");
+                return;
+            }
+        };
+        let table_name = format!("test_zero_copy_null_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis());
+
+        // Create table with nullable column
+        conn.execute_raw(&format!(
+            "CREATE TABLE IF NOT EXISTS {} (id UInt64, name Nullable(String)) ENGINE = MergeTree ORDER BY id",
+            table_name
+        )).await.unwrap();
+
+        // Insert data with NULL values
+        conn.execute_raw(&format!(
+            "INSERT INTO {} VALUES (1, 'Alice'), (2, NULL), (3, 'Charlie')",
+            table_name
+        )).await.unwrap();
+
+        // Test zero-copy load with NULLs
+        let mut results: Vec<(u64, Option<String>)> = Vec::new();
+        let count = conn.load_zero_copy(
+            &format!("SELECT id, name FROM {} ORDER BY id", table_name),
+            &["id", "name"],
+            |row| {
+                let id = row.get_u64("id")?;
+                let name = row.get_optional_str("name")?.map(|s| s.to_string());
+                results.push((id, name));
+                Ok(())
+            }
+        ).await.unwrap();
+
+        assert_eq!(count, 3);
+        assert_eq!(results[0], (1, Some("Alice".to_string())));
+        assert_eq!(results[1], (2, None));
+        assert_eq!(results[2], (3, Some("Charlie".to_string())));
+
+        // Cleanup
+        conn.execute_raw(&format!("DROP TABLE IF EXISTS {}", table_name)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_unified_connection_load() {
+        use diesel_clickhouse::Connection;
+
+        let url = get_clickhouse_url();
+        let conn = match Connection::establish(&url).await {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("ClickHouse not available, skipping integration test");
+                return;
+            }
+        };
+        let table_name = format!("test_unified_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis());
+
+        // Create and populate table
+        conn.execute(&format!(
+            "CREATE TABLE IF NOT EXISTS {} (id UInt64, name String) ENGINE = MergeTree ORDER BY id",
+            table_name
+        )).await.unwrap();
+
+        conn.execute(&format!(
+            "INSERT INTO {} VALUES (1, 'Test1'), (2, 'Test2')",
+            table_name
+        )).await.unwrap();
+
+        // Test unified connection load
+        let mut results: Vec<(u64, String)> = Vec::new();
+        let count = conn.load_zero_copy(
+            &format!("SELECT id, name FROM {} ORDER BY id", table_name),
+            &["id", "name"],
+            |row| {
+                let id = row.get_u64("id")?;
+                let name = row.get_str("name")?.to_string();
+                results.push((id, name));
+                Ok(())
+            }
+        ).await.unwrap();
+
+        assert_eq!(count, 2);
+        assert_eq!(results[0], (1, "Test1".to_string()));
+        assert_eq!(results[1], (2, "Test2".to_string()));
+
+        // Cleanup
+        conn.execute(&format!("DROP TABLE IF EXISTS {}", table_name)).await.unwrap();
     }
 }

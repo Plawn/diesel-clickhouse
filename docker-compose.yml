@@ -2,17 +2,17 @@ version: '3.8'
 
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:24.3
+    image: clickhouse/clickhouse-server:24.8-alpine
     container_name: diesel-clickhouse-test
     ports:
       - "8123:8123"   # HTTP interface
       - "9000:9000"   # Native interface
       - "9009:9009"   # Interserver HTTP
     environment:
-      - CLICKHOUSE_DB=test_db
-      - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=
-      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      CLICKHOUSE_DB: test_db
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: default
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./tests/clickhouse-config:/etc/clickhouse-server/config.d:ro

@@ -9,14 +9,15 @@
 //!
 //! This crate provides:
 //! - `table!` macro for defining table schemas
-//! - `#[derive(Row)]` for unified row deserialization (HTTP + Native)
+//! - `#[row]` attribute for optimized binary row deserialization (recommended)
+//! - `#[derive(Row)]` for serde-based row deserialization (deprecated, use `#[row]` instead)
 //! - `#[derive(Queryable)]` for row deserialization
 //! - `#[derive(Insertable)]` for row serialization
 //! - `#[derive(Selectable)]` for explicit column selection
 
 use proc_macro::TokenStream;
 use quote::{quote, format_ident};
-use syn::{parse_macro_input, DeriveInput, Data, Fields, Ident, LitStr, Attribute};
+use syn::{parse_macro_input, DeriveInput, Data, Fields, Ident, LitStr, Attribute, ItemStruct};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 
@@ -84,6 +85,180 @@ fn require_table_attribute(attrs: &[Attribute], derive_name: &str) -> Result<syn
 #[proc_macro]
 pub fn table(input: TokenStream) -> TokenStream {
     table::table_impl(input)
+}
+
+// =============================================================================
+// #[row] Attribute Macro - Unified optimized row deserialization
+// =============================================================================
+
+/// Mark a struct as a ClickHouse row with optimized binary deserialization.
+///
+/// This attribute macro generates optimal deserialization code for both backends:
+///
+/// - **HTTP backend**: Adds `#[derive(clickhouse::Row)]` for RowBinary format (2-3x faster than JSON)
+/// - **Native backend**: Generates `FromNativeBlock` for direct Block deserialization
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::row;
+///
+/// #[row]
+/// #[derive(Debug, Clone)]
+/// struct User {
+///     id: u64,
+///     name: String,
+///     email: Option<String>,
+/// }
+///
+/// // Works optimally with both backends!
+/// let users: Vec<User> = conn.load(users::table.filter(users::active.eq(true))).await?;
+/// ```
+///
+/// # Column Renaming
+///
+/// Use `#[column_name("...")]` to map a field to a different database column:
+///
+/// ```rust,ignore
+/// #[row]
+/// struct User {
+///     id: u64,
+///     #[column_name("user_name")]
+///     name: String,
+/// }
+/// ```
+///
+/// # Generated Code
+///
+/// For HTTP backend (when `http` feature is enabled):
+/// - Adds `#[derive(clickhouse::Row)]` with appropriate `#[serde(rename = "...")]` attributes
+///
+/// For Native backend (when `native` feature is enabled):
+/// - Generates `impl FromNativeBlock for User { ... }`
+///
+/// # Why an attribute macro instead of `#[derive(...)]`?
+///
+/// You might wonder why `#[row]` is an attribute macro rather than a derive macro like
+/// `#[derive(Row)]`. This is a deliberate design choice due to Rust's macro limitations:
+///
+/// **Derive macros cannot modify the struct definition.** They can only *add* new
+/// implementations after the struct is defined. However, `#[row]` needs to:
+///
+/// 1. **Add `#[derive(clickhouse::Row)]`** - The `clickhouse` crate's `Row` derive is
+///    required for efficient RowBinary deserialization. A derive macro cannot add
+///    other derive macros to a struct.
+///
+/// 2. **Add `#[derive(serde::Deserialize)]`** - Required for JSON fallback and the
+///    `clickhouse::Row` derive itself.
+///
+/// 3. **Transform `#[column_name("x")]` into `#[serde(rename = "x")]`** - The serde
+///    rename attribute must be present on the struct fields *before* serde's derive
+///    runs. A derive macro runs too late to inject these attributes.
+///
+/// **Alternative: Manual derives**
+///
+/// If you prefer explicit derives, you can skip `#[row]` and manually add everything:
+///
+/// ```rust,ignore
+/// #[derive(Debug, Clone)]
+/// #[derive(serde::Deserialize)]
+/// #[cfg_attr(feature = "http", derive(clickhouse::Row))]
+/// struct User {
+///     id: u64,
+///     #[serde(rename = "user_name")]
+///     name: String,
+/// }
+///
+/// // Then implement FromNativeBlock manually or use #[derive(Row)] for that part
+/// ```
+///
+/// The `#[row]` attribute provides a simpler, single-annotation solution that handles
+/// all of this automatically.
+#[proc_macro_attribute]
+pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemStruct);
+    let name = &input.ident;
+    let vis = &input.vis;
+    let attrs = &input.attrs;
+    let generics = &input.generics;
+    let where_clause = &generics.where_clause;
+
+    // Extract fields
+    let fields = match &input.fields {
+        Fields::Named(fields) => &fields.named,
+        Fields::Unnamed(_) => {
+            return syn::Error::new(
+                input.fields.span(),
+                "#[row] can only be used on structs with named fields, not tuple structs"
+            ).to_compile_error().into();
+        }
+        Fields::Unit => {
+            return syn::Error::new(
+                input.ident.span(),
+                "#[row] can only be used on structs with named fields, not unit structs"
+            ).to_compile_error().into();
+        }
+    };
+
+    // Collect field info
+    let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
+    let field_types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
+    let field_attrs: Vec<Vec<_>> = fields.iter().map(|f| {
+        // Keep non-column_name attributes
+        f.attrs.iter().filter(|a| !a.path().is_ident("column_name")).collect()
+    }).collect();
+    let field_vis: Vec<_> = fields.iter().map(|f| &f.vis).collect();
+
+    let column_names: Vec<String> = fields.iter()
+        .map(|f| get_column_name(f).unwrap_or_else(|| {
+            f.ident.as_ref()
+                .expect("Named fields always have identifiers")
+                .to_string()
+        }))
+        .collect();
+
+    // Generate serde rename attributes for fields that have different column names
+    let serde_renames: Vec<_> = column_names.iter().zip(field_names.iter()).map(|(col, field)| {
+        let field_str = field.as_ref()
+            .expect("Named fields always have identifiers")
+            .to_string();
+        if col != &field_str {
+            quote! { #[serde(rename = #col)] }
+        } else {
+            quote! {}
+        }
+    }).collect();
+
+    let expanded = quote! {
+        // Re-emit the struct with clickhouse::Row derive for HTTP backend
+        #(#attrs)*
+        #[cfg_attr(feature = "http", derive(::diesel_clickhouse::clickhouse::Row))]
+        #[cfg_attr(feature = "http", derive(::serde::Deserialize))]
+        #vis struct #name #generics #where_clause {
+            #(
+                #(#field_attrs)*
+                #serde_renames
+                #field_vis #field_names: #field_types,
+            )*
+        }
+
+        // Generate FromNativeBlock for Native backend
+        #[cfg(feature = "native")]
+        impl ::diesel_clickhouse::native::FromNativeBlock for #name {
+            fn from_block_row(
+                block: &::diesel_clickhouse::native::ComplexBlock,
+                row_idx: usize,
+            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
+                Ok(Self {
+                    #(
+                        #field_names: ::diesel_clickhouse::native::BlockValue::get_value(block, row_idx, #column_names)?,
+                    )*
+                })
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
 }
 
 /// Derive `Row` for unified row deserialization.

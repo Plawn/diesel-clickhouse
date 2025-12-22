@@ -135,9 +135,18 @@ impl ClickHouseConnection {
             }
         };
 
-        let client = Client::default()
+        let mut client = Client::default()
             .with_url(&base_url)
             .with_database(&database);
+
+        // Extract user/password from URL if present
+        let username = parsed.username();
+        if !username.is_empty() {
+            client = client.with_user(username);
+        }
+        if let Some(password) = parsed.password() {
+            client = client.with_password(password);
+        }
 
         // Test connection
         client

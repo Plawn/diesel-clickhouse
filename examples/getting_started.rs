@@ -1,7 +1,7 @@
 //! Getting started with diesel-clickhouse.
 //!
 //! This example demonstrates the unified API that works with both HTTP and Native backends.
-//! Just use `#[derive(Row)]` for your structs and the same code works everywhere!
+//! Just use `#[row]` attribute for your structs and the same code works everywhere!
 //!
 //! Run with: cargo run --example getting_started
 //! Prerequisites: docker-compose up -d
@@ -46,12 +46,12 @@ diesel_clickhouse::table! {
 }
 
 // =============================================================================
-// 2. Define your row types - use #[derive(Row)] for unified HTTP + Native support
+// 2. Define your row types - use #[row] for optimized binary deserialization
 // =============================================================================
 
 /// For inserting new users - derives Insertable for SQL generation
-/// Row generates serde::Serialize and serde::Deserialize automatically
-#[derive(Debug, Clone, Row, diesel_clickhouse::Insertable)]
+#[row]
+#[derive(Debug, Clone, diesel_clickhouse::Insertable)]
 #[diesel_clickhouse(table = users)]
 pub struct NewUser {
     pub id: u64,
@@ -63,7 +63,8 @@ pub struct NewUser {
 
 
 /// For inserting new posts
-#[derive(Debug, Clone, Row, diesel_clickhouse::Insertable)]
+#[row]
+#[derive(Debug, Clone, diesel_clickhouse::Insertable)]
 #[diesel_clickhouse(table = posts)]
 pub struct NewPost {
     pub id: u64,
@@ -72,8 +73,9 @@ pub struct NewPost {
     pub content: String,
 }
 
-/// For querying users - Row generates all needed traits
-#[derive(Debug, Clone, Row)]
+/// For querying users - #[row] generates optimized binary deserialization
+#[row]
+#[derive(Debug, Clone)]
 pub struct User {
     pub id: u64,
     pub name: String,
@@ -91,7 +93,7 @@ pub struct User {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let url = std::env::var("CLICKHOUSE_URL")
-        .unwrap_or_else(|_| "http://localhost:8123/test_db".to_string());
+        .unwrap_or_else(|_| "http://default:default@localhost:8123/test_db".to_string());
 
     let conn = match Connection::establish(&url).await {
         Ok(conn) => conn,
@@ -157,10 +159,11 @@ async fn main() -> anyhow::Result<()> {
     println!("Unknown user: {:?}", maybe_user);
 
     // JOIN - users with their posts (one row per post)
-    #[derive(Debug, Clone, Row)]
+    #[row]
+    #[derive(Debug, Clone)]
     struct UserWithPost {
-        user_name: String,
-        post_title: String,
+        name: String,
+        title: String,
     }
 
     let users_with_posts: Vec<UserWithPost> = users::table
@@ -171,15 +174,18 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("Users with posts (flat):");
     for uwp in &users_with_posts {
-        println!("  {} wrote: {}", uwp.user_name, uwp.post_title);
+        println!("  {} wrote: {}", uwp.name, uwp.title);
     }
 
     // JOIN with groupArray - accumulate posts per user
-    #[derive(Debug, Clone, Row)]
+    #[row]
+    #[derive(Debug, Clone)]
     struct UserWithPosts {
-        user_id: u64,
-        user_name: String,
-        post_titles: Vec<String>,  // All posts collected into array
+        id: u64,
+        name: String,
+        #[serde(rename = "groupArray(title)")]
+        post_titles: Vec<String>,  // Accumulate titles into array
+        #[serde(rename = "count(id)")]
         post_count: u64,
     }
 
@@ -197,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("\nUsers with all their posts (grouped):");
     for u in &users_with_all_posts {
-        println!("  {} ({} posts): {:?}", u.user_name, u.post_count, u.post_titles);
+        println!("  {} ({} posts): {:?}", u.name, u.post_count, u.post_titles);
     }
 
     // UPDATE - idiomatic style
