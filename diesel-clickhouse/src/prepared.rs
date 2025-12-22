@@ -74,13 +74,19 @@ struct CacheKey {
     type_id: TypeId,
 }
 
+/// Default cache size as a compile-time constant.
+const DEFAULT_CACHE_SIZE: NonZeroUsize = match NonZeroUsize::new(256) {
+    Some(n) => n,
+    None => unreachable!(),
+};
+
 impl PreparedCache {
     /// Create a new prepared cache with the given maximum size.
     ///
     /// When the cache exceeds this size, least recently used entries
     /// are automatically evicted (O(1) eviction).
     pub fn new(max_size: usize) -> Self {
-        let cap = NonZeroUsize::new(max_size).unwrap_or(NonZeroUsize::new(256).unwrap());
+        let cap = NonZeroUsize::new(max_size).unwrap_or(DEFAULT_CACHE_SIZE);
         Self {
             cache: RwLock::new(LruCache::new(cap)),
             hits: std::sync::atomic::AtomicU64::new(0),

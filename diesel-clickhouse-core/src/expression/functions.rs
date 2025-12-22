@@ -581,9 +581,7 @@ where
 {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         pass.push_sql("quantile(");
-        // Use ryu for efficient float formatting
-        let mut buf = ryu::Buffer::new();
-        pass.push_sql(buf.format(self.level));
+        pass.push_bindable(&self.level)?;
         pass.push_sql(")(");
         self.expr.walk_ast(pass.reborrow())?;
         pass.push_sql(")");
@@ -629,8 +627,7 @@ where
 {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         pass.push_sql("quantileTDigest(");
-        let mut buf = ryu::Buffer::new();
-        pass.push_sql(buf.format(self.level));
+        pass.push_bindable(&self.level)?;
         pass.push_sql(")(");
         self.expr.walk_ast(pass.reborrow())?;
         pass.push_sql(")");
@@ -671,8 +668,7 @@ where
 {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         pass.push_sql("topK(");
-        let mut buf = itoa::Buffer::new();
-        pass.push_sql(buf.format(self.k));
+        pass.push_bindable(&(self.k as i64))?;
         pass.push_sql(")(");
         self.expr.walk_ast(pass.reborrow())?;
         pass.push_sql(")");
@@ -716,11 +712,10 @@ where
         pass.push_sql("substring(");
         self.expr.walk_ast(pass.reborrow())?;
         pass.push_sql(", ");
-        let mut buf = itoa::Buffer::new();
-        pass.push_sql(buf.format(self.offset));
+        pass.push_bindable(&self.offset)?;
         if let Some(len) = self.length {
             pass.push_sql(", ");
-            pass.push_sql(buf.format(len));
+            pass.push_bindable(&len)?;
         }
         pass.push_sql(")");
         Ok(())
@@ -768,8 +763,7 @@ where
         self.expr.walk_ast(pass.reborrow())?;
         if let Some(p) = self.precision {
             pass.push_sql(", ");
-            let mut buf = itoa::Buffer::new();
-            pass.push_sql(buf.format(p));
+            pass.push_bindable(&p)?;
         }
         pass.push_sql(")");
         Ok(())
@@ -840,11 +834,20 @@ mod tests {
     use crate::backend::{ClickHouse, GenericQueryBuilder, GenericBindCollector, QueryBuilder};
 
     fn build_sql<T: QueryFragment<ClickHouse>>(fragment: &T) -> String {
+        use crate::backend::BindCollector;
         let mut builder = GenericQueryBuilder::default();
         let mut collector = GenericBindCollector::default();
         let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
         fragment.walk_ast(pass).unwrap();
-        builder.finish()
+
+        // Inline bindings into the SQL for easier test assertions
+        let mut sql = builder.finish();
+        for binding in collector.bindable_values().iter().rev() {
+            if let Some(pos) = sql.rfind('?') {
+                sql.replace_range(pos..pos + 1, &binding.sql_literal());
+            }
+        }
+        sql
     }
 
     #[test]

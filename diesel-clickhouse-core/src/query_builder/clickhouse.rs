@@ -101,12 +101,10 @@ where
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         self.inner.walk_ast(pass.reborrow())?;
         pass.push_sql(" SAMPLE ");
-        let mut buf = ryu::Buffer::new();
-        pass.push_sql(buf.format_finite(self.ratio));
+        pass.push_bindable(&self.ratio)?;
         if let Some(offset) = self.offset {
             pass.push_sql(" OFFSET ");
-            let mut buf = ryu::Buffer::new();
-            pass.push_sql(buf.format_finite(offset));
+            pass.push_bindable(&offset)?;
         }
         Ok(())
     }
