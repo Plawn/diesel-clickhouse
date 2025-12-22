@@ -234,6 +234,7 @@ dependencies = [
  "chrono",
  "chrono-tz-build",
  "phf",
+ "serde",
 ]
 
 [[package]]
@@ -302,6 +303,7 @@ dependencies = [
  "bnum",
  "bstr",
  "bytes",
+ "chrono",
  "cityhash-rs",
  "clickhouse-macros",
  "clickhouse-types",
@@ -537,6 +539,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "chrono-tz",
  "clickhouse",
  "clickhouse-rs",
  "deadpool",
@@ -607,6 +610,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "chrono-tz",
  "clickhouse",
  "clickhouse-rs",
  "diesel-clickhouse",

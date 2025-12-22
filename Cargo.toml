@@ -22,7 +22,7 @@ required-features = ["native"]
 [[example]]
 name = "getting_started"
 path = "examples/getting_started.rs"
-required-features = ["native"]
+# Works with either http or native feature
 
 [[example]]
 name = "migrations_example"
@@ -60,7 +60,7 @@ publish = false
 [features]
 default = ["http", "migrations"]
 http = ["diesel-clickhouse/http"]
-native = ["diesel-clickhouse/native", "dep:clickhouse-rs"]
+native = ["diesel-clickhouse/native", "diesel-clickhouse/chrono", "dep:clickhouse-rs"]
 migrations = ["diesel-clickhouse/migrations"]
 
 [dependencies]
@@ -69,7 +69,8 @@ diesel-clickhouse-core = { path = "diesel-clickhouse-core" }
 diesel-clickhouse-migrations = { path = "diesel-clickhouse-migrations" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
-clickhouse = { version = "0.14", features = ["lz4", "time"] }
+chrono-tz = { version = "0.8", features = ["serde"] }
+clickhouse = { version = "0.14", features = ["lz4", "time", "chrono"] }
 clickhouse-rs = { version = "1.1.0-alpha.1", default-features = false, features = ["tokio_io"], optional = true }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }

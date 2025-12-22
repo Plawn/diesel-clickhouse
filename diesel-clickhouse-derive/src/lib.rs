@@ -229,6 +229,11 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }).collect();
 
+    // Generate column vector variable names for ToNativeBlock
+    let col_var_names: Vec<_> = field_names.iter()
+        .map(|f| format_ident!("col_{}", f.as_ref().expect("Named fields always have identifiers")))
+        .collect();
+
     let expanded = quote! {
         // Re-emit the struct with clickhouse::Row derive for HTTP backend
         #(#attrs)*
@@ -254,6 +259,37 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         #field_names: ::diesel_clickhouse::native::BlockValue::get_value(block, row_idx, #column_names)?,
                     )*
                 })
+            }
+        }
+
+        // Generate ToNativeBlock for Native backend (optimized INSERT)
+        #[cfg(feature = "native")]
+        impl ::diesel_clickhouse::native::ToNativeBlock for #name {
+            fn column_names() -> &'static [&'static str] {
+                &[#(#column_names),*]
+            }
+
+            fn rows_to_block(rows: &[Self]) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
+                // Create column vectors
+                #(
+                    let mut #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
+                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::new_column();
+                )*
+
+                // Populate column vectors
+                for row in rows {
+                    #(
+                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::push_to_column(&row.#field_names, &mut #col_var_names);
+                    )*
+                }
+
+                // Build block
+                let block = ::diesel_clickhouse::native::NativeBlock::new();
+                #(
+                    let block = <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::add_column_to_block(block, #column_names, #col_var_names);
+                )*
+
+                Ok(block)
             }
         }
     };

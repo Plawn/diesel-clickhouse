@@ -50,7 +50,7 @@
 use async_trait::async_trait;
 use clickhouse_rs::{Pool, ClientHandle, Block, types::Complex};
 
-use crate::core::backend::{ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
+use crate::core::backend::{BindableValue, BindCollector, ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
 use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
 use crate::core::escape::escape_identifier;
 use crate::core::query_builder::{AstPass, QueryFragment};
@@ -411,10 +411,37 @@ impl BlockValue for String {
 
 impl BlockValue for bool {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        // ClickHouse stores bools as u8
-        let v: u8 = block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get bool column '{}': {}", column, e)))?;
-        Ok(v != 0)
+        // Try to get as bool directly (ClickHouse Bool type)
+        block.get(row_idx, column)
+            .map_err(|e| Error::DeserializationError(format!("Failed to get bool column '{}': {}", column, e)))
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl BlockValue for chrono::DateTime<chrono_tz::Tz> {
+    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
+        block.get(row_idx, column)
+            .map_err(|e| Error::DeserializationError(format!("Failed to get DateTime column '{}': {}", column, e)))
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl BlockValue for chrono::DateTime<chrono::FixedOffset> {
+    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
+        // Get as DateTime<Tz> and convert to FixedOffset
+        let dt: chrono::DateTime<chrono_tz::Tz> = block.get(row_idx, column)
+            .map_err(|e| Error::DeserializationError(format!("Failed to get DateTime column '{}': {}", column, e)))?;
+        Ok(dt.fixed_offset())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl BlockValue for chrono::DateTime<chrono::Utc> {
+    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
+        // Get as DateTime<Tz> and convert to Utc
+        let dt: chrono::DateTime<chrono_tz::Tz> = block.get(row_idx, column)
+            .map_err(|e| Error::DeserializationError(format!("Failed to get DateTime column '{}': {}", column, e)))?;
+        Ok(dt.with_timezone(&chrono::Utc))
     }
 }
 
@@ -448,6 +475,373 @@ pub fn block_to_vec_optimized<T: FromNativeBlock>(block: &ComplexBlock) -> Query
     }
 
     Ok(results)
+}
+
+// =============================================================================
+// ToNativeBlock - Optimized INSERT via Block API
+// =============================================================================
+
+/// Trait for types that can be converted to a native Block for INSERT.
+///
+/// This trait enables optimized binary INSERT operations using ClickHouse's
+/// native Block format instead of generating SQL VALUES text. This provides
+/// better performance for bulk inserts.
+///
+/// This trait is automatically implemented by the `#[row]` attribute macro
+/// for types that also derive `Insertable`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::prelude::*;
+/// use diesel_clickhouse::native::ToNativeBlock;
+///
+/// #[row]
+/// #[derive(Debug, Clone, Insertable)]
+/// #[diesel_clickhouse(table = users)]
+/// struct NewUser {
+///     id: u64,
+///     name: String,
+///     active: bool,
+/// }
+///
+/// // Optimized insert via Block API
+/// let users = vec![
+///     NewUser { id: 1, name: "Alice".into(), active: true },
+///     NewUser { id: 2, name: "Bob".into(), active: false },
+/// ];
+/// conn.insert_native("users", &users).await?;
+/// ```
+pub trait ToNativeBlock: Sized {
+    /// Column names for this row type.
+    fn column_names() -> &'static [&'static str];
+
+    /// Convert a slice of rows to a native Block for efficient INSERT.
+    fn rows_to_block(rows: &[Self]) -> QueryResult<Block>;
+}
+
+/// Trait for types that can be added as a column to a Block.
+///
+/// This is implemented for common Rust types that map to ClickHouse types.
+pub trait IntoBlockColumn {
+    /// The type of the column data vector.
+    type ColumnData;
+
+    /// Add this value to a column data vector.
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData);
+
+    /// Create an empty column data vector.
+    fn new_column() -> Self::ColumnData;
+
+    /// Add the column to a block.
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block;
+}
+
+// Implement IntoBlockColumn for primitive types
+impl IntoBlockColumn for u8 {
+    type ColumnData = Vec<u8>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(*value);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for u16 {
+    type ColumnData = Vec<u16>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(*value);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for u32 {
+    type ColumnData = Vec<u32>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(*value);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for u64 {
+    type ColumnData = Vec<u64>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(*value);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for i8 {
+    type ColumnData = Vec<i8>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(*value);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for i16 {
+    type ColumnData = Vec<i16>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(*value);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for i32 {
+    type ColumnData = Vec<i32>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(*value);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for i64 {
+    type ColumnData = Vec<i64>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(*value);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for f32 {
+    type ColumnData = Vec<f32>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(*value);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for f64 {
+    type ColumnData = Vec<f64>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(*value);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for bool {
+    type ColumnData = Vec<u8>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(if *value { 1 } else { 0 });
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for String {
+    type ColumnData = Vec<String>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(value.clone());
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumn for &str {
+    type ColumnData = Vec<String>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push((*value).to_string());
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+// Vec<T> for Array columns
+impl<T: Clone> IntoBlockColumn for Vec<T>
+where
+    Vec<Vec<T>>: clickhouse_rs::types::column::ColumnFrom,
+{
+    type ColumnData = Vec<Vec<T>>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(value.clone());
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+// DateTime types - convert to the format clickhouse-rs expects
+#[cfg(feature = "chrono")]
+impl IntoBlockColumn for chrono::DateTime<chrono_tz::Tz> {
+    type ColumnData = Vec<chrono::DateTime<chrono_tz::Tz>>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(*value);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoBlockColumn for chrono::DateTime<chrono::FixedOffset> {
+    // clickhouse-rs expects DateTime<Tz>, so we convert
+    type ColumnData = Vec<chrono::DateTime<chrono_tz::Tz>>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        // Convert FixedOffset to UTC then to Tz
+        use chrono::TimeZone;
+        let utc = value.with_timezone(&chrono::Utc);
+        let tz_dt = chrono_tz::UTC.from_utc_datetime(&utc.naive_utc());
+        column.push(tz_dt);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoBlockColumn for chrono::DateTime<chrono::Utc> {
+    type ColumnData = Vec<chrono::DateTime<chrono_tz::Tz>>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        use chrono::TimeZone;
+        let tz_dt = chrono_tz::UTC.from_utc_datetime(&value.naive_utc());
+        column.push(tz_dt);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoBlockColumn for chrono::NaiveDateTime {
+    type ColumnData = Vec<chrono::DateTime<chrono_tz::Tz>>;
+
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        use chrono::TimeZone;
+        let tz_dt = chrono_tz::UTC.from_utc_datetime(value);
+        column.push(tz_dt);
+    }
+
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
 }
 
 // =============================================================================
@@ -580,7 +974,7 @@ impl NativeConnection {
     where
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = build_sql(query)?;
+        let sql = build_sql_interpolated(query)?;
         self.execute_raw(&sql).await
     }
 
@@ -618,7 +1012,7 @@ impl NativeConnection {
     where
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = build_sql(&query)?;
+        let sql = build_sql_interpolated(&query)?;
         self.query_raw(&sql).await
     }
 
@@ -662,6 +1056,45 @@ impl NativeConnection {
         let sql = format!("INSERT INTO {} VALUES {}", escaped_table, values_sql);
         self.execute_raw(&sql).await
     }
+
+    /// Insert rows using the optimized native Block API.
+    ///
+    /// This method provides the best performance for bulk inserts by using
+    /// ClickHouse's native binary Block format instead of generating SQL VALUES.
+    ///
+    /// The row type must implement `ToNativeBlock`, which is automatically
+    /// generated by the `#[row]` attribute for types that also derive `Insertable`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::prelude::*;
+    /// use diesel_clickhouse::native::ToNativeBlock;
+    ///
+    /// #[row]
+    /// #[derive(Debug, Clone, Insertable)]
+    /// #[diesel_clickhouse(table = users)]
+    /// struct NewUser {
+    ///     id: u64,
+    ///     name: String,
+    ///     active: bool,
+    /// }
+    ///
+    /// let users = vec![
+    ///     NewUser { id: 1, name: "Alice".into(), active: true },
+    ///     NewUser { id: 2, name: "Bob".into(), active: false },
+    /// ];
+    ///
+    /// // Optimized insert via Block API
+    /// conn.insert_native("users", &users).await?;
+    /// ```
+    pub async fn insert_native<T: ToNativeBlock>(&self, table: &str, rows: &[T]) -> QueryResult<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let block = T::rows_to_block(rows)?;
+        self.insert(table, block).await
+    }
 }
 
 // =============================================================================
@@ -695,6 +1128,55 @@ pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryRe
     let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
     fragment.walk_ast(pass)?;
     Ok(builder.finish())
+}
+
+/// Build SQL from a QueryFragment with bind values interpolated inline.
+///
+/// This is required for the native backend since clickhouse-rs doesn't support
+/// bind parameters like the HTTP backend does. All `?` placeholders are replaced
+/// with their actual SQL literal values.
+pub fn build_sql_interpolated<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
+    let mut builder = GenericQueryBuilder::default();
+    let mut collector = GenericBindCollector::default();
+    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
+    fragment.walk_ast(pass)?;
+
+    let sql = builder.finish();
+    let bindings = collector.bindable_values();
+
+    interpolate_bindings(&sql, bindings)
+}
+
+/// Replace `?` placeholders in SQL with actual bind values.
+fn interpolate_bindings(sql: &str, bindings: &[BindableValue]) -> QueryResult<String> {
+    let mut result = String::with_capacity(sql.len() + bindings.len() * 10);
+    let mut binding_idx = 0;
+
+    for ch in sql.chars() {
+        if ch == '?' {
+            if binding_idx >= bindings.len() {
+                return Err(Error::QueryError(format!(
+                    "Not enough bind values: expected at least {}, got {}",
+                    binding_idx + 1,
+                    bindings.len()
+                )));
+            }
+            result.push_str(&bindings[binding_idx].sql_literal());
+            binding_idx += 1;
+        } else {
+            result.push(ch);
+        }
+    }
+
+    if binding_idx != bindings.len() {
+        return Err(Error::QueryError(format!(
+            "Too many bind values: expected {}, got {}",
+            binding_idx,
+            bindings.len()
+        )));
+    }
+
+    Ok(result)
 }
 
 // =============================================================================
@@ -759,7 +1241,7 @@ impl NativeConnection {
         T: FromNativeBlock + Send,
         Q: QueryFragment<ClickHouse> + Send,
     {
-        let sql = build_sql(&query)?;
+        let sql = build_sql_interpolated(&query)?;
         self.load_optimized_raw(&sql).await
     }
 
@@ -830,7 +1312,7 @@ impl ClickHouseConnectionTrait for NativeConnection {
     where
         Q: QueryFragment<ClickHouse> + Send + Sync,
     {
-        let sql = build_sql(query)?;
+        let sql = build_sql_interpolated(query)?;
         self.execute_raw(&sql).await
     }
 
@@ -838,7 +1320,7 @@ impl ClickHouseConnectionTrait for NativeConnection {
     where
         Q: QueryFragment<ClickHouse>,
     {
-        build_sql(query)
+        build_sql_interpolated(query)
     }
 
     fn database(&self) -> &str {

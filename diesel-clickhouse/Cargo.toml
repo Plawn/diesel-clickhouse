@@ -22,7 +22,7 @@ migrations = ["dep:diesel-clickhouse-migrations"]
 integration = []
 
 # DateTime handling
-chrono = ["diesel-clickhouse-core/chrono", "dep:chrono"]
+chrono = ["diesel-clickhouse-core/chrono", "dep:chrono", "dep:chrono-tz"]
 time = ["diesel-clickhouse-core/time"]
 
 # UUID support
@@ -65,6 +65,7 @@ smallvec = "1.11"
 
 # Optional - Other
 chrono = { workspace = true, optional = true }
+chrono-tz = { version = "0.8", optional = true, features = ["serde"] }
 uuid = { workspace = true, optional = true }
 deadpool = { version = "0.10", optional = true }
 tracing = { version = "0.1", optional = true }

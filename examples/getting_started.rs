@@ -3,7 +3,17 @@
 //! This example demonstrates the unified API that works with both HTTP and Native backends.
 //! Just use `#[row]` attribute for your structs and the same code works everywhere!
 //!
-//! Run with: cargo run --example getting_started
+//! Run with:
+//!   # HTTP backend (default)
+//!   cargo run --example getting_started --features http
+//!
+//!   # Native backend
+//!   cargo run --example getting_started --features native
+//!
+//!   # With URL (auto-detects backend from scheme)
+//!   CLICKHOUSE_URL=http://default:default@localhost:8123/test_db cargo run --example getting_started --features http
+//!   CLICKHOUSE_URL=tcp://default:default@localhost:9000/test_db cargo run --example getting_started --features native
+//!
 //! Prerequisites: docker-compose up -d
 
 use diesel_clickhouse::migrations::{EmbeddedMigrations, MigrationHarness};
@@ -72,6 +82,7 @@ pub struct NewPost {
 }
 
 /// For querying users - #[row] generates optimized binary deserialization
+/// Note: For DateTime, we use Utc with the clickhouse serde helper for HTTP compatibility.
 #[row]
 #[derive(Debug, Clone)]
 pub struct User {
@@ -80,8 +91,8 @@ pub struct User {
     pub email: String,
     pub age: u8,
     pub active: bool,
-    // Note: For DateTime, you might need to use u32 or String depending on format
-    pub created_at: u32, // Unix timestamp
+    #[cfg_attr(feature = "http", serde(with = "clickhouse::serde::chrono::datetime"))]
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 // =============================================================================
@@ -90,17 +101,37 @@ pub struct User {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // let url = std::env::var("CLICKHOUSE_URL")
-    //     .unwrap_or_else(|_| "http://default:default@localhost:8123/test_db".to_string());
-
-    let mut conn = Connection::native()
-        .host("localhost")
-        .user("default")
-        .password("default")
-        .database("test_db")
-        .port(9000)
-        .build()
-        .await?;
+    // Connect using URL from environment, or default based on enabled features
+    let mut conn = if let Ok(url) = std::env::var("CLICKHOUSE_URL") {
+        println!("Connecting via URL: {}", url);
+        Connection::establish(&url).await?
+    } else {
+        // Default connection based on enabled features
+        #[cfg(all(feature = "native", not(feature = "http")))]
+        {
+            println!("Connecting via Native backend (default)");
+            Connection::native()
+                .host("localhost")
+                .user("default")
+                .password("default")
+                .database("test_db")
+                .port(9000)
+                .build()
+                .await?
+        }
+        #[cfg(feature = "http")]
+        {
+            println!("Connecting via HTTP backend (default)");
+            Connection::http()
+                .host("localhost")
+                .user("default")
+                .password("default")
+                .database("test_db")
+                .port(8123)
+                .build()
+                .await?
+        }
+    };
     // Clean up any existing data from previous runs
     conn.execute("TRUNCATE TABLE IF EXISTS posts").await?;
     conn.execute("TRUNCATE TABLE IF EXISTS users").await?;
@@ -214,30 +245,23 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // JOIN with groupArray - accumulate posts per user
-    // Two ways to handle aggregate column names:
-    //
-    // Option 1: Use .alias() in the query (recommended)
-    //   group_array(posts::title).alias("post_titles")
-    //
-    // Option 2: Use #[serde(rename)] on the struct field
-    //   #[serde(rename = "groupArray(title)")]
-    //   post_titles: Vec<String>
+    // Use .alias() to give explicit names to aggregate columns.
+    // This ensures column names are consistent across both HTTP and Native backends.
     #[row]
     #[derive(Debug, Clone)]
     struct UserWithPosts {
         id: u64,
         name: String,
-        post_titles: Vec<String>, // uses .alias() in query
-        #[serde(rename = "count(id)")]
-        post_count: u64, // uses serde rename
+        post_titles: Vec<String>,
+        post_count: u64,
     }
 
     let users_with_all_posts: Vec<UserWithPosts> = users::table
         .select((
             users::id,
             users::name,
-            group_array(posts::title).alias("post_titles"), // SQL: groupArray(title) AS post_titles
-            count(posts::id), // SQL: count(id) - matched by serde rename
+            group_array(posts::title).alias("post_titles"),
+            count(posts::id).alias("post_count"),
         ))
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
         .filter(users::active.eq(true))
