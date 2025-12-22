@@ -3,22 +3,42 @@
 //! This module provides a cache for prepared SQL statements, avoiding
 //! the overhead of rebuilding the same query string multiple times.
 //!
-//! # Example
+//! # Native Parameter Binding (Recommended)
+//!
+//! The recommended approach uses the clickhouse crate's native `.bind()` mechanism:
 //!
 //! ```rust,ignore
-//! use diesel_clickhouse::prepared::{PreparedCache, PreparedQuery};
+//! use diesel_clickhouse::prepared::PreparedCache;
 //!
 //! // Create a cache
 //! let cache = PreparedCache::new(100);
 //!
-//! // Prepare and cache a query
-//! let query = cache.prepare("user_by_id", || {
-//!     users::table.filter(users::id.eq(placeholder::<u64>()))
-//! });
+//! // Prepare and cache a query with ? placeholders
+//! let stmt = cache.prepare("user_by_id", || {
+//!     "SELECT * FROM users WHERE id = ? AND active = ?"
+//! })?;
 //!
-//! // Execute with different parameters
-//! let user1 = conn.execute_prepared(&query, &[&42u64]).await?;
-//! let user2 = conn.execute_prepared(&query, &[&123u64]).await?;
+//! // Execute with native binding (SOTA - uses clickhouse crate's serialization)
+//! let users: Vec<User> = conn.bound_query(stmt.sql())
+//!     .bind(42u64)
+//!     .bind(true)
+//!     .fetch_all()
+//!     .await?;
+//!
+//! // Or use the helper method
+//! let users: Vec<User> = stmt.execute_with(&conn, |q| q.bind(42u64).bind(true))
+//!     .fetch_all()
+//!     .await?;
+//! ```
+//!
+//! # Legacy String Interpolation (Deprecated)
+//!
+//! The old string interpolation methods are deprecated but still available:
+//!
+//! ```rust,ignore
+//! // DEPRECATED: Manual string interpolation
+//! let sql = stmt.with_params_escaped(&[SqlParam::Int(42), SqlParam::Bool(true)]);
+//! conn.execute_raw(&sql).await?;
 //! ```
 
 use std::any::TypeId;
@@ -31,6 +51,7 @@ use lru::LruCache;
 use crate::core::backend::ClickHouse;
 use crate::core::query_builder::QueryFragment;
 use crate::core::result::{Error, QueryResult};
+use crate::http::ClickHouseConnection;
 
 /// A cache for prepared SQL statements.
 ///
@@ -239,6 +260,43 @@ impl PreparedStatement {
         &self.name
     }
 
+    /// Execute this statement with native parameter binding.
+    ///
+    /// This is the recommended way to execute prepared statements as it uses
+    /// the clickhouse crate's native `.bind()` mechanism for proper serialization.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let stmt = PreparedStatement::new("find_user", "SELECT * FROM users WHERE id = ? AND name = ?");
+    ///
+    /// let users: Vec<User> = stmt.execute_with(&conn, |q| {
+    ///     q.bind(42u64).bind("alice")
+    /// }).fetch_all().await?;
+    /// ```
+    pub fn execute_with<'a, F>(
+        &self,
+        conn: &'a ClickHouseConnection,
+        bind_fn: F,
+    ) -> clickhouse::query::Query
+    where
+        F: FnOnce(clickhouse::query::Query) -> clickhouse::query::Query,
+    {
+        bind_fn(conn.bound_query(&self.sql))
+    }
+
+    /// Execute this statement without parameters.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let stmt = PreparedStatement::new("count_users", "SELECT count() FROM users");
+    /// let count: u64 = stmt.execute(&conn).fetch_one().await?;
+    /// ```
+    pub fn execute<'a>(&self, conn: &'a ClickHouseConnection) -> clickhouse::query::Query {
+        conn.bound_query(&self.sql)
+    }
+
     /// Create a SQL string with parameters substituted.
     ///
     /// # Safety Warning
@@ -250,7 +308,7 @@ impl PreparedStatement {
     /// For safe parameter substitution, use [`with_params_escaped`] instead.
     ///
     /// This replaces `?` placeholders with the provided values.
-    #[deprecated(since = "0.2.0", note = "Use with_params_escaped for safe parameter substitution")]
+    #[deprecated(since = "0.2.0", note = "Use execute_with() for native parameter binding")]
     pub fn with_params(&self, params: &[&dyn std::fmt::Display]) -> String {
         let mut result = String::with_capacity(self.sql.len() + params.len() * 10);
         let mut param_idx = 0;
@@ -269,6 +327,10 @@ impl PreparedStatement {
 
     /// Create a SQL string with parameters safely substituted.
     ///
+    /// **DEPRECATED**: Use [`execute_with`] for native parameter binding instead.
+    /// Native binding is safer and more performant as it delegates serialization
+    /// to the clickhouse crate.
+    ///
     /// This replaces `?` placeholders with the provided values, properly
     /// escaping string values to prevent SQL injection.
     ///
@@ -281,10 +343,16 @@ impl PreparedStatement {
     /// # Example
     ///
     /// ```rust,ignore
+    /// // DEPRECATED approach:
     /// let stmt = PreparedStatement::new("find_user", "SELECT * FROM users WHERE name = ?");
     /// let sql = stmt.with_params_escaped(&[SqlParam::String("O'Brien")]);
     /// // Result: SELECT * FROM users WHERE name = 'O''Brien'
+    ///
+    /// // RECOMMENDED approach:
+    /// let users: Vec<User> = stmt.execute_with(&conn, |q| q.bind("O'Brien"))
+    ///     .fetch_all().await?;
     /// ```
+    #[deprecated(since = "0.3.0", note = "Use execute_with() for native parameter binding")]
     pub fn with_params_escaped(&self, params: &[SqlParam<'_>]) -> String {
         let mut result = String::with_capacity(self.sql.len() + params.len() * 20);
         let mut param_idx = 0;

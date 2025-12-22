@@ -137,12 +137,3 @@ where
         conn.execute_query(self).await
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_run_query_dsl_trait_exists() {
-        // Compile-time test that the trait is properly defined
-        fn _assert_trait<T: super::RunQueryDsl>() {}
-    }
-}

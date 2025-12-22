@@ -24,6 +24,7 @@
 use async_trait::async_trait;
 use clickhouse::Client;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 // =============================================================================
 // JSON Parsing (with optional SIMD acceleration)
@@ -65,7 +66,7 @@ fn parse_json_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
         .map_err(|e| format!("Failed to parse JSON: {}", e))
 }
 
-use crate::core::backend::{ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
+use crate::core::backend::{BindCollector, ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
 use crate::core::connection::{AsyncConnection, ClickHouseConnection as ClickHouseConnectionTrait};
 use crate::core::deserialize::FromRow;
 use crate::core::escape::escape_identifier;
@@ -276,6 +277,48 @@ pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryRe
     let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
     fragment.walk_ast(pass)?;
     Ok(builder.finish())
+}
+
+/// A compiled query with SQL and collected bind values.
+#[derive(Debug, Clone)]
+pub struct CompiledQuery {
+    /// The SQL string with `?` placeholders.
+    pub sql: String,
+    /// The collected bind values (SQL literals for now).
+    pub bindings: Vec<String>,
+}
+
+impl CompiledQuery {
+    /// Get the number of bind parameters.
+    pub fn param_count(&self) -> usize {
+        self.bindings.len()
+    }
+
+    /// Check if there are any bind parameters.
+    pub fn has_bindings(&self) -> bool {
+        !self.bindings.is_empty()
+    }
+}
+
+/// Build SQL with bindings from a QueryFragment.
+///
+/// Returns both the SQL string (with `?` placeholders) and the collected bind values.
+pub fn build_sql_with_bindings<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<CompiledQuery> {
+    let mut builder = GenericQueryBuilder::default();
+    let mut collector = GenericBindCollector::default();
+    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
+    fragment.walk_ast(pass)?;
+
+    let bindings = collector
+        .bindings()
+        .iter()
+        .map(|b| b.sql_literal.clone())
+        .collect();
+
+    Ok(CompiledQuery {
+        sql: builder.finish(),
+        bindings,
+    })
 }
 
 // =============================================================================
@@ -544,6 +587,124 @@ impl ClickHouseConnection {
         }).await?;
 
         Ok(results)
+    }
+
+    // =========================================================================
+    // Native Parameter Binding (SOTA)
+    // =========================================================================
+
+    /// Create a bound query with native parameter binding.
+    ///
+    /// This uses the clickhouse crate's native `.bind()` mechanism which
+    /// properly serializes parameters without manual string escaping.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let users: Vec<User> = conn.bound_query("SELECT * FROM users WHERE id = ? AND name = ?")
+    ///     .bind(42u64)
+    ///     .bind("alice")
+    ///     .fetch_all()
+    ///     .await?;
+    /// ```
+    pub fn bound_query(&self, sql: &str) -> clickhouse::query::Query {
+        self.client.query(sql)
+    }
+
+    /// Execute a query with bound parameters (no results).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.execute_bound("ALTER TABLE users DELETE WHERE id = ?", &[&42u64]).await?;
+    /// ```
+    pub async fn execute_bound<T: Serialize + Send + Sync>(
+        &self,
+        sql: &str,
+        params: &[T],
+    ) -> QueryResult<()> {
+        let mut query = self.client.query(sql);
+        for param in params {
+            query = query.bind(param);
+        }
+        query.execute().await.map_err(|e| Error::QueryError(e.to_string()))
+    }
+
+    /// Load rows with bound parameters using native Row deserialization.
+    ///
+    /// This is the recommended way to execute parameterized queries as it uses
+    /// the clickhouse crate's native binding and deserialization.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[derive(Debug, clickhouse::Row, Deserialize)]
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
+    /// let users: Vec<User> = conn.fetch_bound(
+    ///     "SELECT id, name FROM users WHERE active = ?",
+    ///     |q| q.bind(true),
+    /// ).await?;
+    /// ```
+    pub async fn fetch_bound<T, F>(&self, sql: &str, bind_fn: F) -> QueryResult<Vec<T>>
+    where
+        T: clickhouse::RowOwned + clickhouse::RowRead + Send,
+        F: FnOnce(clickhouse::query::Query) -> clickhouse::query::Query,
+    {
+        let query = bind_fn(self.client.query(sql));
+        query
+            .fetch_all()
+            .await
+            .map_err(|e| Error::QueryError(e.to_string()))
+    }
+
+    /// Fetch a single row with bound parameters.
+    ///
+    /// Returns an error if no rows are returned.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user: User = conn.fetch_one_bound(
+    ///     "SELECT id, name FROM users WHERE id = ?",
+    ///     |q| q.bind(42u64),
+    /// ).await?;
+    /// ```
+    pub async fn fetch_one_bound<T, F>(&self, sql: &str, bind_fn: F) -> QueryResult<T>
+    where
+        T: clickhouse::RowOwned + clickhouse::RowRead + Send,
+        F: FnOnce(clickhouse::query::Query) -> clickhouse::query::Query,
+    {
+        let query = bind_fn(self.client.query(sql));
+        query
+            .fetch_one()
+            .await
+            .map_err(|e| Error::QueryError(e.to_string()))
+    }
+
+    /// Fetch an optional row with bound parameters.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user: Option<User> = conn.fetch_optional_bound(
+    ///     "SELECT id, name FROM users WHERE id = ?",
+    ///     |q| q.bind(42u64),
+    /// ).await?;
+    /// ```
+    pub async fn fetch_optional_bound<T, F>(&self, sql: &str, bind_fn: F) -> QueryResult<Option<T>>
+    where
+        T: clickhouse::RowOwned + clickhouse::RowRead + Send,
+        F: FnOnce(clickhouse::query::Query) -> clickhouse::query::Query,
+    {
+        let query = bind_fn(self.client.query(sql));
+        query
+            .fetch_optional()
+            .await
+            .map_err(|e| Error::QueryError(e.to_string()))
     }
 }
 

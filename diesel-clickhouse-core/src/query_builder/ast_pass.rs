@@ -1,6 +1,6 @@
 //! AST traversal pass for SQL generation.
 
-use crate::backend::{Backend, QueryBuilder};
+use crate::backend::{Backend, BindCollector, BindValue, QueryBuilder};
 
 /// A pass through the query AST for generating SQL.
 pub struct AstPass<'a, 'b, DB: Backend> {
@@ -40,8 +40,29 @@ impl<'a, 'b, DB: Backend> AstPass<'a, 'b, DB> {
         self.builder.push_bind_param();
     }
 
+    /// Push a bind parameter marker and collect the value.
+    ///
+    /// This is the recommended way to bind values as it:
+    /// 1. Adds a `?` placeholder to the SQL
+    /// 2. Collects the value for later binding via `.bind()`
+    pub fn push_bind_param_value<T: BindValue>(&mut self, value: &'b T) -> crate::result::QueryResult<()> {
+        self.builder.push_bind_param();
+        self.collector.push_bound_value(value)
+    }
+
+    /// Push a bind parameter marker and collect an unsized value (like str).
+    pub fn push_bind_param_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'b T) -> crate::result::QueryResult<()> {
+        self.builder.push_bind_param();
+        self.collector.push_bound_value_unsized(value)
+    }
+
     /// Get the current SQL (for debugging).
     pub fn sql(&self) -> &str {
         self.builder.sql()
+    }
+
+    /// Get the bind collector (for accessing collected bindings).
+    pub fn collector(&self) -> &DB::BindCollector<'b> {
+        self.collector
     }
 }

@@ -541,7 +541,7 @@ impl<T: Expression> SubqueryExpressionMethods for T {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{HttpBackend, HttpBindCollector, HttpQueryBuilder, QueryBuilder as _};
+    use crate::backend::{BindCollector, HttpBackend, HttpBindCollector, HttpQueryBuilder, QueryBuilder as _};
     use crate::expression::{Bound, Eq, Gt};
     use crate::query_builder::SelectStatement;
     use crate::query_source::Table;
@@ -657,7 +657,17 @@ mod tests {
         let mut collector = HttpBindCollector::default();
         let pass = AstPass::<HttpBackend>::new(&mut builder, &mut collector);
         fragment.walk_ast(pass).ok();
-        builder.finish()
+
+        // Inline bindings into the SQL for easier test assertions
+        let mut sql = builder.finish();
+        for binding in collector.bindings().iter().rev() {
+            if let Some(pos) = sql.rfind("{p") {
+                if let Some(end) = sql[pos..].find('}') {
+                    sql.replace_range(pos..pos + end + 1, &binding.sql_literal);
+                }
+            }
+        }
+        sql
     }
 
     #[test]

@@ -127,6 +127,9 @@ pub trait BindCollector<'a, DB: Backend>: Default {
     /// Push a bound value.
     fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error>;
 
+    /// Push an unsized bound value (like str).
+    fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error>;
+
     /// Get the collected bindings.
     fn bindings(&self) -> &[BoundValue<'a>];
 }
@@ -146,7 +149,7 @@ pub struct BoundValue<'a> {
 
 impl<'a> BoundValue<'a> {
     /// Create a new bound value.
-    pub fn new<T: BindValue>(value: &T) -> Self {
+    pub fn new<T: BindValue + ?Sized>(value: &T) -> Self {
         Self {
             bytes: std::borrow::Cow::Owned(value.to_bytes()),
             type_name: value.type_name(),
@@ -225,6 +228,11 @@ impl<'a> Default for HttpBindCollector<'a> {
 
 impl<'a> BindCollector<'a, HttpBackend> for HttpBindCollector<'a> {
     fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
+        self.bindings.push(BoundValue::new(value));
+        Ok(())
+    }
+
+    fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
         self.bindings.push(BoundValue::new(value));
         Ok(())
     }
@@ -348,6 +356,11 @@ impl<'a> BindCollector<'a, NativeBackend> for NativeBindCollector<'a> {
         Ok(())
     }
 
+    fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
+        self.bindings.push(BoundValue::new(value));
+        Ok(())
+    }
+
     fn bindings(&self) -> &[BoundValue<'a>] {
         &self.bindings
     }
@@ -452,6 +465,11 @@ impl<'a> Default for GenericBindCollector<'a> {
 
 impl<'a> BindCollector<'a, ClickHouse> for GenericBindCollector<'a> {
     fn push_bound_value<T: BindValue>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
+        self.bindings.push(BoundValue::new(value));
+        Ok(())
+    }
+
+    fn push_bound_value_unsized<T: BindValue + ?Sized>(&mut self, value: &'a T) -> Result<(), crate::result::Error> {
         self.bindings.push(BoundValue::new(value));
         Ok(())
     }

@@ -6,3 +6,5 @@
 - checker les examples
   - supprimer ce qui a pas de sens
   - supprimer les migrations qui servent à rien
+- audit performance prepared queries
+  - vérification de l'utilisation de bind params

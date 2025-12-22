@@ -125,23 +125,27 @@ impl<T, ST: SqlType> Expression for Bound<T, ST> {
 impl<T, ST: SqlType, QS> SelectableExpression<QS> for Bound<T, ST> {}
 impl<T, ST: SqlType, QS> AppearsOnTable<QS> for Bound<T, ST> {}
 
-// Implement QueryFragment for Bound with common types
+// Implement QueryFragment for Bound with common types using native binding
+//
+// These implementations use push_bind_param_value to:
+// 1. Add a `?` placeholder to the SQL
+// 2. Collect the value for later binding via `.bind()`
+//
+// This is the SOTA approach as it:
+// - Delegates serialization to the clickhouse crate
+// - Enables query plan caching (same SQL template)
+// - Provides better type safety
+
 impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<&str, ST> {
     fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
-        pass.push_sql("'");
-        // Escape single quotes
-        pass.push_sql(&self.value.replace('\'', "''"));
-        pass.push_sql("'");
-        Ok(())
+        // Use str directly since BindValue is implemented for str
+        pass.push_bind_param_value_unsized(self.value)
     }
 }
 
 impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<String, ST> {
     fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
-        pass.push_sql("'");
-        pass.push_sql(&self.value.replace('\'', "''"));
-        pass.push_sql("'");
-        Ok(())
+        pass.push_bind_param_value(&self.value)
     }
 }
 
@@ -150,27 +154,24 @@ macro_rules! impl_bound_numeric {
         $(
             impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<$t, ST> {
                 fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
-                    pass.push_sql(&self.value.to_string());
-                    Ok(())
+                    pass.push_bind_param_value(&self.value)
                 }
             }
         )*
     };
 }
 
-impl_bound_numeric!(i8, i16, i32, i64, i128, u8, u16, u32, u64, u128, f32, f64);
+impl_bound_numeric!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
 
 impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<bool, ST> {
     fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
-        pass.push_sql(if self.value { "true" } else { "false" });
-        Ok(())
+        pass.push_bind_param_value(&self.value)
     }
 }
 
 impl<ST: SqlType, DB: crate::backend::Backend> crate::query_builder::QueryFragment<DB> for Bound<&bool, ST> {
     fn walk_ast<'b>(&'b self, mut pass: crate::query_builder::AstPass<'_, 'b, DB>) -> crate::result::QueryResult<()> {
-        pass.push_sql(if *self.value { "true" } else { "false" });
-        Ok(())
+        pass.push_bind_param_value(self.value)
     }
 }
 

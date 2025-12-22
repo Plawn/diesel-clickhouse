@@ -824,12 +824,3 @@ mod chrono_lite {
         result
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_url_parsing() {
-        // These would need async runtime to actually test
-        assert!(true);
-    }
-}

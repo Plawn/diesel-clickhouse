@@ -267,12 +267,3 @@ impl BatchInsertExt for Connection {
         RawBatchInserter::new(self, table_name, batch_size)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_batch_inserter_capacity() {
-        // Just verify the types compile correctly
-        assert!(true);
-    }
-}

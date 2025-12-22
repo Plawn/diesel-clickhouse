@@ -4,32 +4,13 @@
 //! Use `docker-compose up -d` to start the test database.
 //!
 //! Run with: `cargo test --test integration_tests`
-
-use std::env;
-
-/// Get the ClickHouse URL from environment or use default.
-fn get_clickhouse_url() -> String {
-    env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123/test_db".to_string())
-}
-
-/// Check if ClickHouse is available for integration tests.
-fn clickhouse_available() -> bool {
-    let url = get_clickhouse_url();
-    // Try to connect using a simple HTTP request
-    let client = reqwest::blocking::Client::new();
-    client
-        .get(&url)
-        .query(&[("query", "SELECT 1")])
-        .send()
-        .is_ok()
-}
+//! Run integration tests: `cargo test --test integration_tests --features integration`
 
 // =============================================================================
 // Type System Integration Tests
 // =============================================================================
 
 mod type_tests {
-    use super::*;
     use diesel_clickhouse_types::*;
 
     #[test]
@@ -92,7 +73,6 @@ mod type_tests {
 // =============================================================================
 
 mod query_builder_tests {
-    use super::*;
     use diesel_clickhouse_core::backend::*;
     use diesel_clickhouse_core::expression::*;
     use diesel_clickhouse_core::query_builder::*;
@@ -247,7 +227,6 @@ mod query_builder_tests {
 // =============================================================================
 
 mod expression_tests {
-    use super::*;
     use diesel_clickhouse_core::backend::*;
     use diesel_clickhouse_core::expression::*;
     use diesel_clickhouse_core::query_builder::*;
@@ -343,7 +322,6 @@ mod expression_tests {
 // =============================================================================
 
 mod migration_tests {
-    use super::*;
     use diesel_clickhouse_migrations::migration::*;
     use diesel_clickhouse_migrations::source::*;
 
@@ -402,7 +380,23 @@ mod migration_tests {
 
 #[cfg(feature = "integration")]
 mod clickhouse_integration {
-    use super::*;
+    use std::env;
+
+    /// Get the ClickHouse URL from environment or use default.
+    fn get_clickhouse_url() -> String {
+        env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://localhost:8123/test_db".to_string())
+    }
+
+    /// Check if ClickHouse is available for integration tests.
+    fn clickhouse_available() -> bool {
+        let url = get_clickhouse_url();
+        let client = reqwest::blocking::Client::new();
+        client
+            .get(&url)
+            .query(&[("query", "SELECT 1")])
+            .send()
+            .is_ok()
+    }
 
     #[test]
     fn test_http_query_execution() {
