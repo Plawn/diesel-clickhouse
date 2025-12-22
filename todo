@@ -1,11 +1,11 @@
 
 # TODO
-- gestion des migrations en entier
-- gestion du cli en entier
+- gestion des migrations en entier -> OK
+- gestion du cli en entier -> print schema a finir ?
 - ajout de la doc sur les multiples backend (natif et http)
 - mettre à jour le readme / doc
 - insertion mode batch
-- checker les examples
+- checker les examples -> OK
   - supprimer ce qui a pas de sens
   - supprimer les migrations qui servent à rien
 - audit performance prepared queries
@@ -14,13 +14,11 @@
 - remove legacy and duplications
 - zero copy parsing ?
 - async code insert ?
-- utiliser le format binaire rapide pour les deux backends
+- utiliser le format binaire rapide pour les deux backends -> OK
 - update the examples -> OK
 - ensure the integrations tests work end to end
 - voir sir on peut implementer la macro #row avec un derive plutot -> Non
 - implement client propre au lieu de url only -> OK
 - checker les depdendaces
-- checker les redondances dans le cli
-- still need simd-json ?
-- bug dédoublement
-- pourquoi serde dans l'exemple getting started ?
+- still need json ?
+- gestion du pooling

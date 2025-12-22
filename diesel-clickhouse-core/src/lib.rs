@@ -60,6 +60,7 @@ pub mod prelude {
     pub use super::expression::{Expression, SelectableExpression, ExpressionMethods};
     pub use super::query_source::{Table, Column, QuerySource, JoinDsl, ArrayJoinDsl};
     pub use super::query_dsl::{QueryDsl, ClickHouseQueryDsl, RunQueryDsl};
+    pub use super::query_builder::AliasDsl;
     pub use super::connection::ClickHouseConnection;
     pub use super::deserialize::FromRow;
     pub use super::serialize::ToRow;

@@ -6,7 +6,7 @@
 //! Run with: cargo run --example getting_started
 //! Prerequisites: docker-compose up -d
 
-use diesel_clickhouse::migrations::{EmbeddedMigrations, MigrationHarness, MigrationSource};
+use diesel_clickhouse::migrations::{EmbeddedMigrations, MigrationHarness};
 use diesel_clickhouse::prelude::*;
 use diesel_clickhouse::Connection;
 use diesel_clickhouse::{insert_into, update};
@@ -106,6 +106,10 @@ async fn main() -> anyhow::Result<()> {
     println!("Running migrations...");
     let applied = conn.run_pending_migrations(&MIGRATIONS).await?;
     println!("Applied {} migrations", applied.len());
+
+    // Clean up any existing data from previous runs
+    conn.execute("TRUNCATE TABLE IF EXISTS posts").await?;
+    conn.execute("TRUNCATE TABLE IF EXISTS users").await?;
 
     // INSERT users - idiomatic Diesel style with .execute(&conn)
     let new_users = vec![
@@ -211,23 +215,30 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // JOIN with groupArray - accumulate posts per user
+    // Two ways to handle aggregate column names:
+    //
+    // Option 1: Use .alias() in the query (recommended)
+    //   group_array(posts::title).alias("post_titles")
+    //
+    // Option 2: Use #[serde(rename)] on the struct field
+    //   #[serde(rename = "groupArray(title)")]
+    //   post_titles: Vec<String>
     #[row]
     #[derive(Debug, Clone)]
     struct UserWithPosts {
         id: u64,
         name: String,
-        #[serde(rename = "groupArray(title)")]
-        post_titles: Vec<String>, // Accumulate titles into array
+        post_titles: Vec<String>,              // uses .alias() in query
         #[serde(rename = "count(id)")]
-        post_count: u64,
+        post_count: u64,                       // uses serde rename
     }
 
     let users_with_all_posts: Vec<UserWithPosts> = users::table
         .select((
             users::id,
             users::name,
-            group_array(posts::title), // Accumulate titles into array
-            count(posts::id),          // Count posts
+            group_array(posts::title).alias("post_titles"), // SQL: groupArray(title) AS post_titles
+            count(posts::id),                               // SQL: count(id) - matched by serde rename
         ))
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
         .filter(users::active.eq(true))
