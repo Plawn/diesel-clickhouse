@@ -6,19 +6,18 @@
 //! Run with: cargo run --example getting_started
 //! Prerequisites: docker-compose up -d
 
+use diesel_clickhouse::migrations::{EmbeddedMigrations, MigrationHarness, MigrationSource};
 use diesel_clickhouse::prelude::*;
 use diesel_clickhouse::Connection;
-use diesel_clickhouse::{update, insert_into};
-use diesel_clickhouse::migrations::{EmbeddedMigrations, MigrationHarness, MigrationSource};
+use diesel_clickhouse::{insert_into, update};
 use include_dir::include_dir;
 
 // =============================================================================
 // Embed migrations from the migrations folder at compile time
 // =============================================================================
 
-static MIGRATIONS: EmbeddedMigrations = EmbeddedMigrations::new(
-    include_dir!("$CARGO_MANIFEST_DIR/examples/migrations")
-);
+static MIGRATIONS: EmbeddedMigrations =
+    EmbeddedMigrations::new(include_dir!("$CARGO_MANIFEST_DIR/examples/migrations"));
 
 // =============================================================================
 // 1. Define your table schemas
@@ -61,7 +60,6 @@ pub struct NewUser {
     pub active: bool,
 }
 
-
 /// For inserting new posts
 #[row]
 #[derive(Debug, Clone, diesel_clickhouse::Insertable)]
@@ -83,7 +81,7 @@ pub struct User {
     pub age: u8,
     pub active: bool,
     // Note: For DateTime, you might need to use u32 or String depending on format
-    pub created_at: u32,  // Unix timestamp
+    pub created_at: u32, // Unix timestamp
 }
 
 // =============================================================================
@@ -92,29 +90,46 @@ pub struct User {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let url = std::env::var("CLICKHOUSE_URL")
-        .unwrap_or_else(|_| "http://default:default@localhost:8123/test_db".to_string());
+    // let url = std::env::var("CLICKHOUSE_URL")
+    //     .unwrap_or_else(|_| "http://default:default@localhost:8123/test_db".to_string());
 
-    let conn = match Connection::establish(&url).await {
-        Ok(conn) => conn,
-        Err(e) => {
-            eprintln!("Connection failed: {} (run: docker-compose up -d)\n", e);
-            return Ok(demo_mode());
-        }
-    };
+    let mut conn = Connection::http()
+        .host("localhost")
+        .user("default")
+        .password("default")
+        .database("test_db")
+        .port(8123)
+        .build()
+        .await?;
 
-    // Run migrations - access underlying HTTP connection for migrations
+    // Run migrations
     println!("Running migrations...");
-    if let Some(mut http_conn) = conn.as_http().cloned() {
-        let applied = http_conn.run_pending_migrations(&MIGRATIONS).await?;
-        println!("Applied {} migrations", applied.len());
-    }
+    let applied = conn.run_pending_migrations(&MIGRATIONS).await?;
+    println!("Applied {} migrations", applied.len());
 
     // INSERT users - idiomatic Diesel style with .execute(&conn)
     let new_users = vec![
-        NewUser { id: 1, name: "Alice".into(), email: "alice@example.com".into(), age: 30, active: true },
-        NewUser { id: 2, name: "Bob".into(), email: "bob@example.com".into(), age: 25, active: true },
-        NewUser { id: 3, name: "Charlie".into(), email: "charlie@example.com".into(), age: 35, active: false },
+        NewUser {
+            id: 1,
+            name: "Alice".into(),
+            email: "alice@example.com".into(),
+            age: 30,
+            active: true,
+        },
+        NewUser {
+            id: 2,
+            name: "Bob".into(),
+            email: "bob@example.com".into(),
+            age: 25,
+            active: true,
+        },
+        NewUser {
+            id: 3,
+            name: "Charlie".into(),
+            email: "charlie@example.com".into(),
+            age: 35,
+            active: false,
+        },
     ];
     insert_into(users::table)
         .values(new_users.as_slice())
@@ -124,9 +139,24 @@ async fn main() -> anyhow::Result<()> {
 
     // INSERT posts
     let new_posts = vec![
-        NewPost { id: 1, user_id: 1, title: "Hello World".into(), content: "My first post".into() },
-        NewPost { id: 2, user_id: 1, title: "Rust is great".into(), content: "I love Rust".into() },
-        NewPost { id: 3, user_id: 2, title: "ClickHouse tips".into(), content: "Fast analytics".into() },
+        NewPost {
+            id: 1,
+            user_id: 1,
+            title: "Hello World".into(),
+            content: "My first post".into(),
+        },
+        NewPost {
+            id: 2,
+            user_id: 1,
+            title: "Rust is great".into(),
+            content: "I love Rust".into(),
+        },
+        NewPost {
+            id: 3,
+            user_id: 2,
+            title: "ClickHouse tips".into(),
+            content: "Fast analytics".into(),
+        },
     ];
     insert_into(posts::table)
         .values(new_posts.as_slice())
@@ -142,7 +172,10 @@ async fn main() -> anyhow::Result<()> {
         .limit(10)
         .load(&conn)
         .await?;
-    println!("Active users over 25: {:?}", active_users.iter().map(|u| &u.name).collect::<Vec<_>>());
+    println!(
+        "Active users over 25: {:?}",
+        active_users.iter().map(|u| &u.name).collect::<Vec<_>>()
+    );
 
     // SELECT first - using .first(&conn)
     let alice: User = users::table
@@ -184,7 +217,7 @@ async fn main() -> anyhow::Result<()> {
         id: u64,
         name: String,
         #[serde(rename = "groupArray(title)")]
-        post_titles: Vec<String>,  // Accumulate titles into array
+        post_titles: Vec<String>, // Accumulate titles into array
         #[serde(rename = "count(id)")]
         post_count: u64,
     }
@@ -193,8 +226,8 @@ async fn main() -> anyhow::Result<()> {
         .select((
             users::id,
             users::name,
-            group_array(posts::title),  // Accumulate titles into array
-            count(posts::id),           // Count posts
+            group_array(posts::title), // Accumulate titles into array
+            count(posts::id),          // Count posts
         ))
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
         .filter(users::active.eq(true))
@@ -237,7 +270,12 @@ fn demo_mode() {
         .and_filter(users::age.gt(25))
         .order_by(users::age.desc())
         .limit(10);
-    println!("SELECT:\n  {}\n", select.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
+    println!(
+        "SELECT:\n  {}\n",
+        select
+            .to_sql_string()
+            .unwrap_or_else(|e| format!("Error: {}", e))
+    );
 
     // INSERT - single row
     let new_user = NewUser {
@@ -248,21 +286,47 @@ fn demo_mode() {
         active: true,
     };
     let insert_one = insert_into(users::table).values(&new_user);
-    println!("INSERT (single):\n  {}\n", insert_one.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
+    println!(
+        "INSERT (single):\n  {}\n",
+        insert_one
+            .to_sql_string()
+            .unwrap_or_else(|e| format!("Error: {}", e))
+    );
 
     // INSERT - multiple rows
     let new_users = vec![
-        NewUser { id: 2, name: "Bob".into(), email: "bob@example.com".into(), age: 25, active: true },
-        NewUser { id: 3, name: "Charlie".into(), email: "charlie@example.com".into(), age: 35, active: false },
+        NewUser {
+            id: 2,
+            name: "Bob".into(),
+            email: "bob@example.com".into(),
+            age: 25,
+            active: true,
+        },
+        NewUser {
+            id: 3,
+            name: "Charlie".into(),
+            email: "charlie@example.com".into(),
+            age: 35,
+            active: false,
+        },
     ];
     let insert_batch = insert_into(users::table).values(new_users.as_slice());
-    println!("INSERT (batch):\n  {}\n", insert_batch.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
+    println!(
+        "INSERT (batch):\n  {}\n",
+        insert_batch
+            .to_sql_string()
+            .unwrap_or_else(|e| format!("Error: {}", e))
+    );
 
     // UPDATE
     let upd = update(users::table)
         .filter(users::id.eq(1u64))
         .set(users::name.eq("New Name"));
-    println!("UPDATE:\n  {}\n", upd.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
+    println!(
+        "UPDATE:\n  {}\n",
+        upd.to_sql_string()
+            .unwrap_or_else(|e| format!("Error: {}", e))
+    );
 
     // JOIN
     let join_query = users::table
@@ -270,9 +334,26 @@ fn demo_mode() {
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
         .filter(users::active.eq(true))
         .limit(10);
-    println!("INNER JOIN:\n  {}\n", join_query.to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
+    println!(
+        "INNER JOIN:\n  {}\n",
+        join_query
+            .to_sql_string()
+            .unwrap_or_else(|e| format!("Error: {}", e))
+    );
 
     // ClickHouse-specific
-    println!("FINAL:\n  {}\n", users::table.final_().to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
-    println!("SAMPLE:\n  {}", users::table.sample(0.1).to_sql_string().unwrap_or_else(|e| format!("Error: {}", e)));
+    println!(
+        "FINAL:\n  {}\n",
+        users::table
+            .final_()
+            .to_sql_string()
+            .unwrap_or_else(|e| format!("Error: {}", e))
+    );
+    println!(
+        "SAMPLE:\n  {}",
+        users::table
+            .sample(0.1)
+            .to_sql_string()
+            .unwrap_or_else(|e| format!("Error: {}", e))
+    );
 }

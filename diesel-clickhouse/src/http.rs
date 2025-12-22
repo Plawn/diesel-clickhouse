@@ -87,6 +87,157 @@ pub enum Compression {
     Lz4,
 }
 
+// =============================================================================
+// Client Builder
+// =============================================================================
+
+/// Builder for configuring a ClickHouse HTTP connection.
+///
+/// All connection parameters (host, port, database, user, password) are required.
+/// Optional settings include compression and ClickHouse query options.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::http::HttpClientBuilder;
+/// use diesel_clickhouse::http::Compression;
+///
+/// let conn = HttpClientBuilder::new()
+///     .host("localhost")
+///     .port(8123)
+///     .database("analytics")
+///     .user("default")
+///     .password("")
+///     .compression(Compression::Lz4)
+///     .option("max_execution_time", "60")
+///     .build()
+///     .await?;
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct HttpClientBuilder {
+    host: Option<String>,
+    port: Option<u16>,
+    https: bool,
+    database: Option<String>,
+    user: Option<String>,
+    password: Option<String>,
+    compression: Compression,
+    options: Vec<(String, String)>,
+}
+
+impl HttpClientBuilder {
+    /// Create a new HTTP client builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the host (required).
+    pub fn host(mut self, host: impl Into<String>) -> Self {
+        self.host = Some(host.into());
+        self
+    }
+
+    /// Set the port (required).
+    pub fn port(mut self, port: u16) -> Self {
+        self.port = Some(port);
+        self
+    }
+
+    /// Use HTTPS instead of HTTP (optional, default: false).
+    pub fn https(mut self, enabled: bool) -> Self {
+        self.https = enabled;
+        self
+    }
+
+    /// Set the database (required).
+    pub fn database(mut self, database: impl Into<String>) -> Self {
+        self.database = Some(database.into());
+        self
+    }
+
+    /// Set the user (required).
+    pub fn user(mut self, user: impl Into<String>) -> Self {
+        self.user = Some(user.into());
+        self
+    }
+
+    /// Set the password (required).
+    pub fn password(mut self, password: impl Into<String>) -> Self {
+        self.password = Some(password.into());
+        self
+    }
+
+    /// Set compression mode (optional, default: None).
+    pub fn compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    /// Set a ClickHouse query setting (optional).
+    ///
+    /// Common options:
+    /// - `wait_end_of_query` - Wait for query to complete before streaming
+    /// - `max_execution_time` - Maximum query execution time in seconds
+    /// - `max_query_size` - Maximum query size in bytes
+    /// - `max_result_rows` - Maximum number of result rows
+    /// - `max_result_bytes` - Maximum result size in bytes
+    pub fn option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.options.push((key.into(), value.into()));
+        self
+    }
+
+    /// Build and establish the connection.
+    ///
+    /// Returns a unified `Connection` that can be used with all interfaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Required fields (host, port, database, user, password) are not set
+    /// - Connection to the server fails
+    pub async fn build(self) -> QueryResult<crate::Connection> {
+        let host = self.host.ok_or_else(||
+            Error::ConnectionError("host is required".to_string()))?;
+        let port = self.port.ok_or_else(||
+            Error::ConnectionError("port is required".to_string()))?;
+        let database = self.database.ok_or_else(||
+            Error::ConnectionError("database is required".to_string()))?;
+        let user = self.user.ok_or_else(||
+            Error::ConnectionError("user is required".to_string()))?;
+        let password = self.password.ok_or_else(||
+            Error::ConnectionError("password is required".to_string()))?;
+
+        let scheme = if self.https { "https" } else { "http" };
+
+        let url = format!("{}://{}:{}", scheme, host, port);
+        let mut client = Client::default()
+            .with_url(&url)
+            .with_database(&database)
+            .with_user(&user)
+            .with_password(&password);
+
+        if self.compression == Compression::Lz4 {
+            client = client.with_compression(clickhouse::Compression::Lz4);
+        }
+
+        for (key, value) in &self.options {
+            client = client.with_option(key, value);
+        }
+
+        // Test connection
+        client.query("SELECT 1").execute().await
+            .map_err(|e| Error::ConnectionError(e.to_string()))?;
+
+        let http_conn = ClickHouseConnection {
+            client,
+            database,
+            compression: self.compression,
+        };
+
+        Ok(crate::Connection::Http(http_conn))
+    }
+}
+
 /// A connection to ClickHouse via HTTP.
 #[derive(Clone)]
 pub struct ClickHouseConnection {
@@ -1220,57 +1371,6 @@ impl ClickHouseConnection {
             .fetch_optional()
             .await
             .map_err(|e| Error::QueryError(e.to_string()))
-    }
-}
-
-// =============================================================================
-// Migration Support
-// =============================================================================
-
-#[cfg(feature = "migrations")]
-mod migration_impl {
-    use super::*;
-    use diesel_clickhouse_migrations::{MigrationConnection, MigrationError, Result as MigrationResult};
-
-    #[async_trait]
-    impl MigrationConnection for ClickHouseConnection {
-        async fn execute(&mut self, sql: &str) -> MigrationResult<()> {
-            self.execute_raw(sql).await.map_err(|e| MigrationError::SqlError {
-                migration: "".to_string(),
-                message: e.to_string(),
-            })
-        }
-
-        async fn query_exists(&mut self, sql: &str) -> MigrationResult<bool> {
-            let result: Option<u8> = self.client.query(sql).fetch_optional().await
-                .map_err(|e| MigrationError::SqlError {
-                    migration: "".to_string(),
-                    message: e.to_string(),
-                })?;
-            Ok(result.is_some())
-        }
-
-        async fn query_scalar_string(&mut self, sql: &str) -> MigrationResult<Option<String>> {
-            let result: Option<String> = self.client.query(sql).fetch_optional().await
-                .map_err(|e| MigrationError::SqlError {
-                    migration: "".to_string(),
-                    message: e.to_string(),
-                })?;
-            Ok(result)
-        }
-
-        async fn query_versions(&mut self, sql: &str) -> MigrationResult<Vec<String>> {
-            let versions: Vec<String> = self.client.query(sql).fetch_all().await
-                .map_err(|e| MigrationError::SqlError {
-                    migration: "".to_string(),
-                    message: e.to_string(),
-                })?;
-            Ok(versions)
-        }
-
-        fn database_name(&self) -> &str {
-            &self.database
-        }
     }
 }
 

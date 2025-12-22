@@ -59,11 +59,233 @@ use crate::core::query_builder::{AstPass, QueryFragment};
 use crate::core::result::{Error, QueryResult};
 use crate::core::row::ClickHouseRow as ClickHouseRowTrait;
 
+use std::time::Duration;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+
 // Re-export clickhouse-rs types for convenience
 pub use clickhouse_rs::{Block as NativeBlock, row, types};
 
 /// Type alias for the complex block type used by FromNativeBlock
 pub type ComplexBlock = Block<Complex>;
+
+// =============================================================================
+// Compression Mode
+// =============================================================================
+
+/// Compression mode for native protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NativeCompression {
+    /// No compression (default).
+    #[default]
+    None,
+    /// LZ4 compression.
+    Lz4,
+}
+
+// =============================================================================
+// Client Builder
+// =============================================================================
+
+/// Builder for configuring a ClickHouse Native connection.
+///
+/// All connection parameters (host, port, database, user, password) are required.
+/// Optional settings include compression, TLS, timeouts, and pool configuration.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::native::NativeClientBuilder;
+/// use diesel_clickhouse::native::NativeCompression;
+/// use std::time::Duration;
+///
+/// let conn = NativeClientBuilder::new()
+///     .host("localhost")
+///     .port(9000)
+///     .database("analytics")
+///     .user("default")
+///     .password("")
+///     .compression(NativeCompression::Lz4)
+///     .pool_max(20)
+///     .query_timeout(Duration::from_secs(180))
+///     .build()
+///     .await?;
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct NativeClientBuilder {
+    host: Option<String>,
+    port: Option<u16>,
+    database: Option<String>,
+    user: Option<String>,
+    password: Option<String>,
+    compression: NativeCompression,
+    secure: bool,
+    skip_verify: bool,
+    connection_timeout: Option<Duration>,
+    ping_timeout: Option<Duration>,
+    query_timeout: Option<Duration>,
+    pool_min: Option<usize>,
+    pool_max: Option<usize>,
+}
+
+impl NativeClientBuilder {
+    /// Create a new Native client builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the host (required).
+    pub fn host(mut self, host: impl Into<String>) -> Self {
+        self.host = Some(host.into());
+        self
+    }
+
+    /// Set the port (required).
+    pub fn port(mut self, port: u16) -> Self {
+        self.port = Some(port);
+        self
+    }
+
+    /// Set the database (required).
+    pub fn database(mut self, database: impl Into<String>) -> Self {
+        self.database = Some(database.into());
+        self
+    }
+
+    /// Set the user (required).
+    pub fn user(mut self, user: impl Into<String>) -> Self {
+        self.user = Some(user.into());
+        self
+    }
+
+    /// Set the password (required).
+    pub fn password(mut self, password: impl Into<String>) -> Self {
+        self.password = Some(password.into());
+        self
+    }
+
+    /// Set compression mode (optional, default: None).
+    pub fn compression(mut self, compression: NativeCompression) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    /// Enable TLS (optional, default: false).
+    ///
+    /// Requires the `native-tls-native` feature.
+    pub fn secure(mut self, enabled: bool) -> Self {
+        self.secure = enabled;
+        self
+    }
+
+    /// Skip TLS certificate verification (optional, default: false).
+    ///
+    /// Warning: This is insecure and should only be used for testing.
+    pub fn skip_verify(mut self, enabled: bool) -> Self {
+        self.skip_verify = enabled;
+        self
+    }
+
+    /// Set connection timeout (optional).
+    pub fn connection_timeout(mut self, timeout: Duration) -> Self {
+        self.connection_timeout = Some(timeout);
+        self
+    }
+
+    /// Set ping timeout (optional).
+    pub fn ping_timeout(mut self, timeout: Duration) -> Self {
+        self.ping_timeout = Some(timeout);
+        self
+    }
+
+    /// Set query timeout (optional).
+    pub fn query_timeout(mut self, timeout: Duration) -> Self {
+        self.query_timeout = Some(timeout);
+        self
+    }
+
+    /// Set minimum pool size (optional).
+    pub fn pool_min(mut self, min: usize) -> Self {
+        self.pool_min = Some(min);
+        self
+    }
+
+    /// Set maximum pool size (optional).
+    pub fn pool_max(mut self, max: usize) -> Self {
+        self.pool_max = Some(max);
+        self
+    }
+
+    /// Build and establish the connection.
+    ///
+    /// Returns a unified `Connection` that can be used with all interfaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Required fields (host, port, database, user, password) are not set
+    /// - Connection to the server fails
+    pub async fn build(self) -> QueryResult<crate::Connection> {
+        let host = self.host.ok_or_else(||
+            Error::ConnectionError("host is required".to_string()))?;
+        let port = self.port.ok_or_else(||
+            Error::ConnectionError("port is required".to_string()))?;
+        let database = self.database.ok_or_else(||
+            Error::ConnectionError("database is required".to_string()))?;
+        let user = self.user.ok_or_else(||
+            Error::ConnectionError("user is required".to_string()))?;
+        let password = self.password.ok_or_else(||
+            Error::ConnectionError("password is required".to_string()))?;
+
+        // URL-encode user, password, and database to handle special characters
+        let encoded_user = utf8_percent_encode(&user, NON_ALPHANUMERIC).to_string();
+        let encoded_password = utf8_percent_encode(&password, NON_ALPHANUMERIC).to_string();
+        let encoded_database = utf8_percent_encode(&database, NON_ALPHANUMERIC).to_string();
+
+        // Build URL with query parameters
+        let mut url = format!(
+            "tcp://{}:{}@{}:{}/{}",
+            encoded_user, encoded_password, host, port, encoded_database
+        );
+        let mut params = Vec::new();
+
+        if self.secure {
+            params.push("secure=true".to_string());
+        }
+        if self.skip_verify {
+            params.push("skip_verify=true".to_string());
+        }
+        if self.compression == NativeCompression::Lz4 {
+            params.push("compression=lz4".to_string());
+        }
+        if let Some(t) = self.connection_timeout {
+            params.push(format!("connection_timeout={}ms", t.as_millis()));
+        }
+        if let Some(t) = self.ping_timeout {
+            params.push(format!("ping_timeout={}ms", t.as_millis()));
+        }
+        if let Some(t) = self.query_timeout {
+            params.push(format!("query_timeout={}s", t.as_secs()));
+        }
+        if let Some(min) = self.pool_min {
+            params.push(format!("pool_min={}", min));
+        }
+        if let Some(max) = self.pool_max {
+            params.push(format!("pool_max={}", max));
+        }
+
+        if !params.is_empty() {
+            url.push('?');
+            url.push_str(&params.join("&"));
+        }
+
+        let native_conn = NativeConnection::establish(&url).await?;
+
+        // Test connection (like HTTP builder does)
+        native_conn.execute_raw("SELECT 1").await?;
+
+        Ok(crate::Connection::Native(native_conn))
+    }
+}
 
 // =============================================================================
 // Direct Block Deserialization (optimized, no JSON intermediate)

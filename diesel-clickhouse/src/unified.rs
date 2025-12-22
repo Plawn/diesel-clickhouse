@@ -109,6 +109,45 @@ pub enum Connection {
 }
 
 impl Connection {
+    /// Create a new HTTP connection builder.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let conn = Connection::http()
+    ///     .host("localhost")
+    ///     .port(8123)
+    ///     .database("mydb")
+    ///     .user("default")
+    ///     .password("")
+    ///     .build()
+    ///     .await?;
+    /// ```
+    #[cfg(feature = "http")]
+    pub fn http() -> crate::http::HttpClientBuilder {
+        crate::http::HttpClientBuilder::new()
+    }
+
+    /// Create a new Native connection builder.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let conn = Connection::native()
+    ///     .host("localhost")
+    ///     .port(9000)
+    ///     .database("mydb")
+    ///     .user("default")
+    ///     .password("")
+    ///     .pool_max(20)
+    ///     .build()
+    ///     .await?;
+    /// ```
+    #[cfg(feature = "native")]
+    pub fn native() -> crate::native::NativeClientBuilder {
+        crate::native::NativeClientBuilder::new()
+    }
+
     /// Establish a connection based on the URL scheme.
     ///
     /// # URL Formats
@@ -1298,5 +1337,116 @@ mod chrono_lite {
         write_padded_u32(&mut result, secs_val, 2);
         result.push('Z');
         result
+    }
+}
+
+// =============================================================================
+// Migration Support
+// =============================================================================
+
+#[cfg(feature = "migrations")]
+mod migration_impl {
+    use super::*;
+    use async_trait::async_trait;
+    use diesel_clickhouse_migrations::{MigrationConnection, MigrationError, Result as MigrationResult};
+
+    #[async_trait]
+    impl MigrationConnection for Connection {
+        async fn execute(&mut self, sql: &str) -> MigrationResult<()> {
+            Connection::execute(self, sql).await.map_err(|e| MigrationError::SqlError {
+                migration: "".to_string(),
+                message: e.to_string(),
+            })
+        }
+
+        async fn query_exists(&mut self, sql: &str) -> MigrationResult<bool> {
+            match self {
+                #[cfg(feature = "http")]
+                Connection::Http(conn) => {
+                    let result: Option<u8> = conn.client().query(sql).fetch_optional().await
+                        .map_err(|e| MigrationError::SqlError {
+                            migration: "".to_string(),
+                            message: e.to_string(),
+                        })?;
+                    Ok(result.is_some())
+                }
+                #[cfg(feature = "native")]
+                Connection::Native(conn) => {
+                    let block = conn.query_raw(sql).await.map_err(|e| MigrationError::SqlError {
+                        migration: "".to_string(),
+                        message: e.to_string(),
+                    })?;
+                    Ok(block.row_count() > 0)
+                }
+            }
+        }
+
+        async fn query_scalar_string(&mut self, sql: &str) -> MigrationResult<Option<String>> {
+            match self {
+                #[cfg(feature = "http")]
+                Connection::Http(conn) => {
+                    let result: Option<String> = conn.client().query(sql).fetch_optional().await
+                        .map_err(|e| MigrationError::SqlError {
+                            migration: "".to_string(),
+                            message: e.to_string(),
+                        })?;
+                    Ok(result)
+                }
+                #[cfg(feature = "native")]
+                Connection::Native(conn) => {
+                    let block = conn.query_raw(sql).await.map_err(|e| MigrationError::SqlError {
+                        migration: "".to_string(),
+                        message: e.to_string(),
+                    })?;
+
+                    if block.row_count() == 0 {
+                        return Ok(None);
+                    }
+
+                    let value: String = block.get(0, 0).map_err(|e| MigrationError::SqlError {
+                        migration: "".to_string(),
+                        message: format!("Failed to get scalar string: {}", e),
+                    })?;
+
+                    Ok(Some(value))
+                }
+            }
+        }
+
+        async fn query_versions(&mut self, sql: &str) -> MigrationResult<Vec<String>> {
+            match self {
+                #[cfg(feature = "http")]
+                Connection::Http(conn) => {
+                    let versions: Vec<String> = conn.client().query(sql).fetch_all().await
+                        .map_err(|e| MigrationError::SqlError {
+                            migration: "".to_string(),
+                            message: e.to_string(),
+                        })?;
+                    Ok(versions)
+                }
+                #[cfg(feature = "native")]
+                Connection::Native(conn) => {
+                    let block = conn.query_raw(sql).await.map_err(|e| MigrationError::SqlError {
+                        migration: "".to_string(),
+                        message: e.to_string(),
+                    })?;
+
+                    let mut versions = Vec::with_capacity(block.row_count());
+                    for row_idx in 0..block.row_count() {
+                        let version: String = block.get(row_idx, 0).map_err(|e| MigrationError::SqlError {
+                            migration: "".to_string(),
+                            message: format!("Failed to get version at row {}: {}", row_idx, e),
+                        })?;
+                        versions.push(version);
+                    }
+
+                    Ok(versions)
+                }
+            }
+        }
+
+        fn database_name(&self) -> &str {
+            self.database()
+        }
     }
 }

@@ -12,7 +12,7 @@ default = ["http", "chrono"]
 
 # Backends
 http = ["dep:clickhouse"]
-native = ["dep:clickhouse-rs"]
+native = ["dep:clickhouse-rs", "dep:percent-encoding"]
 
 # Migrations support
 migrations = ["dep:diesel-clickhouse-migrations"]
@@ -60,6 +60,7 @@ clickhouse = { workspace = true, optional = true, features = ["time"] }
 
 # Optional - Native backend
 clickhouse-rs = { version = "1.1.0-alpha.1", optional = true, default-features = false, features = ["tokio_io"] }
+percent-encoding = { version = "2", optional = true }
 
 # Serialization (for native backend block parsing)
 serde_json = "1"

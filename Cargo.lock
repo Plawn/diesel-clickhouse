@@ -558,6 +558,7 @@ dependencies = [
  "diesel-clickhouse-types",
  "futures",
  "itoa",
+ "percent-encoding",
  "reqwest 0.11.27",
  "serde",
  "serde_json",

@@ -235,6 +235,9 @@ pub mod http;
 #[cfg(feature = "http")]
 pub use http::ClickHouseConnection;
 
+#[cfg(feature = "http")]
+pub use http::{HttpClientBuilder, Compression};
+
 /// Native protocol connection module.
 ///
 /// Uses ClickHouse's native binary protocol (port 9000/9440 for TLS).
@@ -271,6 +274,9 @@ pub mod native;
 
 #[cfg(feature = "native")]
 pub use native::NativeConnection;
+
+#[cfg(feature = "native")]
+pub use native::{NativeClientBuilder, NativeCompression};
 
 /// Unified connection interface.
 ///

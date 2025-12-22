@@ -3,7 +3,7 @@
 //! Run with: cargo run --example migrations_example
 //! Prerequisites: docker-compose up -d
 
-use diesel_clickhouse::http::ClickHouseConnection;
+use diesel_clickhouse::Connection;
 use diesel_clickhouse::migrations::{
     Migration, MigrationHarness, MigrationSource,
     InMemoryMigrations, EmbeddedMigrations,
@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let url = std::env::var("CLICKHOUSE_URL")
         .unwrap_or_else(|_| "http://localhost:8123/test_db".to_string());
 
-    let mut conn = match ClickHouseConnection::new(&url).await {
+    let mut conn = match Connection::establish(&url).await {
         Ok(conn) => conn,
         Err(e) => {
             eprintln!("Connection failed: {} (run: docker-compose up -d)\n", e);
@@ -151,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
     println!("   Reverted {} migrations", reverted.len());
 
     // Drop migrations table
-    conn.execute_raw("DROP TABLE IF EXISTS __diesel_schema_migrations").await?;
+    conn.execute("DROP TABLE IF EXISTS __diesel_schema_migrations").await?;
     println!("   Dropped migrations table");
 
     println!("\nDone!");
