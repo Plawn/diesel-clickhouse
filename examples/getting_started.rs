@@ -107,33 +107,32 @@ pub struct User {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Connect using URL from environment, or default based on enabled features
-
-    // Default connection based on enabled features
+    // Connect using the appropriate backend based on enabled features
     #[cfg(all(feature = "native", not(feature = "http")))]
-    {
-        println!("Connecting via Native backend (default)");
-        let mut conn = Connection::native()
+    let mut conn = {
+        println!("Connecting via Native backend");
+        Connection::native()
             .host("localhost")
             .user("default")
             .password("default")
             .database("test_db")
             .port(9000)
             .build()
-            .await?;
-    }
+            .await?
+    };
+
     #[cfg(feature = "http")]
-    {
-        println!("Connecting via HTTP backend (default)");
-        let mut conn = Connection::http()
+    let mut conn = {
+        println!("Connecting via HTTP backend");
+        Connection::http()
             .host("localhost")
             .user("default")
             .password("default")
             .database("test_db")
             .port(8123)
             .build()
-            .await?;
-    }
+            .await?
+    };
 
     // Clean up any existing data from previous runs
     conn.execute("TRUNCATE TABLE IF EXISTS posts").await?;
@@ -357,31 +356,15 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    #[cfg(feature = "native-arrow")]
+    #[cfg(all(feature = "native", feature = "native-arrow"))]
     {
-        use diesel_clickhouse::native_arrow::NativeArrowConnection;
-        use futures::StreamExt;
-
         println!("\n--- True Zero-Copy Streaming (Native Arrow) ---");
 
-        // Connect via native protocol with Arrow support
-        let native_conn = NativeArrowConnection::establish("localhost:9000", "test_db").await?;
-
         // Re-insert some data for the demo
-        native_conn.execute("INSERT INTO users (id, name, email, age, active) VALUES (20, 'Stream1', 's1@test.com', 25, 1), (21, 'Stream2', 's2@test.com', 35, 1)").await?;
+        conn.execute("INSERT INTO users (id, name, email, age, active) VALUES (20, 'Stream1', 's1@test.com', 25, 1), (21, 'Stream2', 's2@test.com', 35, 1)").await?;
 
-        // Stream RecordBatches as they arrive - true zero-copy streaming!
-        println!("Streaming RecordBatches:");
-        let mut stream = native_conn
-            .stream_arrow("SELECT id, name, age FROM users WHERE id >= 20")
-            .await?;
-        while let Some(batch_result) = stream.next().await {
-            let batch = batch_result?;
-            println!("  Received batch with {} rows", batch.num_rows());
-        }
-
-        // Or use the row-by-row API with zero-copy access
-        let count = native_conn
+        // Use the row-by-row API with zero-copy access
+        let count = conn
             .load_zero_copy("SELECT id, name, email FROM users WHERE id >= 20", |row| {
                 let id = row.get_u64("id")?;
                 let name = row.get_str("name")?; // Zero-copy borrow!

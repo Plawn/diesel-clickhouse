@@ -10,6 +10,59 @@ use diesel_clickhouse::migrations::{
 };
 use include_dir::include_dir;
 
+/// Helper to create a connection from a URL string.
+async fn establish_from_url(url_str: &str) -> anyhow::Result<Connection> {
+    let parsed = url::Url::parse(url_str)?;
+
+    let host = parsed.host_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing host in URL"))?;
+    let port = parsed.port();
+    let database = parsed.path().trim_start_matches('/');
+    let database = if database.is_empty() { "default" } else { database };
+    let user = parsed.username();
+    let password = parsed.password().unwrap_or("");
+
+    if url_str.starts_with("http://") || url_str.starts_with("https://") {
+        let mut builder = Connection::http()
+            .host(host)
+            .database(database);
+
+        if let Some(p) = port {
+            builder = builder.port(p);
+        } else {
+            builder = builder.port(8123);
+        }
+
+        if !user.is_empty() {
+            builder = builder.user(user);
+        }
+        if !password.is_empty() {
+            builder = builder.password(password);
+        }
+
+        Ok(builder.build().await?)
+    } else if url_str.starts_with("tcp://") {
+        let mut builder = Connection::native()
+            .host(host)
+            .database(database)
+            .user(if user.is_empty() { "default" } else { user })
+            .password(password);
+
+        if let Some(p) = port {
+            builder = builder.port(p);
+        } else {
+            builder = builder.port(9000);
+        }
+
+        Ok(builder.build().await?)
+    } else {
+        Err(anyhow::anyhow!(
+            "Unknown URL scheme. Use 'http://' or 'tcp://'. Got: {}",
+            url_str
+        ))
+    }
+}
+
 // =============================================================================
 // Option 1: Embed migrations from files at compile time
 // =============================================================================
@@ -74,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
     let url = std::env::var("CLICKHOUSE_URL")
         .unwrap_or_else(|_| "http://localhost:8123/test_db".to_string());
 
-    let mut conn = match Connection::establish(&url).await {
+    let mut conn = match establish_from_url(&url).await {
         Ok(conn) => conn,
         Err(e) => {
             eprintln!("Connection failed: {} (run: docker-compose up -d)\n", e);
