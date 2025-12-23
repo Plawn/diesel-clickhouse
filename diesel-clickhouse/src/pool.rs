@@ -284,10 +284,16 @@ impl<F: ConnectionFactory> PoolBuilder<F> {
 
         let pool = Pool { inner };
 
-        // Pre-warm the pool with min_idle connections
+        // Pre-warm the pool with min_idle connections (in parallel for faster startup)
         if let Some(min_idle) = config.min_idle {
-            for _ in 0..min_idle {
-                match pool.inner.factory.create().await {
+            let futures: Vec<_> = (0..min_idle)
+                .map(|_| pool.inner.factory.create())
+                .collect();
+
+            let results = futures::future::join_all(futures).await;
+
+            for result in results {
+                match result {
                     Ok(conn) => {
                         // Lock-free push to the queue
                         let _ = pool.inner.connections.push(conn);
