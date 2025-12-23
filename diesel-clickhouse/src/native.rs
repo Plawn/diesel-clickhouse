@@ -308,8 +308,6 @@ impl NativeClientBuilder {
             pool,
             database,
             server_addr,
-            user,
-            password,
         };
 
         Ok(crate::Connection::Native(native_conn))
@@ -898,10 +896,6 @@ pub struct NativeConnection {
     database: String,
     /// Server address (host:port) for Arrow connection
     server_addr: String,
-    /// Username for authentication
-    user: String,
-    /// Password for authentication
-    password: String,
 }
 
 impl NativeConnection {
@@ -910,15 +904,11 @@ impl NativeConnection {
         pool: Pool,
         database: impl Into<String>,
         server_addr: impl Into<String>,
-        user: impl Into<String>,
-        password: impl Into<String>,
     ) -> Self {
         Self {
             pool,
             database: database.into(),
             server_addr: server_addr.into(),
-            user: user.into(),
-            password: password.into(),
         }
     }
 
