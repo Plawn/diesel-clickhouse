@@ -42,7 +42,10 @@ native-tls-native = ["clickhouse-rs?/tls"]
 tracing = ["dep:tracing"]
 
 # Apache Arrow zero-copy columnar format
-arrow = ["dep:arrow", "http"]
+arrow = ["dep:arrow"]
+
+# Native Arrow streaming (true zero-copy with native protocol)
+native-arrow = ["dep:clickhouse-arrow", "arrow"]
 
 [dependencies]
 diesel-clickhouse-core.workspace = true
@@ -68,6 +71,9 @@ smallvec = "1.11"
 
 # Optional - Apache Arrow
 arrow = { workspace = true, optional = true }
+
+# Optional - ClickHouse Arrow (native protocol with streaming)
+clickhouse-arrow = { workspace = true, optional = true }
 
 # Optional - Other
 chrono = { workspace = true, optional = true }

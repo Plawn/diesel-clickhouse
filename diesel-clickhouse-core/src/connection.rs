@@ -75,25 +75,6 @@ use crate::result::QueryResult;
 /// | Streaming | Via inserter | Via blocks |
 #[async_trait::async_trait]
 pub trait ClickHouseConnection: Send + Sync {
-    /// Establish a connection from a URL.
-    ///
-    /// The URL format determines the backend:
-    /// - `http://` or `https://` - HTTP backend
-    /// - `tcp://` - Native backend
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // HTTP connection
-    /// let conn = Connection::establish("http://localhost:8123/default").await?;
-    ///
-    /// // Native connection
-    /// let conn = Connection::establish("tcp://localhost:9000/default").await?;
-    /// ```
-    async fn establish(url: &str) -> QueryResult<Self>
-    where
-        Self: Sized;
-
     /// Execute a raw SQL statement (no results).
     ///
     /// Use this for DDL statements (CREATE, ALTER, DROP) and other non-query operations.

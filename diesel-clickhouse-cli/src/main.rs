@@ -540,109 +540,16 @@ async fn generate_table_schema(conn: &Connection, database: &str, table: &str) -
     Ok(output)
 }
 
-/// Convert ClickHouse type to diesel-clickhouse type
+/// Convert ClickHouse type string to diesel-clickhouse type using the type parser.
 fn clickhouse_type_to_diesel(ch_type: &str) -> String {
-    // Handle Nullable
-    if ch_type.starts_with("Nullable(") && ch_type.ends_with(')') {
-        let inner = &ch_type[9..ch_type.len() - 1];
-        return format!("Nullable<{}>", clickhouse_type_to_diesel(inner));
-    }
+    use diesel_clickhouse::core::type_parser::parse_type;
 
-    // Handle LowCardinality
-    if ch_type.starts_with("LowCardinality(") && ch_type.ends_with(')') {
-        let inner = &ch_type[15..ch_type.len() - 1];
-        return clickhouse_type_to_diesel(inner);
-    }
-
-    // Handle Array
-    if ch_type.starts_with("Array(") && ch_type.ends_with(')') {
-        let inner = &ch_type[6..ch_type.len() - 1];
-        return format!("Array<{}>", clickhouse_type_to_diesel(inner));
-    }
-
-    // Handle DateTime with timezone
-    if ch_type.starts_with("DateTime64(") || ch_type.starts_with("DateTime(") {
-        return "DateTime".to_string();
-    }
-
-    // Handle FixedString
-    if ch_type.starts_with("FixedString(") {
-        return "CHString".to_string();
-    }
-
-    // Handle Decimal
-    if ch_type.starts_with("Decimal(") || ch_type.starts_with("Decimal32(")
-        || ch_type.starts_with("Decimal64(") || ch_type.starts_with("Decimal128(") {
-        return "Decimal".to_string();
-    }
-
-    // Handle Enum
-    if ch_type.starts_with("Enum8(") || ch_type.starts_with("Enum16(") {
-        return "CHString".to_string(); // Enums are typically handled as strings
-    }
-
-    // Handle Map
-    if ch_type.starts_with("Map(") && ch_type.ends_with(')') {
-        // Map(K, V) -> Map<K, V>
-        let inner = &ch_type[4..ch_type.len() - 1];
-        // Split by comma (simple case, doesn't handle nested types with commas)
-        if let Some(comma_pos) = inner.find(", ") {
-            let key_type = &inner[..comma_pos];
-            let val_type = &inner[comma_pos + 2..];
-            return format!(
-                "Map<{}, {}>",
-                clickhouse_type_to_diesel(key_type),
-                clickhouse_type_to_diesel(val_type)
-            );
+    match parse_type(ch_type) {
+        Ok(ty) => ty.diesel_type(),
+        Err(_) => {
+            // Fallback: return the original type as-is
+            eprintln!("  {} Unknown type: {}", "!".yellow(), ch_type);
+            ch_type.to_string()
         }
-        return "Map".to_string();
     }
-
-    // Handle Tuple (simplified)
-    if ch_type.starts_with("Tuple(") {
-        return "Tuple".to_string();
-    }
-
-    // Basic types
-    match ch_type {
-        // Integers
-        "UInt8" => "UInt8",
-        "UInt16" => "UInt16",
-        "UInt32" => "UInt32",
-        "UInt64" => "UInt64",
-        "UInt128" => "UInt128",
-        "UInt256" => "UInt256",
-        "Int8" => "Int8",
-        "Int16" => "Int16",
-        "Int32" => "Int32",
-        "Int64" => "Int64",
-        "Int128" => "Int128",
-        "Int256" => "Int256",
-
-        // Floats
-        "Float32" => "Float32",
-        "Float64" => "Float64",
-
-        // Strings
-        "String" => "CHString",
-
-        // Boolean
-        "Bool" => "Bool",
-
-        // Date/Time
-        "Date" => "Date",
-        "Date32" => "Date32",
-        "DateTime" => "DateTime",
-
-        // UUID
-        "UUID" => "UUID",
-
-        // IPv4/IPv6
-        "IPv4" => "IPv4",
-        "IPv6" => "IPv6",
-
-        // Unknown - return as-is
-        _ => ch_type,
-    }
-    .to_string()
 }

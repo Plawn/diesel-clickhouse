@@ -980,10 +980,6 @@ impl ClickHouseConnection {
 
 #[async_trait]
 impl ClickHouseConnectionTrait for ClickHouseConnection {
-    async fn establish(url: &str) -> QueryResult<Self> {
-        Self::new(url).await
-    }
-
     async fn execute_raw(&self, sql: &str) -> QueryResult<()> {
         ClickHouseConnection::execute_raw(self, sql).await
     }

@@ -283,10 +283,29 @@ impl NativeClientBuilder {
             url.push_str(&params.join("&"));
         }
 
-        let native_conn = NativeConnection::establish(&url).await?;
+        let pool = Pool::new(&url);
 
-        // Test connection (like HTTP builder does)
-        native_conn.execute_raw("SELECT 1").await?;
+        // Test connection
+        let mut client = pool
+            .get_handle()
+            .await
+            .map_err(|e| Error::ConnectionError(format!("Failed to connect: {}", e)))?;
+
+        client
+            .query("SELECT 1")
+            .fetch_all()
+            .await
+            .map_err(|e| Error::ConnectionError(format!("Connection test failed: {}", e)))?;
+
+        let server_addr = format!("{}:{}", host, port);
+
+        let native_conn = NativeConnection {
+            pool,
+            database,
+            server_addr,
+            user,
+            password,
+        };
 
         Ok(crate::Connection::Native(native_conn))
     }
@@ -853,92 +872,60 @@ impl IntoBlockColumn for chrono::NaiveDateTime {
 /// This provides better performance than HTTP by using ClickHouse's
 /// native binary protocol over TCP.
 ///
-/// # Connection URL Format
+/// # Creating a Connection
 ///
-/// ```text
-/// tcp://[user:password@]host[:port]/database[?options]
+/// Use [`NativeClientBuilder`] to create a connection:
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::native::NativeClientBuilder;
+///
+/// let conn = NativeClientBuilder::new()
+///     .host("localhost")
+///     .port(9000)
+///     .database("default")
+///     .user("default")
+///     .password("")
+///     .build()
+///     .await?;
 /// ```
 ///
 /// ## Ports
 ///
 /// - **Port 9000**: Plain TCP (default)
-/// - **Port 9440**: TLS-encrypted TCP (use `?secure=true`)
-///
-/// ## Examples
-///
-/// ```rust,ignore
-/// // Simple connection
-/// let conn = NativeConnection::establish("tcp://localhost/default").await?;
-///
-/// // With authentication and options
-/// let conn = NativeConnection::establish(
-///     "tcp://admin:secret@ch.example.com:9000/analytics?compression=lz4"
-/// ).await?;
-///
-/// // With TLS
-/// let conn = NativeConnection::establish(
-///     "tcp://admin:secret@ch.example.com:9440/analytics?secure=true"
-/// ).await?;
-/// ```
+/// - **Port 9440**: TLS-encrypted TCP (use `.secure(true)`)
 #[derive(Clone)]
 pub struct NativeConnection {
     pool: Pool,
     database: String,
+    /// Server address (host:port) for Arrow connection
+    server_addr: String,
+    /// Username for authentication
+    user: String,
+    /// Password for authentication
+    password: String,
 }
 
 impl NativeConnection {
-    /// Connect to ClickHouse using a connection URL.
-    ///
-    /// # Connection URL Format
-    ///
-    /// ```text
-    /// tcp://[user:password@]host[:port]/database[?options]
-    /// ```
-    ///
-    /// # Options
-    ///
-    /// - `secure=true` - Enable TLS
-    /// - `skip_verify=true` - Skip TLS certificate verification
-    /// - `compression=lz4` - Enable LZ4 compression
-    /// - `connection_timeout=500ms` - Connection timeout
-    /// - `query_timeout=180s` - Query timeout
-    /// - `pool_min=5` - Minimum pool connections
-    /// - `pool_max=10` - Maximum pool connections
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let conn = NativeConnection::establish(
-    ///     "tcp://default:@localhost:9000/default"
-    /// ).await?;
-    /// ```
-    pub async fn establish(url: &str) -> QueryResult<Self> {
-        let pool = Pool::new(url);
-
-        // Extract database from URL
-        let database = extract_database_from_url(url);
-
-        // Test connection
-        let mut client = pool
-            .get_handle()
-            .await
-            .map_err(|e| Error::ConnectionError(format!("Failed to connect: {}", e)))?;
-
-        client
-            .query("SELECT 1")
-            .fetch_all()
-            .await
-            .map_err(|e| Error::ConnectionError(format!("Connection test failed: {}", e)))?;
-
-        Ok(Self { pool, database })
-    }
-
     /// Create a connection from an existing pool.
-    pub fn from_pool(pool: Pool, database: impl Into<String>) -> Self {
+    pub fn from_pool(
+        pool: Pool,
+        database: impl Into<String>,
+        server_addr: impl Into<String>,
+        user: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Self {
         Self {
             pool,
             database: database.into(),
+            server_addr: server_addr.into(),
+            user: user.into(),
+            password: password.into(),
         }
+    }
+
+    /// Get the server address (host:port).
+    pub fn server_addr(&self) -> &str {
+        &self.server_addr
     }
 
     /// Get the underlying pool for direct operations.
@@ -1100,24 +1087,6 @@ impl NativeConnection {
 // =============================================================================
 // Helper Functions
 // =============================================================================
-
-/// Extract database name from connection URL.
-fn extract_database_from_url(url: &str) -> String {
-    // Parse: tcp://user:pass@host:port/database?options
-    if let Some(path_start) = url.find("://") {
-        let rest = &url[path_start + 3..];
-        // Find the path after host:port
-        if let Some(slash_pos) = rest.find('/') {
-            let after_slash = &rest[slash_pos + 1..];
-            // Remove query string
-            let db = after_slash.split('?').next().unwrap_or("default");
-            if !db.is_empty() {
-                return db.to_string();
-            }
-        }
-    }
-    "default".to_string()
-}
 
 /// Build SQL from a QueryFragment.
 ///
@@ -1296,14 +1265,144 @@ impl NativeConnection {
         let mut results = self.load_optimized(query).await?;
         Ok(results.pop())
     }
+
+    // =========================================================================
+    // Zero-Copy Arrow Loading (via native-arrow feature)
+    // =========================================================================
+
+    /// Load rows using zero-copy Arrow streaming with a callback.
+    ///
+    /// This method uses the native Arrow protocol for true zero-copy data access.
+    /// Each row is passed to the callback as an `ArrowRow` containing borrowed
+    /// references into the Arrow buffers.
+    ///
+    /// Requires the `native-arrow` feature.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let count = conn.load_zero_copy(
+    ///     "SELECT id, name, score FROM users",
+    ///     |row| {
+    ///         let id: u64 = row.get_u64("id")?;
+    ///         let name: &str = row.get_str("name")?;  // Zero-copy borrow!
+    ///         let score: f64 = row.get_f64("score")?;
+    ///         println!("{}: {} ({})", id, name, score);
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    #[cfg(feature = "native-arrow")]
+    pub async fn load_zero_copy<F>(&self, sql: &str, callback: F) -> QueryResult<usize>
+    where
+        F: for<'a> FnMut(crate::native_arrow::ArrowRow<'a>) -> QueryResult<()>,
+    {
+        let arrow_conn = crate::native_arrow::NativeArrowConnection::establish(
+            &self.server_addr,
+            &self.database,
+        ).await?;
+        arrow_conn.load_zero_copy(sql, callback).await
+    }
+
+    /// Load rows from a query fragment using zero-copy Arrow streaming.
+    ///
+    /// This is the query fragment version of `load_zero_copy`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let count = conn.load_zero_copy_query(
+    ///     users::table.filter(users::active.eq(true)),
+    ///     |row| {
+    ///         let name = row.get_str("name")?;
+    ///         println!("User: {}", name);
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    #[cfg(feature = "native-arrow")]
+    pub async fn load_zero_copy_query<Q, F>(&self, query: Q, callback: F) -> QueryResult<usize>
+    where
+        Q: QueryFragment<ClickHouse>,
+        F: for<'a> FnMut(crate::native_arrow::ArrowRow<'a>) -> QueryResult<()>,
+    {
+        let sql = build_sql_interpolated(&query)?;
+        self.load_zero_copy(&sql, callback).await
+    }
+
+    /// Stream Arrow RecordBatches from a query.
+    ///
+    /// This returns a stream of Arrow RecordBatches for processing large
+    /// result sets with minimal memory usage.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use futures::StreamExt;
+    ///
+    /// let mut stream = conn.stream_arrow("SELECT * FROM events LIMIT 1000000").await?;
+    /// while let Some(batch) = stream.next().await {
+    ///     let batch = batch?;
+    ///     println!("Received {} rows", batch.num_rows());
+    /// }
+    /// ```
+    #[cfg(feature = "native-arrow")]
+    pub async fn stream_arrow(&self, sql: &str) -> QueryResult<crate::native_arrow::NativeArrowStream> {
+        let arrow_conn = crate::native_arrow::NativeArrowConnection::establish(
+            &self.server_addr,
+            &self.database,
+        ).await?;
+        arrow_conn.stream_arrow(sql).await
+    }
+
+    /// Stream Arrow RecordBatches from a query fragment.
+    ///
+    /// This is the query fragment version of `stream_arrow`.
+    #[cfg(feature = "native-arrow")]
+    pub async fn stream_arrow_query<Q>(&self, query: Q) -> QueryResult<crate::native_arrow::NativeArrowStream>
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        let sql = build_sql_interpolated(&query)?;
+        self.stream_arrow(&sql).await
+    }
+
+    /// Load all results as Arrow RecordBatches.
+    ///
+    /// This collects all batches into memory. For large result sets,
+    /// prefer `stream_arrow()` for streaming.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let result = conn.load_arrow("SELECT * FROM small_table").await?;
+    /// println!("Total rows: {}", result.num_rows());
+    /// for batch in result.batches() {
+    ///     // Process batch...
+    /// }
+    /// ```
+    #[cfg(feature = "native-arrow")]
+    pub async fn load_arrow(&self, sql: &str) -> QueryResult<crate::native_arrow::NativeArrowResult> {
+        let arrow_conn = crate::native_arrow::NativeArrowConnection::establish(
+            &self.server_addr,
+            &self.database,
+        ).await?;
+        arrow_conn.load_arrow(sql).await
+    }
+
+    /// Load Arrow RecordBatches from a query fragment.
+    #[cfg(feature = "native-arrow")]
+    pub async fn load_arrow_query<Q>(&self, query: Q) -> QueryResult<crate::native_arrow::NativeArrowResult>
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        let sql = build_sql_interpolated(&query)?;
+        self.load_arrow(&sql).await
+    }
 }
 
 #[async_trait]
 impl ClickHouseConnectionTrait for NativeConnection {
-    async fn establish(url: &str) -> QueryResult<Self> {
-        Self::establish(url).await
-    }
-
     async fn execute_raw(&self, sql: &str) -> QueryResult<()> {
         NativeConnection::execute_raw(self, sql).await
     }
@@ -1352,26 +1451,28 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_database() {
-        assert_eq!(
-            extract_database_from_url("tcp://localhost:9000/mydb"),
-            "mydb"
-        );
-        assert_eq!(
-            extract_database_from_url("tcp://user:pass@localhost/analytics"),
-            "analytics"
-        );
-        assert_eq!(
-            extract_database_from_url("tcp://localhost:9000/test?secure=true"),
-            "test"
-        );
-        assert_eq!(
-            extract_database_from_url("tcp://localhost:9000/"),
-            "default"
-        );
-        assert_eq!(
-            extract_database_from_url("tcp://localhost"),
-            "default"
-        );
+    fn test_parse_connection_url() {
+        let info = parse_connection_url("tcp://localhost:9000/mydb").unwrap();
+        assert_eq!(info.database, "mydb");
+        assert_eq!(info.host, "localhost");
+        assert_eq!(info.port, 9000);
+
+        let info = parse_connection_url("tcp://user:pass@localhost/analytics").unwrap();
+        assert_eq!(info.database, "analytics");
+        assert_eq!(info.host, "localhost");
+        assert_eq!(info.port, 9000);
+
+        let info = parse_connection_url("tcp://localhost:9000/test?secure=true").unwrap();
+        assert_eq!(info.database, "test");
+
+        let info = parse_connection_url("tcp://localhost:9000/").unwrap();
+        assert_eq!(info.database, "default");
+
+        let info = parse_connection_url("tcp://localhost").unwrap();
+        assert_eq!(info.database, "default");
+        assert_eq!(info.server_addr(), "localhost:9000");
+
+        // Invalid URL should error
+        assert!(parse_connection_url("not a url").is_err());
     }
 }

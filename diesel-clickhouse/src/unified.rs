@@ -876,22 +876,27 @@ impl Connection {
     /// # Backend Support
     ///
     /// - **HTTP + Arrow**: Full support with true zero-copy
-    /// - **Native**: Not supported (returns error). Use `load()` instead.
+    /// - **Native + native-arrow**: Full support with true zero-copy streaming
     #[cfg(feature = "arrow")]
     pub async fn load_zero_copy<F>(&self, sql: &str, callback: F) -> QueryResult<usize>
     where
         F: for<'a> FnMut(crate::arrow::ArrowRow<'a>) -> QueryResult<()>,
     {
         match self {
+            #[cfg(feature = "http")]
             Connection::Http(conn) => conn.load_zero_copy(sql, callback).await,
-            #[cfg(feature = "native")]
+            #[cfg(all(feature = "native", feature = "native-arrow"))]
+            Connection::Native(conn) => conn.load_zero_copy(sql, callback).await,
+            #[cfg(all(feature = "native", not(feature = "native-arrow")))]
             Connection::Native(_) => Err(Error::QueryError(
-                "Zero-copy parsing is only supported on HTTP backend with Arrow. Use load() instead.".to_string()
+                "Zero-copy parsing requires 'native-arrow' feature for Native backend.".to_string()
             )),
         }
     }
 
-    /// Load rows from a query fragment using zero-copy parsing (HTTP backend + Arrow feature).
+    /// Load rows from a query fragment using zero-copy parsing.
+    ///
+    /// Works with both HTTP and Native backends when appropriate features are enabled.
     ///
     /// # Example
     ///
@@ -911,10 +916,13 @@ impl Connection {
         F: for<'a> FnMut(crate::arrow::ArrowRow<'a>) -> QueryResult<()>,
     {
         match self {
+            #[cfg(feature = "http")]
             Connection::Http(conn) => conn.load_zero_copy_query(query, callback).await,
-            #[cfg(feature = "native")]
+            #[cfg(all(feature = "native", feature = "native-arrow"))]
+            Connection::Native(conn) => conn.load_zero_copy_query(query, callback).await,
+            #[cfg(all(feature = "native", not(feature = "native-arrow")))]
             Connection::Native(_) => Err(Error::QueryError(
-                "Zero-copy parsing is only supported on HTTP backend with Arrow.".to_string()
+                "Zero-copy parsing requires 'native-arrow' feature for Native backend.".to_string()
             )),
         }
     }
@@ -1007,11 +1015,98 @@ impl Connection {
         Q: QueryFragment<ClickHouse>,
     {
         match self {
+            #[cfg(feature = "http")]
             Connection::Http(conn) => conn.load_arrow_query(query).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "Arrow format is only supported on HTTP backend.".to_string()
+                "Arrow format is only supported on HTTP backend. Use stream_arrow_native() for native backend.".to_string()
             )),
+        }
+    }
+
+    // =========================================================================
+    // Native Arrow Streaming API (native-arrow feature)
+    // =========================================================================
+
+    /// Stream Arrow RecordBatches from a SQL query (Native backend with native-arrow).
+    ///
+    /// This method provides true zero-copy streaming of Arrow RecordBatches
+    /// directly from ClickHouse's native protocol.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use futures::StreamExt;
+    ///
+    /// let mut stream = conn.stream_arrow_native("SELECT * FROM events LIMIT 1000000").await?;
+    /// while let Some(batch) = stream.next().await {
+    ///     let batch = batch?;
+    ///     println!("Received {} rows", batch.num_rows());
+    /// }
+    /// ```
+    #[cfg(all(feature = "native", feature = "native-arrow"))]
+    pub async fn stream_arrow_native(&self, sql: &str) -> QueryResult<crate::native_arrow::NativeArrowStream> {
+        match self {
+            #[cfg(feature = "http")]
+            Connection::Http(_) => Err(Error::QueryError(
+                "stream_arrow_native() is only available for Native backend. Use load_arrow() for HTTP.".to_string()
+            )),
+            Connection::Native(conn) => conn.stream_arrow(sql).await,
+        }
+    }
+
+    /// Stream Arrow RecordBatches from a query fragment (Native backend with native-arrow).
+    #[cfg(all(feature = "native", feature = "native-arrow"))]
+    pub async fn stream_arrow_native_query<Q>(&self, query: Q) -> QueryResult<crate::native_arrow::NativeArrowStream>
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        match self {
+            #[cfg(feature = "http")]
+            Connection::Http(_) => Err(Error::QueryError(
+                "stream_arrow_native_query() is only available for Native backend.".to_string()
+            )),
+            Connection::Native(conn) => conn.stream_arrow_query(query).await,
+        }
+    }
+
+    /// Load all Arrow RecordBatches from a SQL query (Native backend with native-arrow).
+    ///
+    /// This collects all batches into memory. For large result sets,
+    /// prefer `stream_arrow_native()` for streaming.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let result = conn.load_arrow_native("SELECT * FROM small_table").await?;
+    /// println!("Total rows: {}", result.num_rows());
+    /// for batch in result.batches() {
+    ///     // Process batch...
+    /// }
+    /// ```
+    #[cfg(all(feature = "native", feature = "native-arrow"))]
+    pub async fn load_arrow_native(&self, sql: &str) -> QueryResult<crate::native_arrow::NativeArrowResult> {
+        match self {
+            #[cfg(feature = "http")]
+            Connection::Http(_) => Err(Error::QueryError(
+                "load_arrow_native() is only available for Native backend. Use load_arrow() for HTTP.".to_string()
+            )),
+            Connection::Native(conn) => conn.load_arrow(sql).await,
+        }
+    }
+
+    /// Load Arrow RecordBatches from a query fragment (Native backend with native-arrow).
+    #[cfg(all(feature = "native", feature = "native-arrow"))]
+    pub async fn load_arrow_native_query<Q>(&self, query: Q) -> QueryResult<crate::native_arrow::NativeArrowResult>
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        match self {
+            #[cfg(feature = "http")]
+            Connection::Http(_) => Err(Error::QueryError(
+                "load_arrow_native_query() is only available for Native backend.".to_string()
+            )),
+            Connection::Native(conn) => conn.load_arrow_query(query).await,
         }
     }
 }

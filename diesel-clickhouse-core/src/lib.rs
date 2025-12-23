@@ -37,6 +37,9 @@ pub mod arena;
 /// String interning for column names.
 pub mod interner;
 
+/// ClickHouse type string parser (for schema introspection).
+pub mod type_parser;
+
 // Re-export types crate
 pub use diesel_clickhouse_types as types;
 
@@ -52,6 +55,7 @@ pub use connection::ClickHouseConnection;
 pub use deserialize::FromRow;
 pub use serialize::ToRow;
 pub use row::{ClickHouseRow, InsertableRow, QueryableRow};
+pub use type_parser::{parse_type, ClickHouseSqlType, ColumnInfo, TableInfo};
 
 /// Prelude for common imports.
 pub mod prelude {

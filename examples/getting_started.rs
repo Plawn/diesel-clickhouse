@@ -10,6 +10,12 @@
 //!   # Native backend
 //!   cargo run --example getting_started --features native
 //!
+//!   # With Arrow zero-copy (HTTP)
+//!   cargo run --example getting_started --features "http,arrow"
+//!
+//!   # With true zero-copy streaming (Native Arrow)
+//!   cargo run --example getting_started --features "native-arrow"
+//!
 //!   # With URL (auto-detects backend from scheme)
 //!   CLICKHOUSE_URL=http://default:default@localhost:8123/test_db cargo run --example getting_started --features http
 //!   CLICKHOUSE_URL=tcp://default:default@localhost:9000/test_db cargo run --example getting_started --features native
@@ -279,6 +285,82 @@ async fn main() -> anyhow::Result<()> {
         .set(users::name.eq("Alice Updated"))
         .execute(&conn)
         .await?;
+
+    // =========================================================================
+    // Zero-Copy Processing (Arrow-based)
+    // =========================================================================
+    //
+    // For large datasets, zero-copy parsing avoids allocating strings/vectors
+    // for each row. Instead, you get borrowed references directly into Arrow buffers.
+
+    #[cfg(feature = "arrow")]
+    {
+        println!("\n--- Zero-Copy with Arrow (HTTP backend) ---");
+
+        // Re-insert some data for the demo
+        insert_into(users::table)
+            .values(vec![
+                NewUser { id: 10, name: "ZeroCopy1".into(), email: "zc1@test.com".into(), age: 20, active: true },
+                NewUser { id: 11, name: "ZeroCopy2".into(), email: "zc2@test.com".into(), age: 30, active: true },
+                NewUser { id: 12, name: "ZeroCopy3".into(), email: "zc3@test.com".into(), age: 40, active: false },
+            ].as_slice())
+            .execute(&conn)
+            .await?;
+
+        // Process rows with zero-copy - no String allocations per row!
+        let count = conn.load_zero_copy(
+            "SELECT id, name, email, age FROM users WHERE id >= 10",
+            |row| {
+                // These are borrowed references into the Arrow buffer - zero allocations!
+                let id = row.get_u64("id")?;
+                let name = row.get_str("name")?;      // &str, not String
+                let email = row.get_str("email")?;    // &str, not String
+                let age = row.get_u8("age")?;
+
+                println!("  [zero-copy] User {}: {} ({}) - age {}", id, name, email, age);
+                Ok(())
+            }
+        ).await?;
+        println!("Processed {} rows with zero-copy", count);
+
+        // You can also use the columnar Arrow API directly for analytics
+        let result = conn.load_arrow("SELECT id, name, age FROM users WHERE id >= 10").await?;
+        println!("Arrow result: {} rows, {} columns", result.num_rows(), result.num_columns());
+    }
+
+    #[cfg(feature = "native-arrow")]
+    {
+        use diesel_clickhouse::native_arrow::NativeArrowConnection;
+        use futures::StreamExt;
+
+        println!("\n--- True Zero-Copy Streaming (Native Arrow) ---");
+
+        // Connect via native protocol with Arrow support
+        let native_conn = NativeArrowConnection::establish("localhost:9000", "test_db").await?;
+
+        // Re-insert some data for the demo
+        native_conn.execute("INSERT INTO users (id, name, email, age, active) VALUES (20, 'Stream1', 's1@test.com', 25, 1), (21, 'Stream2', 's2@test.com', 35, 1)").await?;
+
+        // Stream RecordBatches as they arrive - true zero-copy streaming!
+        println!("Streaming RecordBatches:");
+        let mut stream = native_conn.stream_arrow("SELECT id, name, age FROM users WHERE id >= 20").await?;
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result?;
+            println!("  Received batch with {} rows", batch.num_rows());
+        }
+
+        // Or use the row-by-row API with zero-copy access
+        let count = native_conn.load_zero_copy(
+            "SELECT id, name, email FROM users WHERE id >= 20",
+            |row| {
+                let id = row.get_u64("id")?;
+                let name = row.get_str("name")?;  // Zero-copy borrow!
+                println!("  [native zero-copy] User {}: {}", id, name);
+                Ok(())
+            }
+        ).await?;
+        println!("Processed {} rows via native zero-copy streaming", count);
+    }
 
     // Cleanup
     conn.execute("TRUNCATE TABLE posts").await?;

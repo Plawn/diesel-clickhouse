@@ -67,6 +67,10 @@ pub enum Error {
     #[error("Query timed out after {0:?}")]
     Timeout(std::time::Duration),
 
+    /// Type parsing error (from ClickHouse type string).
+    #[error("Type parse error: {0}")]
+    TypeParseError(String),
+
     /// IO error.
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),

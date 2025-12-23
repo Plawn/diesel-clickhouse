@@ -277,6 +277,39 @@ pub use native::NativeConnection;
 #[cfg(feature = "native")]
 pub use native::{NativeClientBuilder, NativeCompression};
 
+/// Native Arrow backend with true zero-copy streaming.
+///
+/// Uses `clickhouse-arrow` for the native protocol with Arrow support.
+/// This provides genuine zero-copy streaming of RecordBatches.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::native_arrow::NativeArrowConnection;
+/// use futures::StreamExt;
+///
+/// let conn = NativeArrowConnection::establish("localhost:9000", "default").await?;
+///
+/// // Stream RecordBatches with true zero-copy
+/// let mut stream = conn.stream_arrow("SELECT * FROM events").await?;
+/// while let Some(batch) = stream.next().await {
+///     let batch = batch?;
+///     println!("Received {} rows", batch.num_rows());
+/// }
+///
+/// // Or use the row-by-row API
+/// conn.load_zero_copy("SELECT id, name FROM users", |row| {
+///     let id = row.get_u64("id")?;
+///     let name = row.get_str("name")?;  // Zero-copy borrow!
+///     Ok(())
+/// }).await?;
+/// ```
+#[cfg(feature = "native-arrow")]
+pub mod native_arrow;
+
+#[cfg(feature = "native-arrow")]
+pub use native_arrow::{NativeArrowConnection, NativeArrowConnectionBuilder, NativeArrowStream, NativeArrowResult};
+
 /// Unified connection interface.
 ///
 /// Provides a single API that works with both HTTP and Native backends.
