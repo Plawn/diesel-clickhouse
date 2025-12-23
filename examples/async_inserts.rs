@@ -249,7 +249,7 @@ async fn main() -> anyhow::Result<()> {
             println!(
                 "   After event {}: buffered={}, sent={}",
                 i,
-                buffered.buffered_count()?,
+                buffered.buffered_count().await,
                 buffered.insert_count()
             );
         }
@@ -259,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
     buffered.flush_buffer().await?;
     println!(
         "   Final: buffered={}, total sent={}",
-        buffered.buffered_count()?,
+        buffered.buffered_count().await,
         buffered.insert_count()
     );
 

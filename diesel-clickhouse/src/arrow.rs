@@ -477,7 +477,7 @@ pub fn parse_arrow_stream(data: &[u8]) -> QueryResult<ArrowResult> {
         .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to create Arrow reader: {}", e))))?;
 
     let schema = reader.schema();
-    let mut batches = Vec::new();
+    let mut batches = Vec::with_capacity(4);
 
     for batch_result in reader {
         let batch = batch_result

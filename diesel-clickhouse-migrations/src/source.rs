@@ -233,7 +233,7 @@ impl CombinedMigrations {
     /// Create a new combined migrations source.
     pub fn new() -> Self {
         Self {
-            sources: Vec::new(),
+            sources: Vec::with_capacity(4),
         }
     }
 

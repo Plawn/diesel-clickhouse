@@ -22,13 +22,12 @@
 //! inserter.flush().await?;
 //! ```
 
-use std::borrow::Cow;
 use std::marker::PhantomData;
 
 use crate::core::backend::{BindCollector, ClickHouse, GenericQueryBuilder, GenericBindCollector, QueryBuilder};
 use crate::core::query_builder::{AstPass, Insertable};
 use crate::core::query_source::Table;
-use crate::core::result::{Error, QueryResult};
+use crate::core::result::QueryResult;
 use crate::Connection;
 
 /// Configuration for async insert mode.
@@ -304,7 +303,7 @@ impl AsyncInsertExt for Connection {
 /// Combines local batching with server-side async insert for maximum throughput.
 pub struct BufferedAsyncInserter<'a, T: Table, R: Insertable<T> + Clone> {
     inner: AsyncInserter<'a, T, R>,
-    buffer: std::sync::Mutex<Vec<R>>,
+    buffer: tokio::sync::Mutex<Vec<R>>,
     buffer_size: usize,
 }
 
@@ -313,7 +312,7 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     pub fn new(conn: &'a Connection, config: AsyncInsertConfig, buffer_size: usize) -> Self {
         Self {
             inner: AsyncInserter::new(conn, config),
-            buffer: std::sync::Mutex::new(Vec::with_capacity(buffer_size)),
+            buffer: tokio::sync::Mutex::new(Vec::with_capacity(buffer_size)),
             buffer_size,
         }
     }
@@ -321,12 +320,9 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     /// Push a row to the buffer.
     ///
     /// Automatically flushes when the buffer is full.
-    ///
-    /// Returns an error if the internal Mutex is poisoned.
     pub async fn push(&self, row: R) -> QueryResult<()> {
         let should_flush = {
-            let mut buffer = self.buffer.lock()
-                .map_err(|e| Error::QueryError(Cow::Owned(format!("BufferedAsyncInserter Mutex poisoned: {}", e))))?;
+            let mut buffer = self.buffer.lock().await;
             buffer.push(row);
             buffer.len() >= self.buffer_size
         };
@@ -339,12 +335,9 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     }
 
     /// Flush the local buffer to the server.
-    ///
-    /// Returns an error if the internal Mutex is poisoned.
     pub async fn flush_buffer(&self) -> QueryResult<()> {
         let rows: Vec<R> = {
-            let mut buffer = self.buffer.lock()
-                .map_err(|e| Error::QueryError(Cow::Owned(format!("BufferedAsyncInserter Mutex poisoned: {}", e))))?;
+            let mut buffer = self.buffer.lock().await;
             std::mem::take(&mut *buffer)
         };
 
@@ -362,12 +355,9 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     }
 
     /// Get the number of rows currently buffered locally.
-    ///
-    /// Returns an error if the internal Mutex is poisoned.
-    pub fn buffered_count(&self) -> QueryResult<usize> {
-        let buffer = self.buffer.lock()
-            .map_err(|e| Error::QueryError(Cow::Owned(format!("BufferedAsyncInserter Mutex poisoned: {}", e))))?;
-        Ok(buffer.len())
+    pub async fn buffered_count(&self) -> usize {
+        let buffer = self.buffer.lock().await;
+        buffer.len()
     }
 
     /// Get total insert count.

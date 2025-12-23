@@ -149,7 +149,7 @@ pub trait MigrationHarness: MigrationConnection {
             return Ok(Vec::new());
         }
 
-        let mut applied = Vec::new();
+        let mut applied = Vec::with_capacity(pending.len());
         for migration in &pending {
             self.run_migration(migration).await?;
             applied.push(migration.version.clone());
@@ -178,7 +178,7 @@ pub trait MigrationHarness: MigrationConnection {
             .take(count)
             .collect();
 
-        let mut reverted = Vec::new();
+        let mut reverted = Vec::with_capacity(to_revert.len());
         for version in to_revert {
             // Find the migration
             let migration = all_migrations
@@ -220,7 +220,8 @@ pub trait MigrationHarness: MigrationConnection {
         }
 
         // Re-apply them in order
-        let mut reapplied = Vec::new();
+        let to_redo_len = to_redo.len();
+        let mut reapplied = Vec::with_capacity(to_redo_len);
         for version in to_redo.into_iter().rev() {
             let migration = all_migrations
                 .iter()
@@ -243,7 +244,7 @@ pub trait MigrationHarness: MigrationConnection {
         self.setup_migrations_table().await?;
 
         let pending = self.pending_migrations(source).await?;
-        let mut applied = Vec::new();
+        let mut applied = Vec::with_capacity(pending.len());
 
         for migration in pending {
             if &migration.version > target {
@@ -270,7 +271,7 @@ pub trait MigrationHarness: MigrationConnection {
             .filter(|v| v > target)
             .collect();
 
-        let mut reverted = Vec::new();
+        let mut reverted = Vec::with_capacity(to_revert.len());
         for version in to_revert.into_iter().rev() {
             let migration = all_migrations
                 .iter()

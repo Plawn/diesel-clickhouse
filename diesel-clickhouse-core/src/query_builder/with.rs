@@ -380,7 +380,7 @@ pub struct DynamicWithBuilder<Q> {
 impl<Q> DynamicWithBuilder<Q> {
     /// Create a new dynamic builder.
     pub fn new() -> Self {
-        Self { ctes: Vec::new() }
+        Self { ctes: Vec::with_capacity(4) }
     }
 
     /// Add a CTE.

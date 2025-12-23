@@ -32,7 +32,7 @@ struct ColumnDefinition {
 impl Parse for TableDefinition {
     fn parse(input: ParseStream) -> Result<Self> {
         // Parse optional attributes like #[engine = MergeTree]
-        let mut attrs = Vec::new();
+        let mut attrs = Vec::with_capacity(4);
         while input.peek(Token![#]) {
             input.parse::<Token![#]>()?;
             let content;
@@ -62,7 +62,7 @@ impl Parse for TableDefinition {
         // Parse column definitions
         let columns_content;
         braced!(columns_content in input);
-        let mut columns = Vec::new();
+        let mut columns = Vec::with_capacity(16);
 
         while !columns_content.is_empty() {
             let col_name: Ident = columns_content.parse()?;

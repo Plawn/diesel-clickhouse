@@ -256,7 +256,7 @@ impl NativeClientBuilder {
             "tcp://{}:{}@{}:{}/{}",
             encoded_user, encoded_password, host, port, encoded_database
         );
-        let mut params = Vec::new();
+        let mut params = Vec::with_capacity(8);
 
         if self.secure {
             params.push("secure=true".to_string());
