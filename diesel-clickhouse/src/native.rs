@@ -1327,6 +1327,90 @@ impl NativeConnection {
         Ok(())
     }
 
+    /// Stream rows from a query, returning an async iterator.
+    ///
+    /// This method provides true network streaming - a background task reads blocks
+    /// from the server and sends rows through a channel. Memory usage is O(block_size)
+    /// instead of O(total_rows).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut stream = conn.stream::<User, _>(
+    ///     users::table.filter(users::active.eq(true))
+    /// ).await?;
+    ///
+    /// while let Some(user) = stream.next().await? {
+    ///     println!("User: {}", user.name);
+    /// }
+    /// ```
+    pub fn stream<T, Q>(&self, query: Q) -> QueryResult<crate::stream::NativeBlockStream<T>>
+    where
+        T: FromAnyBlock + Send + 'static,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        let sql = build_sql_interpolated(&query)?;
+        Ok(self.stream_raw(&sql))
+    }
+
+    /// Stream rows from raw SQL, returning an async iterator.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut stream = conn.stream_raw::<User>("SELECT id, name FROM users");
+    ///
+    /// while let Some(user) = stream.next().await? {
+    ///     println!("User: {}", user.name);
+    /// }
+    /// ```
+    pub fn stream_raw<T>(&self, sql: &str) -> crate::stream::NativeBlockStream<T>
+    where
+        T: FromAnyBlock + Send + 'static,
+    {
+        // Channel buffer size - balances memory usage vs throughput
+        // Using 1024 rows buffer which is reasonable for most use cases
+        let (tx, rx) = tokio::sync::mpsc::channel(1024);
+        let pool = self.pool.clone();
+        let sql = sql.to_string();
+
+        // Spawn background task to read blocks and send rows
+        tokio::spawn(async move {
+            let client_result = pool.get_handle().await;
+            let mut client = match client_result {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(Err(Error::ConnectionError(Cow::Owned(
+                        format!("Failed to get connection handle: {}", e)
+                    )))).await;
+                    return;
+                }
+            };
+
+            let mut block_stream = client.query(&sql).stream_blocks();
+
+            while let Some(block_result) = block_stream.next().await {
+                match block_result {
+                    Ok(block) => {
+                        for row_idx in 0..block.row_count() {
+                            let item_result = T::from_any_block(&block, row_idx);
+                            if tx.send(item_result).await.is_err() {
+                                // Receiver dropped, stop streaming
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(Error::QueryError(Cow::Owned(e.to_string())))).await;
+                        return;
+                    }
+                }
+            }
+        });
+
+        crate::stream::NativeBlockStream::new(rx)
+    }
+
     /// Load a single row.
     ///
     /// Returns an error if no rows are returned.

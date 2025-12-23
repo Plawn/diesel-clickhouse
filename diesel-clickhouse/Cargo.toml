@@ -66,6 +66,9 @@ percent-encoding = { version = "2", optional = true }
 # Zero-copy parsing
 smallvec = "1.11"
 
+# Lock-free pool
+crossbeam-queue = "0.3"
+
 # Optional - Apache Arrow
 arrow = { workspace = true, optional = true }
 

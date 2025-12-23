@@ -86,6 +86,8 @@
 
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use crossbeam_queue::ArrayQueue;
 use crate::Connection;
 use crate::core::result::{Error, QueryResult};
 
@@ -275,9 +277,9 @@ impl<F: ConnectionFactory> PoolBuilder<F> {
         let inner = Arc::new(PoolInner {
             factory: Box::new(self.factory),
             config: config.clone(),
-            connections: tokio::sync::Mutex::new(Vec::with_capacity(config.max_size)),
+            connections: ArrayQueue::new(config.max_size),
             available: tokio::sync::Semaphore::new(config.max_size),
-            total_created: std::sync::atomic::AtomicUsize::new(0),
+            total_created: AtomicUsize::new(0),
         });
 
         let pool = Pool { inner };
@@ -287,9 +289,9 @@ impl<F: ConnectionFactory> PoolBuilder<F> {
             for _ in 0..min_idle {
                 match pool.inner.factory.create().await {
                     Ok(conn) => {
-                        let mut conns = pool.inner.connections.lock().await;
-                        conns.push(conn);
-                        pool.inner.total_created.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        // Lock-free push to the queue
+                        let _ = pool.inner.connections.push(conn);
+                        pool.inner.total_created.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(e) => {
                         // Log but don't fail - we can create connections on demand
@@ -356,23 +358,19 @@ impl Drop for PooledConnection {
 struct PoolInner {
     factory: Box<dyn ConnectionFactory>,
     config: PoolConfig,
-    connections: tokio::sync::Mutex<Vec<Connection>>,
+    /// Lock-free queue for idle connections.
+    /// Using ArrayQueue instead of Mutex<Vec> for better performance under contention.
+    connections: ArrayQueue<Connection>,
     available: tokio::sync::Semaphore,
-    total_created: std::sync::atomic::AtomicUsize,
+    total_created: AtomicUsize,
 }
 
 impl PoolInner {
     fn return_connection(&self, conn: Connection) {
-        // Try to return to pool using try_lock to avoid blocking
-        // If we can't get the lock, just drop the connection - this is safe
-        // because we still add the permit back
-        if let Ok(mut conns) = self.connections.try_lock() {
-            if conns.len() < self.config.max_size {
-                conns.push(conn);
-            }
-            // Connection is dropped if pool is full
-        }
-        // else: Connection is dropped, which is acceptable
+        // Lock-free push to the queue.
+        // If the queue is full (shouldn't happen with proper semaphore management),
+        // the connection is dropped, which is acceptable.
+        let _ = self.connections.push(conn);
 
         // Always add the permit back so another connection can be created
         self.available.add_permits(1);
@@ -446,26 +444,23 @@ impl Pool {
             self.inner.available.acquire(),
         )
         .await
-        .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Pool connection timeout: {}", e))))?
-        .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Pool closed: {}", e))))?;
+        .map_err(|_| Error::ConnectionError(Cow::Borrowed("Pool connection timeout")))?
+        .map_err(|_| Error::ConnectionError(Cow::Borrowed("Pool closed")))?;
 
         // Forget the permit - we'll add it back when the connection is returned
         permit.forget();
 
-        // Try to get an existing connection
-        {
-            let mut conns = self.inner.connections.lock().await;
-            if let Some(conn) = conns.pop() {
-                return Ok(PooledConnection {
-                    conn: Some(conn),
-                    pool: Arc::clone(&self.inner),
-                });
-            }
+        // Try to get an existing connection (lock-free)
+        if let Some(conn) = self.inner.connections.pop() {
+            return Ok(PooledConnection {
+                conn: Some(conn),
+                pool: Arc::clone(&self.inner),
+            });
         }
 
         // Create a new connection
         let conn = self.inner.factory.create().await?;
-        self.inner.total_created.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.total_created.fetch_add(1, Ordering::Relaxed);
 
         Ok(PooledConnection {
             conn: Some(conn),
@@ -480,21 +475,18 @@ impl Pool {
         let permit = self.inner.available.try_acquire().ok()?;
         permit.forget();
 
-        // Try to get an existing connection
-        {
-            let mut conns = self.inner.connections.lock().await;
-            if let Some(conn) = conns.pop() {
-                return Some(Ok(PooledConnection {
-                    conn: Some(conn),
-                    pool: Arc::clone(&self.inner),
-                }));
-            }
+        // Try to get an existing connection (lock-free)
+        if let Some(conn) = self.inner.connections.pop() {
+            return Some(Ok(PooledConnection {
+                conn: Some(conn),
+                pool: Arc::clone(&self.inner),
+            }));
         }
 
         // Create a new connection
         match self.inner.factory.create().await {
             Ok(conn) => {
-                self.inner.total_created.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.inner.total_created.fetch_add(1, Ordering::Relaxed);
                 Some(Ok(PooledConnection {
                     conn: Some(conn),
                     pool: Arc::clone(&self.inner),
@@ -505,13 +497,15 @@ impl Pool {
     }
 
     /// Get the current number of idle connections.
-    pub async fn idle_count(&self) -> usize {
-        self.inner.connections.lock().await.len()
+    ///
+    /// This is a lock-free operation.
+    pub fn idle_count(&self) -> usize {
+        self.inner.connections.len()
     }
 
     /// Get the total number of connections created.
     pub fn total_created(&self) -> usize {
-        self.inner.total_created.load(std::sync::atomic::Ordering::Relaxed)
+        self.inner.total_created.load(Ordering::Relaxed)
     }
 
     /// Get the pool configuration.

@@ -8,11 +8,11 @@
 //! | Backend | Streaming Type | Memory Usage |
 //! |---------|---------------|--------------|
 //! | HTTP | True streaming | O(1) per row |
-//! | Native | Buffered iteration | O(n) - all rows loaded |
+//! | Native | True streaming (block-based) | O(block_size) per block |
 //!
-//! **Important:** The Native backend (`clickhouse-rs` crate) does not support true
-//! streaming - it loads all results into memory with `fetch_all()`. For large result
-//! sets, prefer the HTTP backend which provides genuine row-by-row streaming.
+//! Both backends now support true streaming. The Native backend uses a background
+//! task that reads blocks and sends rows through a channel, providing memory-efficient
+//! processing for large result sets.
 //!
 //! # Example
 //!
@@ -25,9 +25,7 @@
 //!     name: String,
 //! }
 //!
-//! // Stream results row by row
-//! // HTTP: true streaming (memory efficient)
-//! // Native: buffered iteration (all rows in memory)
+//! // Stream results row by row - true streaming for both backends!
 //! let mut stream = conn.stream::<User, _>(
 //!     users::table.filter(users::active.eq(true))
 //! ).await?;
@@ -40,7 +38,7 @@
 use std::borrow::Cow;
 
 use crate::core::result::QueryResult;
-#[cfg(feature = "http")]
+#[cfg(any(feature = "http", feature = "native"))]
 use crate::core::result::Error;
 
 /// A unified stream of rows from a query.
@@ -50,33 +48,48 @@ use crate::core::result::Error;
 /// - **HTTP backend**: True streaming via `RowCursor`. Rows are fetched incrementally
 ///   from the server, providing O(1) memory usage per row. Ideal for large result sets.
 ///
-/// - **Native backend**: Buffered iteration. Due to limitations in the `clickhouse-rs`
-///   crate (which only provides `fetch_all()`), all rows are loaded into memory first,
-///   then iterated. Memory usage is O(n) where n is the number of rows.
+/// - **Native backend**: True streaming via `NativeBlockStream`. A background task reads
+///   blocks from the server and sends rows through a channel. Memory usage is O(block_size)
+///   where block_size is typically ~65K rows.
 ///
-/// For memory-efficient processing of large result sets, use the HTTP backend.
+/// Both backends now support memory-efficient streaming for large result sets.
 pub enum RowStream<T> {
     /// HTTP backend cursor (true streaming)
     #[cfg(feature = "http")]
     Http(clickhouse::query::RowCursor<T>),
 
-    /// Native backend iterator (block loaded in memory)
+    /// Native backend stream (true block-based streaming via channel)
     #[cfg(feature = "native")]
-    Native(NativeRowIter<T>),
+    Native(NativeBlockStream<T>),
 }
 
-/// Iterator over rows from a Native backend Block.
+/// True streaming iterator over rows from a Native backend.
+///
+/// This struct uses a background task that reads blocks from the server
+/// and sends deserialized rows through a channel. This provides true streaming
+/// with O(block_size) memory usage instead of O(n).
 #[cfg(feature = "native")]
-pub struct NativeRowIter<T> {
-    rows: std::vec::IntoIter<T>,
+pub struct NativeBlockStream<T> {
+    receiver: tokio::sync::mpsc::Receiver<QueryResult<T>>,
 }
 
 #[cfg(feature = "native")]
-impl<T> NativeRowIter<T> {
-    /// Create a new iterator from a vector of rows.
-    pub fn new(rows: Vec<T>) -> Self {
-        Self {
-            rows: rows.into_iter(),
+impl<T> NativeBlockStream<T> {
+    /// Create a new block stream from a channel receiver.
+    pub fn new(receiver: tokio::sync::mpsc::Receiver<QueryResult<T>>) -> Self {
+        Self { receiver }
+    }
+
+    /// Get the next row from the stream.
+    ///
+    /// Returns `Ok(Some(row))` if a row is available,
+    /// `Ok(None)` when the stream is exhausted,
+    /// or `Err(e)` if an error occurs.
+    pub async fn next(&mut self) -> QueryResult<Option<T>> {
+        match self.receiver.recv().await {
+            Some(Ok(row)) => Ok(Some(row)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None), // Stream exhausted
         }
     }
 }
@@ -101,7 +114,7 @@ impl<T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead> RowStream<
                     .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
             }
             #[cfg(feature = "native")]
-            RowStream::Native(iter) => Ok(iter.rows.next()),
+            RowStream::Native(stream) => stream.next().await,
         }
     }
 
@@ -144,7 +157,7 @@ impl<T> RowStream<T> {
     /// Get the next row from the stream.
     pub async fn next(&mut self) -> QueryResult<Option<T>> {
         match self {
-            RowStream::Native(iter) => Ok(iter.rows.next()),
+            RowStream::Native(stream) => stream.next().await,
         }
     }
 
@@ -189,8 +202,8 @@ impl<T> From<clickhouse::query::RowCursor<T>> for RowStream<T> {
 }
 
 #[cfg(feature = "native")]
-impl<T> From<Vec<T>> for RowStream<T> {
-    fn from(rows: Vec<T>) -> Self {
-        RowStream::Native(NativeRowIter::new(rows))
+impl<T> From<NativeBlockStream<T>> for RowStream<T> {
+    fn from(stream: NativeBlockStream<T>) -> Self {
+        RowStream::Native(stream)
     }
 }

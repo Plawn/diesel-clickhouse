@@ -99,14 +99,14 @@
 //! into memory. Both backends support true network streaming:
 //!
 //! - **HTTP**: Row-by-row streaming via cursor - O(1) memory
-//! - **Native**: Block-by-block streaming - O(block_size) memory
+//! - **Native**: Block-by-block streaming via background task - O(block_size) memory
 //!
 //! ### Using `stream()` (returns a RowStream)
 //!
 //! ```rust,ignore
 //! use diesel_clickhouse::prelude::*;
 //!
-//! // Stream results row by row
+//! // Stream results row by row - true streaming for both backends!
 //! let mut stream = conn.stream::<User, _>(
 //!     users::table.filter(users::active.eq(true))
 //! ).await?;
@@ -116,7 +116,7 @@
 //! }
 //! ```
 //!
-//! ### Using `stream_for_each()` (callback-based, recommended for Native)
+//! ### Using `stream_for_each()` (callback-based)
 //!
 //! ```rust,ignore
 //! // Process each row with a callback - true streaming for both backends
@@ -143,11 +143,8 @@
 //! | Method | HTTP Backend | Native Backend | Memory |
 //! |--------|--------------|----------------|--------|
 //! | `load()` | All in memory | All in memory | O(n) |
-//! | `stream()` | True streaming | Buffered* | O(1) / O(n)* |
-//! | `stream_for_each()` | True streaming | True streaming | O(1) / O(block) |
-//!
-//! \* `stream()` on Native loads all rows first then iterates. Use `stream_for_each()`
-//! for true streaming on Native backend.
+//! | `stream()` | True streaming | True streaming | O(1) / O(block_size) |
+//! | `stream_for_each()` | True streaming | True streaming | O(1) / O(block_size) |
 
 use std::borrow::Cow;
 
@@ -575,10 +572,10 @@ impl Connection {
     /// Stream rows from a query.
     ///
     /// Returns a `RowStream` that allows you to process results row by row.
-    /// Works with both HTTP and Native backends.
+    /// Works with both HTTP and Native backends with true streaming.
     ///
-    /// - **HTTP**: True streaming (rows fetched incrementally from server)
-    /// - **Native**: Block-based (all rows loaded, then iterated)
+    /// - **HTTP**: True streaming (rows fetched incrementally from server) - O(1) memory
+    /// - **Native**: True streaming via background task - O(block_size) memory
     ///
     /// # Example
     ///
@@ -618,13 +615,13 @@ impl Connection {
     #[cfg(all(feature = "native", not(feature = "http")))]
     pub async fn stream<T, Q>(&self, query: Q) -> QueryResult<crate::stream::RowStream<T>>
     where
-        T: crate::native::FromNativeBlock + Send,
+        T: crate::native::FromAnyBlock + Send + 'static,
         Q: QueryFragment<ClickHouse> + Send,
     {
         match self {
             Connection::Native(conn) => {
-                let rows: Vec<T> = conn.load(query).await?;
-                Ok(crate::stream::RowStream::from(rows))
+                let stream = conn.stream(query)?;
+                Ok(crate::stream::RowStream::from(stream))
             }
         }
     }
@@ -633,7 +630,7 @@ impl Connection {
     #[cfg(all(feature = "http", feature = "native"))]
     pub async fn stream<T, Q>(&self, query: Q) -> QueryResult<crate::stream::RowStream<T>>
     where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromAnyBlock + Send + 'static,
         Q: QueryFragment<ClickHouse> + Send,
     {
         match self {
@@ -642,8 +639,8 @@ impl Connection {
                 Ok(crate::stream::RowStream::Http(cursor))
             }
             Connection::Native(conn) => {
-                let rows: Vec<T> = conn.load(query).await?;
-                Ok(crate::stream::RowStream::from(rows))
+                let stream = conn.stream(query)?;
+                Ok(crate::stream::RowStream::from(stream))
             }
         }
     }

@@ -762,6 +762,7 @@ dependencies = [
  "chrono-tz",
  "clickhouse",
  "clickhouse-rs",
+ "crossbeam-queue",
  "deadpool",
  "diesel-clickhouse-core",
  "diesel-clickhouse-derive",
