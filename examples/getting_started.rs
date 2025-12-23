@@ -353,8 +353,27 @@ async fn main() -> anyhow::Result<()> {
     // =========================================================================
     println!("\n\n=== Streaming Demo ===\n");
 
+    // Using .stream() - returns an async iterator
+    // This is useful when you need more control over iteration (break, continue, etc.)
+    println!("--- HTTP Backend: stream() ---");
+    let mut stream = http_conn
+        .stream::<User, _>(users::table.filter(users::active.eq(true)))
+        .await?;
+    while let Some(user) = stream.next().await? {
+        println!("  [HTTP stream()] User: {} (age {})", user.name, user.age);
+    }
+
+    println!("\n--- Native Backend: stream() ---");
+    let mut stream = native_conn
+        .stream::<User, _>(users::table.filter(users::active.eq(true)))
+        .await?;
+    while let Some(user) = stream.next().await? {
+        println!("  [Native stream()] User: {} (age {})", user.name, user.age);
+    }
+
+    // Using .stream_for_each() - callback-based streaming
     // HTTP Streaming - true row-by-row streaming, O(1) memory
-    println!("--- HTTP Backend: stream_for_each ---");
+    println!("\n--- HTTP Backend: stream_for_each ---");
     let mut http_count = 0u64;
     http_conn
         .stream_for_each(users::table.filter(users::active.eq(true)), |user: User| {
