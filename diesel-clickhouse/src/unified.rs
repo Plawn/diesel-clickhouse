@@ -535,7 +535,7 @@ impl Connection {
     ///     println!("User: {} - {}", user.id, user.name);
     /// }
     /// ```
-    #[cfg(feature = "http")]
+    #[cfg(all(feature = "http", not(feature = "native")))]
     pub async fn stream<T, Q>(&self, query: Q) -> QueryResult<crate::stream::RowStream<T>>
     where
         T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
@@ -546,46 +546,36 @@ impl Connection {
                 let cursor = conn.stream(query)?;
                 Ok(crate::stream::RowStream::Http(cursor))
             }
-            #[cfg(feature = "native")]
-            Connection::Native(_) => Err(Error::QueryError(
-                Cow::Borrowed("For Native backend, use stream_native() with #[derive(Row)] types.")
-            )),
         }
     }
 
-    /// Stream rows from a query (Native backend).
-    ///
-    /// For Native backend, the row type must implement `FromNativeBlock`.
-    /// Note: Native backend loads all rows first, then iterates.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// #[derive(Debug, Row)]
-    /// struct User {
-    ///     id: u64,
-    ///     name: String,
-    /// }
-    ///
-    /// let mut stream = conn.stream_native::<User, _>(
-    ///     users::table.filter(users::active.eq(true))
-    /// ).await?;
-    ///
-    /// while let Some(user) = stream.next().await? {
-    ///     println!("User: {}", user.name);
-    /// }
-    /// ```
-    #[cfg(feature = "native")]
-    pub async fn stream_native<T, Q>(&self, query: Q) -> QueryResult<crate::stream::RowStream<T>>
+    /// Stream rows from a query.
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    pub async fn stream<T, Q>(&self, query: Q) -> QueryResult<crate::stream::RowStream<T>>
     where
         T: crate::native::FromNativeBlock + Send,
         Q: QueryFragment<ClickHouse> + Send,
     {
         match self {
-            #[cfg(feature = "http")]
-            Connection::Http(_) => Err(Error::QueryError(
-                Cow::Borrowed("stream_native() is only supported on Native backend.")
-            )),
+            Connection::Native(conn) => {
+                let rows: Vec<T> = conn.load(query).await?;
+                Ok(crate::stream::RowStream::from(rows))
+            }
+        }
+    }
+
+    /// Stream rows from a query.
+    #[cfg(all(feature = "http", feature = "native"))]
+    pub async fn stream<T, Q>(&self, query: Q) -> QueryResult<crate::stream::RowStream<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        match self {
+            Connection::Http(conn) => {
+                let cursor = conn.stream(query)?;
+                Ok(crate::stream::RowStream::Http(cursor))
+            }
             Connection::Native(conn) => {
                 let rows: Vec<T> = conn.load(query).await?;
                 Ok(crate::stream::RowStream::from(rows))
