@@ -66,21 +66,72 @@ impl BindableValue {
 
     /// Get the SQL literal representation (for debugging/logging).
     pub fn sql_literal(&self) -> String {
+        let mut buf = String::new();
+        self.write_sql_literal(&mut buf);
+        buf
+    }
+
+    /// Write the SQL literal representation directly to a buffer.
+    ///
+    /// This avoids allocations by writing directly to the output buffer
+    /// instead of creating intermediate strings.
+    #[inline]
+    pub fn write_sql_literal(&self, buf: &mut String) {
         match self {
-            BindableValue::U8(v) => v.to_string(),
-            BindableValue::U16(v) => v.to_string(),
-            BindableValue::U32(v) => v.to_string(),
-            BindableValue::U64(v) => v.to_string(),
-            BindableValue::I8(v) => v.to_string(),
-            BindableValue::I16(v) => v.to_string(),
-            BindableValue::I32(v) => v.to_string(),
-            BindableValue::I64(v) => v.to_string(),
-            BindableValue::F32(v) => v.to_string(),
-            BindableValue::F64(v) => v.to_string(),
-            BindableValue::Bool(v) => if *v { "true" } else { "false" }.to_string(),
+            BindableValue::U8(v) => {
+                let mut tmp = itoa::Buffer::new();
+                buf.push_str(tmp.format(*v));
+            }
+            BindableValue::U16(v) => {
+                let mut tmp = itoa::Buffer::new();
+                buf.push_str(tmp.format(*v));
+            }
+            BindableValue::U32(v) => {
+                let mut tmp = itoa::Buffer::new();
+                buf.push_str(tmp.format(*v));
+            }
+            BindableValue::U64(v) => {
+                let mut tmp = itoa::Buffer::new();
+                buf.push_str(tmp.format(*v));
+            }
+            BindableValue::I8(v) => {
+                let mut tmp = itoa::Buffer::new();
+                buf.push_str(tmp.format(*v));
+            }
+            BindableValue::I16(v) => {
+                let mut tmp = itoa::Buffer::new();
+                buf.push_str(tmp.format(*v));
+            }
+            BindableValue::I32(v) => {
+                let mut tmp = itoa::Buffer::new();
+                buf.push_str(tmp.format(*v));
+            }
+            BindableValue::I64(v) => {
+                let mut tmp = itoa::Buffer::new();
+                buf.push_str(tmp.format(*v));
+            }
+            BindableValue::F32(v) => {
+                let mut tmp = ryu::Buffer::new();
+                buf.push_str(tmp.format(*v));
+            }
+            BindableValue::F64(v) => {
+                let mut tmp = ryu::Buffer::new();
+                buf.push_str(tmp.format(*v));
+            }
+            BindableValue::Bool(v) => {
+                buf.push_str(if *v { "true" } else { "false" });
+            }
             BindableValue::String(v) => {
-                let escaped = v.replace('\'', "''");
-                format!("'{}'", escaped)
+                buf.push('\'');
+                // Escape single quotes by doubling them
+                for ch in v.chars() {
+                    if ch == '\'' {
+                        buf.push_str("''");
+                    } else {
+                        buf.push(ch);
+                    }
+                }
+                buf.push('\'');
             }
         }
     }

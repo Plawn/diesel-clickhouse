@@ -1107,32 +1107,39 @@ pub fn build_sql_interpolated<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &
 }
 
 /// Replace `?` placeholders in SQL with actual bind values.
+///
+/// Optimized to avoid per-binding allocations by writing directly to the output buffer.
 fn interpolate_bindings(sql: &str, bindings: &[BindableValue]) -> QueryResult<String> {
-    let mut result = String::with_capacity(sql.len() + bindings.len() * 10);
-    let mut binding_idx = 0;
+    // Estimate capacity: original SQL + ~12 bytes per binding (average literal size)
+    let mut result = String::with_capacity(sql.len() + bindings.len() * 12);
+    let mut bindings_iter = bindings.iter();
 
-    for ch in sql.chars() {
-        if ch == '?' {
-            if binding_idx >= bindings.len() {
-                return Err(Error::QueryError(Cow::Owned(format!(
-                    "Not enough bind values: expected at least {}, got {}",
-                    binding_idx + 1,
-                    bindings.len()
-                ))));
-            }
-            result.push_str(&bindings[binding_idx].sql_literal());
-            binding_idx += 1;
-        } else {
-            result.push(ch);
-        }
+    // Split by '?' and interleave with binding literals
+    let mut segments = sql.split('?');
+
+    // First segment (before any '?')
+    if let Some(first) = segments.next() {
+        result.push_str(first);
     }
 
-    if binding_idx != bindings.len() {
-        return Err(Error::QueryError(Cow::Owned(format!(
-            "Too many bind values: expected {}, got {}",
-            binding_idx,
-            bindings.len()
-        ))));
+    // Remaining segments - each is preceded by a '?' that needs a binding
+    for segment in segments {
+        match bindings_iter.next() {
+            Some(binding) => binding.write_sql_literal(&mut result),
+            None => {
+                return Err(Error::QueryError(Cow::Borrowed(
+                    "Not enough bind values for query placeholders"
+                )));
+            }
+        }
+        result.push_str(segment);
+    }
+
+    // Check for unused bindings
+    if bindings_iter.next().is_some() {
+        return Err(Error::QueryError(Cow::Borrowed(
+            "Too many bind values for query placeholders"
+        )));
     }
 
     Ok(result)
