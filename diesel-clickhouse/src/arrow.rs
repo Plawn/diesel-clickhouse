@@ -40,10 +40,17 @@
 //! | TSV    | O(n) text parsing | O(n) | Partial |
 //! | JSON   | O(n) tokenization | O(n) | No |
 
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
+use arrow::array::{
+    Array, RecordBatch,
+    Int8Array, Int16Array, Int32Array, Int64Array,
+    UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+    Float32Array, Float64Array, StringArray, BinaryArray,
+    BooleanArray,
+};
 use arrow::ipc::reader::StreamReader;
 
 use crate::core::result::{Error, QueryResult};
@@ -51,6 +58,302 @@ use crate::core::result::{Error, QueryResult};
 /// Re-export arrow types for convenience
 pub use arrow::array;
 pub use arrow::datatypes::{DataType, Field, Schema};
+
+// =============================================================================
+// ArrowRow - Row-by-row access to Arrow data
+// =============================================================================
+
+/// A zero-copy view into a single row of an Arrow RecordBatch.
+///
+/// This type provides a familiar row-oriented API on top of Arrow's columnar
+/// data, enabling migration from TSV-based zero-copy while leveraging Arrow's
+/// performance benefits.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// conn.load_zero_copy("SELECT id, name FROM users", |row| {
+///     let id = row.get_u64("id")?;
+///     let name = row.get_str("name")?;  // Zero-copy borrow
+///     println!("{}: {}", id, name);
+///     Ok(())
+/// }).await?;
+/// ```
+#[derive(Debug)]
+pub struct ArrowRow<'a> {
+    batch: &'a RecordBatch,
+    row_index: usize,
+    column_indices: &'a HashMap<Arc<str>, usize>,
+}
+
+impl<'a> ArrowRow<'a> {
+    /// Create a new ArrowRow view into a batch at the given row index.
+    #[inline]
+    pub fn new(
+        batch: &'a RecordBatch,
+        row_index: usize,
+        column_indices: &'a HashMap<Arc<str>, usize>,
+    ) -> Self {
+        Self {
+            batch,
+            row_index,
+            column_indices,
+        }
+    }
+
+    /// Get the row index within the batch.
+    #[inline]
+    pub fn row_index(&self) -> usize {
+        self.row_index
+    }
+
+    /// Get column index by name.
+    #[inline]
+    fn column_index(&self, name: &str) -> QueryResult<usize> {
+        self.column_indices
+            .get(name)
+            .copied()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' not found", name)))
+    }
+
+    /// Get a string value (zero-copy borrow).
+    #[inline]
+    pub fn get_str(&self, name: &str) -> QueryResult<&'a str> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<StringArray>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not a string", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get an optional string value (zero-copy borrow).
+    #[inline]
+    pub fn get_str_opt(&self, name: &str) -> QueryResult<Option<&'a str>> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<StringArray>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not a string", name)))?;
+
+        if array.is_null(self.row_index) {
+            Ok(None)
+        } else {
+            Ok(Some(array.value(self.row_index)))
+        }
+    }
+
+    /// Get binary data (zero-copy borrow).
+    #[inline]
+    pub fn get_bytes(&self, name: &str) -> QueryResult<&'a [u8]> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<BinaryArray>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not binary", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get a boolean value.
+    #[inline]
+    pub fn get_bool(&self, name: &str) -> QueryResult<bool> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<BooleanArray>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not boolean", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get an i8 value.
+    #[inline]
+    pub fn get_i8(&self, name: &str) -> QueryResult<i8> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<Int8Array>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Int8", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get an i16 value.
+    #[inline]
+    pub fn get_i16(&self, name: &str) -> QueryResult<i16> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<Int16Array>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Int16", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get an i32 value.
+    #[inline]
+    pub fn get_i32(&self, name: &str) -> QueryResult<i32> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<Int32Array>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Int32", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get an i64 value.
+    #[inline]
+    pub fn get_i64(&self, name: &str) -> QueryResult<i64> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<Int64Array>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Int64", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get a u8 value.
+    #[inline]
+    pub fn get_u8(&self, name: &str) -> QueryResult<u8> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<UInt8Array>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not UInt8", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get a u16 value.
+    #[inline]
+    pub fn get_u16(&self, name: &str) -> QueryResult<u16> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<UInt16Array>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not UInt16", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get a u32 value.
+    #[inline]
+    pub fn get_u32(&self, name: &str) -> QueryResult<u32> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<UInt32Array>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not UInt32", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get a u64 value.
+    #[inline]
+    pub fn get_u64(&self, name: &str) -> QueryResult<u64> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<UInt64Array>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not UInt64", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get an f32 value.
+    #[inline]
+    pub fn get_f32(&self, name: &str) -> QueryResult<f32> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<Float32Array>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Float32", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Get an f64 value.
+    #[inline]
+    pub fn get_f64(&self, name: &str) -> QueryResult<f64> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<Float64Array>()
+            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Float64", name)))?;
+
+        if array.is_null(self.row_index) {
+            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+        }
+        Ok(array.value(self.row_index))
+    }
+
+    /// Check if a column is null.
+    #[inline]
+    pub fn is_null(&self, name: &str) -> QueryResult<bool> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        Ok(col.is_null(self.row_index))
+    }
+
+    /// Get the number of columns.
+    #[inline]
+    pub fn num_columns(&self) -> usize {
+        self.batch.num_columns()
+    }
+}
+
+/// Helper to build column name index for ArrowRow.
+pub fn build_column_index(schema: &Schema) -> HashMap<Arc<str>, usize> {
+    schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (Arc::from(f.name().as_str()), i))
+        .collect()
+}
+
+/// Iterate over rows in a RecordBatch, calling a callback for each row.
+pub fn for_each_row<F>(
+    batch: &RecordBatch,
+    column_indices: &HashMap<Arc<str>, usize>,
+    mut callback: F,
+) -> QueryResult<usize>
+where
+    F: FnMut(ArrowRow<'_>) -> QueryResult<()>,
+{
+    let num_rows = batch.num_rows();
+    for row_idx in 0..num_rows {
+        let row = ArrowRow::new(batch, row_idx, column_indices);
+        callback(row)?;
+    }
+    Ok(num_rows)
+}
 
 /// A collection of Arrow RecordBatches from a query result.
 ///

@@ -838,20 +838,18 @@ impl Connection {
     }
 
     // =========================================================================
-    // Zero-Copy API
+    // Zero-Copy Row API (Arrow-backed)
     // =========================================================================
 
-    /// Load rows using zero-copy parsing with a callback (HTTP backend only).
+    /// Load rows using zero-copy parsing with a callback (HTTP backend + Arrow feature).
     ///
-    /// This method uses ClickHouse's TabSeparated format and processes rows
-    /// without allocating owned data structures. Each row is passed to the
-    /// callback as a `ZeroCopyRow` containing borrowed references into the
-    /// response buffer.
+    /// This method uses Apache Arrow format internally for true zero-copy access.
+    /// Each row is passed to the callback as an `ArrowRow` containing borrowed
+    /// references into the Arrow buffers.
     ///
     /// # Arguments
     ///
     /// * `sql` - The SQL query to execute
-    /// * `columns` - Column names in the order they appear in the SELECT clause
     /// * `callback` - Function called for each row
     ///
     /// # Returns
@@ -865,10 +863,9 @@ impl Connection {
     ///
     /// let count = conn.load_zero_copy(
     ///     "SELECT id, name, score FROM users",
-    ///     &["id", "name", "score"],
     ///     |row| {
     ///         let id: u64 = row.get_u64("id")?;
-    ///         let name: &str = row.get_str("name")?;  // Borrowed!
+    ///         let name: &str = row.get_str("name")?;  // Zero-copy borrow!
     ///         let score: f64 = row.get_f64("score")?;
     ///         println!("{}: {} ({})", id, name, score);
     ///         Ok(())
@@ -878,93 +875,46 @@ impl Connection {
     ///
     /// # Backend Support
     ///
-    /// - **HTTP**: Full support with true zero-copy streaming (O(1) memory)
+    /// - **HTTP + Arrow**: Full support with true zero-copy
     /// - **Native**: Not supported (returns error). Use `load()` instead.
-    #[cfg(feature = "http")]
-    pub async fn load_zero_copy<F>(
-        &self,
-        sql: &str,
-        columns: &[&str],
-        callback: F,
-    ) -> QueryResult<usize>
+    #[cfg(feature = "arrow")]
+    pub async fn load_zero_copy<F>(&self, sql: &str, callback: F) -> QueryResult<usize>
     where
-        F: for<'a, 'b> FnMut(crate::zero_copy::ZeroCopyRow<'a, 'b>) -> QueryResult<()>,
+        F: for<'a> FnMut(crate::arrow::ArrowRow<'a>) -> QueryResult<()>,
     {
         match self {
-            Connection::Http(conn) => conn.load_zero_copy(sql, columns, callback).await,
+            Connection::Http(conn) => conn.load_zero_copy(sql, callback).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "Zero-copy parsing is only supported on HTTP backend. Use load() instead.".to_string()
+                "Zero-copy parsing is only supported on HTTP backend with Arrow. Use load() instead.".to_string()
             )),
         }
     }
 
-    /// Load rows using zero-copy streaming parsing with a callback (HTTP backend only).
-    ///
-    /// Processes rows as chunks arrive from the network, providing O(1) memory
-    /// usage regardless of result set size. This is an alias for `load_zero_copy`.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let count = conn.load_zero_copy_streaming(
-    ///     "SELECT * FROM huge_table",
-    ///     &["id", "data"],
-    ///     |row| {
-    ///         // Process each row as it arrives
-    ///         Ok(())
-    ///     }
-    /// ).await?;
-    /// ```
-    #[cfg(feature = "http")]
-    pub async fn load_zero_copy_streaming<F>(
-        &self,
-        sql: &str,
-        columns: &[&str],
-        callback: F,
-    ) -> QueryResult<usize>
-    where
-        F: for<'a, 'b> FnMut(crate::zero_copy::ZeroCopyRow<'a, 'b>) -> QueryResult<()>,
-    {
-        match self {
-            Connection::Http(conn) => conn.load_zero_copy_streaming(sql, columns, callback).await,
-            #[cfg(feature = "native")]
-            Connection::Native(_) => Err(Error::QueryError(
-                "Zero-copy streaming is only supported on HTTP backend.".to_string()
-            )),
-        }
-    }
-
-    /// Load rows from a query fragment using zero-copy parsing (HTTP backend only).
+    /// Load rows from a query fragment using zero-copy parsing (HTTP backend + Arrow feature).
     ///
     /// # Example
     ///
     /// ```rust,ignore
     /// let count = conn.load_zero_copy_query(
     ///     users::table.filter(users::active.eq(true)),
-    ///     &["id", "name"],
     ///     |row| {
     ///         let name = row.get_str("name")?;
     ///         Ok(())
     ///     }
     /// ).await?;
     /// ```
-    #[cfg(feature = "http")]
-    pub async fn load_zero_copy_query<Q, F>(
-        &self,
-        query: Q,
-        columns: &[&str],
-        callback: F,
-    ) -> QueryResult<usize>
+    #[cfg(feature = "arrow")]
+    pub async fn load_zero_copy_query<Q, F>(&self, query: Q, callback: F) -> QueryResult<usize>
     where
         Q: QueryFragment<ClickHouse>,
-        F: for<'a, 'b> FnMut(crate::zero_copy::ZeroCopyRow<'a, 'b>) -> QueryResult<()>,
+        F: for<'a> FnMut(crate::arrow::ArrowRow<'a>) -> QueryResult<()>,
     {
         match self {
-            Connection::Http(conn) => conn.load_zero_copy_query(query, columns, callback).await,
+            Connection::Http(conn) => conn.load_zero_copy_query(query, callback).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "Zero-copy parsing is only supported on HTTP backend.".to_string()
+                "Zero-copy parsing is only supported on HTTP backend with Arrow.".to_string()
             )),
         }
     }

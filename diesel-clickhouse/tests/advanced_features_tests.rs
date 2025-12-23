@@ -1,139 +1,164 @@
 //! Integration tests for advanced features.
 //!
 //! Tests for:
-//! - Zero-copy parsing
+//! - Arrow zero-copy parsing
 //! - Pool
 //! - Arena allocator
 
 // =============================================================================
-// Zero-Copy Parsing Tests
+// Arrow Zero-Copy Row Tests
 // =============================================================================
 
-#[cfg(feature = "http")]
-mod zero_copy_tests {
-    use diesel_clickhouse::zero_copy::{BorrowedValue, TsvParser};
+#[cfg(feature = "arrow")]
+mod arrow_row_tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
-    #[test]
-    fn test_borrowed_value_parse_int() {
-        let val = BorrowedValue::new(b"12345");
-        assert_eq!(val.parse_i64().unwrap(), 12345);
-        assert_eq!(val.parse_u64().unwrap(), 12345);
+    use arrow::array::{Int64Array, Float64Array, StringArray, BooleanArray, RecordBatch};
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use diesel_clickhouse::arrow::{ArrowRow, build_column_index, for_each_row};
+
+    fn create_test_batch() -> (RecordBatch, HashMap<Arc<str>, usize>) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("score", DataType::Float64, false),
+            Field::new("active", DataType::Boolean, false),
+        ]));
+
+        let id_array = Int64Array::from(vec![1, 2, 3]);
+        let name_array = StringArray::from(vec!["alice", "bob", "charlie"]);
+        let score_array = Float64Array::from(vec![100.0, 200.5, 300.25]);
+        let active_array = BooleanArray::from(vec![true, false, true]);
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(id_array),
+                Arc::new(name_array),
+                Arc::new(score_array),
+                Arc::new(active_array),
+            ],
+        )
+        .unwrap();
+
+        let column_indices = build_column_index(&schema);
+        (batch, column_indices)
     }
 
     #[test]
-    fn test_borrowed_value_parse_float() {
-        let val = BorrowedValue::new(b"3.14159");
-        let f = val.parse_f64().unwrap();
-        assert!((f - 3.14159).abs() < 0.00001);
+    fn test_arrow_row_get_i64() {
+        let (batch, indices) = create_test_batch();
+        let row = ArrowRow::new(&batch, 0, &indices);
+
+        assert_eq!(row.get_i64("id").unwrap(), 1);
     }
 
     #[test]
-    fn test_borrowed_value_parse_bool() {
-        assert!(BorrowedValue::new(b"true").parse_bool().unwrap());
-        assert!(BorrowedValue::new(b"1").parse_bool().unwrap());
-        assert!(!BorrowedValue::new(b"false").parse_bool().unwrap());
-        assert!(!BorrowedValue::new(b"0").parse_bool().unwrap());
+    fn test_arrow_row_get_str() {
+        let (batch, indices) = create_test_batch();
+        let row = ArrowRow::new(&batch, 1, &indices);
+
+        assert_eq!(row.get_str("name").unwrap(), "bob");
     }
 
     #[test]
-    fn test_borrowed_value_null() {
-        // ClickHouse TSV uses \N for NULL
-        assert!(BorrowedValue::new(b"\\N").is_null());
-        assert!(!BorrowedValue::new(b"hello").is_null());
+    fn test_arrow_row_get_f64() {
+        let (batch, indices) = create_test_batch();
+        let row = ArrowRow::new(&batch, 2, &indices);
+
+        let score = row.get_f64("score").unwrap();
+        assert!((score - 300.25).abs() < 0.01);
     }
 
     #[test]
-    fn test_borrowed_value_as_str() {
-        let val = BorrowedValue::new(b"hello world");
-        assert_eq!(val.as_str().unwrap(), "hello world");
+    fn test_arrow_row_get_bool() {
+        let (batch, indices) = create_test_batch();
+
+        let row0 = ArrowRow::new(&batch, 0, &indices);
+        assert!(row0.get_bool("active").unwrap());
+
+        let row1 = ArrowRow::new(&batch, 1, &indices);
+        assert!(!row1.get_bool("active").unwrap());
     }
 
     #[test]
-    fn test_tsv_parser_for_each() {
-        let data = b"1\talice\t100\n2\tbob\t200\n";
-        let parser = TsvParser::new(data, &["id", "name", "score"]);
+    fn test_arrow_row_column_not_found() {
+        let (batch, indices) = create_test_batch();
+        let row = ArrowRow::new(&batch, 0, &indices);
+
+        let result = row.get_str("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_arrow_row_wrong_type() {
+        let (batch, indices) = create_test_batch();
+        let row = ArrowRow::new(&batch, 0, &indices);
+
+        // id is Int64, not String
+        let result = row.get_str("id");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_for_each_row() {
+        let (batch, indices) = create_test_batch();
 
         let mut rows = Vec::new();
-        parser
-            .for_each(|row| {
-                rows.push((
-                    row.get_u64("id").unwrap(),
-                    row.get_str("name").unwrap().to_string(),
-                    row.get_u64("score").unwrap(),
-                ));
-                Ok(())
-            })
-            .unwrap();
+        for_each_row(&batch, &indices, |row| {
+            rows.push((
+                row.get_i64("id").unwrap(),
+                row.get_str("name").unwrap().to_string(),
+                row.get_f64("score").unwrap(),
+            ));
+            Ok(())
+        })
+        .unwrap();
 
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], (1, "alice".to_string(), 100));
-        assert_eq!(rows[1], (2, "bob".to_string(), 200));
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], (1, "alice".to_string(), 100.0));
+        assert_eq!(rows[1], (2, "bob".to_string(), 200.5));
+        assert_eq!(rows[2], (3, "charlie".to_string(), 300.25));
     }
 
     #[test]
-    fn test_tsv_parser_with_null() {
-        let data = b"1\t\\N\t100\n";
-        let parser = TsvParser::new(data, &["id", "name", "score"]);
+    fn test_build_column_index() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Utf8, false),
+            Field::new("c", DataType::Float64, false),
+        ]);
 
-        parser
-            .for_each(|row| {
-                assert_eq!(row.get_u64("id").unwrap(), 1);
-                assert!(row.is_null("name").unwrap());
-                assert_eq!(row.get_optional_str("name").unwrap(), None);
-                assert_eq!(row.get_u64("score").unwrap(), 100);
-                Ok(())
-            })
-            .unwrap();
+        let indices = build_column_index(&schema);
+
+        let key_a: Arc<str> = Arc::from("a");
+        let key_b: Arc<str> = Arc::from("b");
+        let key_c: Arc<str> = Arc::from("c");
+
+        assert_eq!(indices.get(&key_a), Some(&0));
+        assert_eq!(indices.get(&key_b), Some(&1));
+        assert_eq!(indices.get(&key_c), Some(&2));
     }
 
     #[test]
-    fn test_tsv_parser_by_index() {
-        let data = b"42\thello\t3.14\n";
-        let parser = TsvParser::new(data, &["a", "b", "c"]);
+    fn test_arrow_row_num_columns() {
+        let (batch, indices) = create_test_batch();
+        let row = ArrowRow::new(&batch, 0, &indices);
 
-        parser
-            .for_each(|row| {
-                let val0 = row.get_by_index(0).unwrap();
-                let val1 = row.get_by_index(1).unwrap();
-                let val2 = row.get_by_index(2).unwrap();
-
-                assert_eq!(val0.parse_u64().unwrap(), 42);
-                assert_eq!(val1.as_str().unwrap(), "hello");
-                assert!((val2.parse_f64().unwrap() - 3.14).abs() < 0.01);
-                Ok(())
-            })
-            .unwrap();
+        assert_eq!(row.num_columns(), 4);
     }
 
     #[test]
-    fn test_streaming_tsv_parser() {
-        use diesel_clickhouse::zero_copy::StreamingTsvParser;
+    fn test_arrow_row_row_index() {
+        let (batch, indices) = create_test_batch();
 
-        let columns = ["id", "name"];
-        let mut parser = StreamingTsvParser::new(&columns);
+        let row0 = ArrowRow::new(&batch, 0, &indices);
+        assert_eq!(row0.row_index(), 0);
 
-        // First chunk ends mid-row
-        let chunk1 = b"1\talice\n2\tbo";
-        let mut count1 = 0;
-        parser
-            .process_chunk(chunk1, |_row| {
-                count1 += 1;
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(count1, 1); // Only first row complete
-
-        // Second chunk completes the row
-        let chunk2 = b"b\n";
-        let mut count2 = 0;
-        parser
-            .process_chunk(chunk2, |row| {
-                assert_eq!(row.get_str("name").unwrap(), "bob");
-                count2 += 1;
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(count2, 1);
+        let row2 = ArrowRow::new(&batch, 2, &indices);
+        assert_eq!(row2.row_index(), 2);
     }
 }
 

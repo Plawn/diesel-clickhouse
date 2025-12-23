@@ -321,35 +321,7 @@ pub mod stream;
 #[cfg(any(feature = "http", feature = "native"))]
 pub use stream::RowStream;
 
-/// Zero-copy parsing for query results.
-///
-/// Provides a callback-based API for processing rows without allocating
-/// owned data structures. Ideal for large result sets where allocation
-/// overhead matters.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use diesel_clickhouse::zero_copy::{ZeroCopyRow, BorrowedValue};
-///
-/// conn.load_zero_copy(
-///     "SELECT id, name FROM users",
-///     &["id", "name"],
-///     |row: ZeroCopyRow<'_>| {
-///         let id = row.get_u64("id")?;
-///         let name = row.get_str("name")?;  // Borrowed, no allocation!
-///         println!("{}: {}", id, name);
-///         Ok(())
-///     }
-/// ).await?;
-/// ```
-#[cfg(feature = "http")]
-pub mod zero_copy;
-
-#[cfg(feature = "http")]
-pub use zero_copy::{ZeroCopyRow, BorrowedValue, TsvParser, StreamingTsvParser};
-
-/// Apache Arrow integration for zero-copy columnar data processing.
+/// Zero-copy columnar data processing with Apache Arrow.
 ///
 /// This module provides high-performance data loading using Apache Arrow's
 /// columnar format. Arrow enables true zero-copy data access and is optimized
@@ -377,7 +349,7 @@ pub use zero_copy::{ZeroCopyRow, BorrowedValue, TsvParser, StreamingTsvParser};
 pub mod arrow;
 
 #[cfg(feature = "arrow")]
-pub use arrow::{ArrowResult, parse_arrow_stream};
+pub use arrow::{ArrowResult, ArrowRow, parse_arrow_stream, build_column_index, for_each_row};
 
 /// Batch insertion utilities.
 ///

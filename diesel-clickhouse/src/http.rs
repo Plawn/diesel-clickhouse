@@ -753,169 +753,6 @@ impl ClickHouseConnection {
 }
 
 // =============================================================================
-// Zero-Copy API
-// =============================================================================
-
-impl ClickHouseConnection {
-    /// Load rows using zero-copy parsing with a callback.
-    ///
-    /// This method uses ClickHouse's TabSeparated format and processes rows
-    /// without allocating owned data structures. Each row is passed to the
-    /// callback as a `ZeroCopyRow` containing borrowed references into the
-    /// response buffer.
-    ///
-    /// # Arguments
-    ///
-    /// * `sql` - The SQL query to execute
-    /// * `columns` - Column names in the order they appear in the SELECT clause
-    /// * `callback` - Function called for each row
-    ///
-    /// # Returns
-    ///
-    /// The number of rows processed.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use diesel_clickhouse::prelude::*;
-    ///
-    /// // Process rows without allocating String/Vec for each row
-    /// let count = conn.load_zero_copy(
-    ///     "SELECT id, name, score FROM users WHERE active = 1",
-    ///     &["id", "name", "score"],
-    ///     |row| {
-    ///         let id: u64 = row.get_u64("id")?;
-    ///         let name: &str = row.get_str("name")?;  // Borrowed!
-    ///         let score: f64 = row.get_f64("score")?;
-    ///
-    ///         println!("User {}: {} (score: {})", id, name, score);
-    ///         Ok(())
-    ///     }
-    /// ).await?;
-    /// println!("Processed {} rows", count);
-    /// ```
-    ///
-    /// # Performance Notes
-    ///
-    /// - Uses TabSeparated format (faster to parse than JSON)
-    /// - No allocations per row (values are borrowed from response buffer)
-    /// - Ideal for large result sets with simple data access patterns
-    /// - For complex nested types (Array, Map), consider using `load_json()` instead
-    /// - Uses streaming internally for O(1) memory usage regardless of result size
-    pub async fn load_zero_copy<F>(
-        &self,
-        sql: &str,
-        columns: &[&str],
-        callback: F,
-    ) -> QueryResult<usize>
-    where
-        F: for<'a, 'b> FnMut(crate::zero_copy::ZeroCopyRow<'a, 'b>) -> QueryResult<()>,
-    {
-        // Delegate to streaming implementation for O(1) memory usage
-        self.load_zero_copy_streaming(sql, columns, callback).await
-    }
-
-    /// Load rows using zero-copy streaming parsing with a callback.
-    ///
-    /// This method processes rows as chunks arrive from the network,
-    /// providing O(1) memory usage regardless of result set size.
-    /// Rows that span chunk boundaries are automatically buffered.
-    ///
-    /// # Arguments
-    ///
-    /// * `sql` - The SQL query to execute
-    /// * `columns` - Column names in the order they appear in the SELECT clause
-    /// * `callback` - Function called for each row
-    ///
-    /// # Returns
-    ///
-    /// The number of rows processed.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // Stream-process a very large result set
-    /// let count = conn.load_zero_copy_streaming(
-    ///     "SELECT * FROM huge_table",
-    ///     &["id", "data"],
-    ///     |row| {
-    ///         // Process each row as it arrives
-    ///         let id = row.get_u64("id")?;
-    ///         // ...
-    ///         Ok(())
-    ///     }
-    /// ).await?;
-    /// ```
-    pub async fn load_zero_copy_streaming<F>(
-        &self,
-        sql: &str,
-        columns: &[&str],
-        mut callback: F,
-    ) -> QueryResult<usize>
-    where
-        F: for<'a, 'b> FnMut(crate::zero_copy::ZeroCopyRow<'a, 'b>) -> QueryResult<()>,
-    {
-        let mut cursor = self.client
-            .query(sql)
-            .fetch_bytes("TabSeparated")
-            .map_err(|e| Error::QueryError(e.to_string()))?;
-
-        let mut parser = crate::zero_copy::StreamingTsvParser::new(columns);
-        let mut total_count = 0;
-
-        loop {
-            match cursor.next().await {
-                Ok(Some(chunk)) => {
-                    let count = parser.process_chunk(&chunk, &mut callback)?;
-                    total_count += count;
-                }
-                Ok(None) => {
-                    // Process any remaining data
-                    let count = parser.finish(&mut callback)?;
-                    total_count += count;
-                    break;
-                }
-                Err(e) => return Err(Error::QueryError(e.to_string())),
-            }
-        }
-
-        Ok(total_count)
-    }
-
-    /// Load rows from a query fragment using zero-copy parsing.
-    ///
-    /// This is a convenience method that builds SQL from a query fragment
-    /// and then uses zero-copy parsing.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let count = conn.load_zero_copy_query(
-    ///     users::table.filter(users::active.eq(true)).select((users::id, users::name)),
-    ///     &["id", "name"],
-    ///     |row| {
-    ///         let id = row.get_u64("id")?;
-    ///         let name = row.get_str("name")?;
-    ///         Ok(())
-    ///     }
-    /// ).await?;
-    /// ```
-    pub async fn load_zero_copy_query<Q, F>(
-        &self,
-        query: Q,
-        columns: &[&str],
-        callback: F,
-    ) -> QueryResult<usize>
-    where
-        Q: QueryFragment<ClickHouse>,
-        F: for<'a, 'b> FnMut(crate::zero_copy::ZeroCopyRow<'a, 'b>) -> QueryResult<()>,
-    {
-        let sql = build_sql(&query)?;
-        self.load_zero_copy(&sql, columns, callback).await
-    }
-}
-
-// =============================================================================
 // Apache Arrow API
 // =============================================================================
 
@@ -1051,6 +888,89 @@ impl ClickHouseConnection {
     {
         let sql = build_sql(&query)?;
         self.load_arrow(&sql).await
+    }
+
+    // =========================================================================
+    // Zero-Copy Row API (Arrow-backed)
+    // =========================================================================
+
+    /// Load rows using zero-copy parsing with a callback.
+    ///
+    /// This method uses Apache Arrow format internally for true zero-copy access.
+    /// Each row is passed to the callback as an `ArrowRow` containing borrowed
+    /// references into the Arrow buffers.
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - The SQL query to execute
+    /// * `callback` - Function called for each row
+    ///
+    /// # Returns
+    ///
+    /// The number of rows processed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::prelude::*;
+    ///
+    /// let count = conn.load_zero_copy(
+    ///     "SELECT id, name, score FROM users WHERE active = 1",
+    ///     |row| {
+    ///         let id: u64 = row.get_u64("id")?;
+    ///         let name: &str = row.get_str("name")?;  // Zero-copy borrow!
+    ///         let score: f64 = row.get_f64("score")?;
+    ///
+    ///         println!("User {}: {} (score: {})", id, name, score);
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// println!("Processed {} rows", count);
+    /// ```
+    ///
+    /// # Performance Notes
+    ///
+    /// - Uses Arrow format (binary, no parsing overhead)
+    /// - True zero-copy: data is accessed directly from Arrow buffers
+    /// - SIMD-friendly memory layout
+    /// - Ideal for large result sets with row-by-row processing
+    pub async fn load_zero_copy<F>(&self, sql: &str, mut callback: F) -> QueryResult<usize>
+    where
+        F: for<'a> FnMut(crate::arrow::ArrowRow<'a>) -> QueryResult<()>,
+    {
+        let result = self.load_arrow(sql).await?;
+        let column_indices = crate::arrow::build_column_index(result.schema());
+
+        let mut total_count = 0;
+        for batch in result.batches() {
+            let count = crate::arrow::for_each_row(batch, &column_indices, &mut callback)?;
+            total_count += count;
+        }
+
+        Ok(total_count)
+    }
+
+    /// Load rows from a query fragment using zero-copy parsing.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let count = conn.load_zero_copy_query(
+    ///     users::table.filter(users::active.eq(true)).select((users::id, users::name)),
+    ///     |row| {
+    ///         let id = row.get_u64("id")?;
+    ///         let name = row.get_str("name")?;
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    pub async fn load_zero_copy_query<Q, F>(&self, query: Q, callback: F) -> QueryResult<usize>
+    where
+        Q: QueryFragment<ClickHouse>,
+        F: for<'a> FnMut(crate::arrow::ArrowRow<'a>) -> QueryResult<()>,
+    {
+        let sql = build_sql(&query)?;
+        self.load_zero_copy(&sql, callback).await
     }
 }
 

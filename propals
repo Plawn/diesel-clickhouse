@@ -31,3 +31,6 @@
 ---
 perfo
 | TsvParser.column_indices          | HashMap<String, usize>  | HashMap<Box<str>, usize>  | -8 bytes/string |
+
+
+Box<str> vers &str ?
