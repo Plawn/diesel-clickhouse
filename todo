@@ -28,9 +28,9 @@
 - native arrow zero copy
   - derive row
   - query pas string
-- unifier les loads optimized et load_binary
+- unifier les loads optimized et load_binary -> OK
 - opti les perfos du backend natif
-
+- clean le binding de params
 - todo clean
      if self.compression == Compression::Lz4 {
             client = client.with_compression(clickhouse::Compression::Lz4);
@@ -38,3 +38,10 @@
 
 https://github.com/ClickHouse/ClickHouse/pull/39906
 Le PR #39906 a étendu le protocole natif pour supporter les query parameters — les paramètres sont maintenant transmis dans les paquets Query juste après le texte de la requête GitHub
+
+
+
+- better handle errors:
+      let mut stream = http_conn
+        .stream::<UserWithPosts, _>(users::table.filter(users::active.eq(true)))
+        .await?;

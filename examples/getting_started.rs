@@ -357,10 +357,10 @@ async fn main() -> anyhow::Result<()> {
     // This is useful when you need more control over iteration (break, continue, etc.)
     println!("--- HTTP Backend: stream() ---");
     let mut stream = http_conn
-        .stream::<User, _>(users::table.filter(users::active.eq(true)))
+        .stream::<UserWithPosts, _>(users::table.filter(users::active.eq(true)))
         .await?;
     while let Some(user) = stream.next().await? {
-        println!("  [HTTP stream()] User: {} (age {})", user.name, user.age);
+        println!("  [HTTP stream()] User: {} (age )", user.name);
     }
 
     println!("\n--- Native Backend: stream() ---");
