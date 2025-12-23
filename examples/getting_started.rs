@@ -108,36 +108,33 @@ pub struct User {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Connect using URL from environment, or default based on enabled features
-    let mut conn = if let Ok(url) = std::env::var("CLICKHOUSE_URL") {
-        println!("Connecting via URL: {}", url);
-        Connection::establish(&url).await?
-    } else {
-        // Default connection based on enabled features
-        #[cfg(all(feature = "native", not(feature = "http")))]
-        {
-            println!("Connecting via Native backend (default)");
-            Connection::native()
-                .host("localhost")
-                .user("default")
-                .password("default")
-                .database("test_db")
-                .port(9000)
-                .build()
-                .await?
-        }
-        #[cfg(feature = "http")]
-        {
-            println!("Connecting via HTTP backend (default)");
-            Connection::http()
-                .host("localhost")
-                .user("default")
-                .password("default")
-                .database("test_db")
-                .port(8123)
-                .build()
-                .await?
-        }
-    };
+
+    // Default connection based on enabled features
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    {
+        println!("Connecting via Native backend (default)");
+        let mut conn = Connection::native()
+            .host("localhost")
+            .user("default")
+            .password("default")
+            .database("test_db")
+            .port(9000)
+            .build()
+            .await?;
+    }
+    #[cfg(feature = "http")]
+    {
+        println!("Connecting via HTTP backend (default)");
+        let mut conn = Connection::http()
+            .host("localhost")
+            .user("default")
+            .password("default")
+            .database("test_db")
+            .port(8123)
+            .build()
+            .await?;
+    }
+
     // Clean up any existing data from previous runs
     conn.execute("TRUNCATE TABLE IF EXISTS posts").await?;
     conn.execute("TRUNCATE TABLE IF EXISTS users").await?;
@@ -299,33 +296,65 @@ async fn main() -> anyhow::Result<()> {
 
         // Re-insert some data for the demo
         insert_into(users::table)
-            .values(vec![
-                NewUser { id: 10, name: "ZeroCopy1".into(), email: "zc1@test.com".into(), age: 20, active: true },
-                NewUser { id: 11, name: "ZeroCopy2".into(), email: "zc2@test.com".into(), age: 30, active: true },
-                NewUser { id: 12, name: "ZeroCopy3".into(), email: "zc3@test.com".into(), age: 40, active: false },
-            ].as_slice())
+            .values(
+                vec![
+                    NewUser {
+                        id: 10,
+                        name: "ZeroCopy1".into(),
+                        email: "zc1@test.com".into(),
+                        age: 20,
+                        active: true,
+                    },
+                    NewUser {
+                        id: 11,
+                        name: "ZeroCopy2".into(),
+                        email: "zc2@test.com".into(),
+                        age: 30,
+                        active: true,
+                    },
+                    NewUser {
+                        id: 12,
+                        name: "ZeroCopy3".into(),
+                        email: "zc3@test.com".into(),
+                        age: 40,
+                        active: false,
+                    },
+                ]
+                .as_slice(),
+            )
             .execute(&conn)
             .await?;
 
         // Process rows with zero-copy - no String allocations per row!
-        let count = conn.load_zero_copy(
-            "SELECT id, name, email, age FROM users WHERE id >= 10",
-            |row| {
-                // These are borrowed references into the Arrow buffer - zero allocations!
-                let id = row.get_u64("id")?;
-                let name = row.get_str("name")?;      // &str, not String
-                let email = row.get_str("email")?;    // &str, not String
-                let age = row.get_u8("age")?;
+        let count = conn
+            .load_zero_copy(
+                "SELECT id, name, email, age FROM users WHERE id >= 10",
+                |row| {
+                    // These are borrowed references into the Arrow buffer - zero allocations!
+                    let id = row.get_u64("id")?;
+                    let name = row.get_str("name")?; // &str, not String
+                    let email = row.get_str("email")?; // &str, not String
+                    let age = row.get_u8("age")?;
 
-                println!("  [zero-copy] User {}: {} ({}) - age {}", id, name, email, age);
-                Ok(())
-            }
-        ).await?;
+                    println!(
+                        "  [zero-copy] User {}: {} ({}) - age {}",
+                        id, name, email, age
+                    );
+                    Ok(())
+                },
+            )
+            .await?;
         println!("Processed {} rows with zero-copy", count);
 
         // You can also use the columnar Arrow API directly for analytics
-        let result = conn.load_arrow("SELECT id, name, age FROM users WHERE id >= 10").await?;
-        println!("Arrow result: {} rows, {} columns", result.num_rows(), result.num_columns());
+        let result = conn
+            .load_arrow("SELECT id, name, age FROM users WHERE id >= 10")
+            .await?;
+        println!(
+            "Arrow result: {} rows, {} columns",
+            result.num_rows(),
+            result.num_columns()
+        );
     }
 
     #[cfg(feature = "native-arrow")]
@@ -343,22 +372,23 @@ async fn main() -> anyhow::Result<()> {
 
         // Stream RecordBatches as they arrive - true zero-copy streaming!
         println!("Streaming RecordBatches:");
-        let mut stream = native_conn.stream_arrow("SELECT id, name, age FROM users WHERE id >= 20").await?;
+        let mut stream = native_conn
+            .stream_arrow("SELECT id, name, age FROM users WHERE id >= 20")
+            .await?;
         while let Some(batch_result) = stream.next().await {
             let batch = batch_result?;
             println!("  Received batch with {} rows", batch.num_rows());
         }
 
         // Or use the row-by-row API with zero-copy access
-        let count = native_conn.load_zero_copy(
-            "SELECT id, name, email FROM users WHERE id >= 20",
-            |row| {
+        let count = native_conn
+            .load_zero_copy("SELECT id, name, email FROM users WHERE id >= 20", |row| {
                 let id = row.get_u64("id")?;
-                let name = row.get_str("name")?;  // Zero-copy borrow!
+                let name = row.get_str("name")?; // Zero-copy borrow!
                 println!("  [native zero-copy] User {}: {}", id, name);
                 Ok(())
-            }
-        ).await?;
+            })
+            .await?;
         println!("Processed {} rows via native zero-copy streaming", count);
     }
 

@@ -221,59 +221,6 @@ impl Connection {
         crate::native::NativeClientBuilder::new()
     }
 
-    /// Establish a connection based on the URL scheme.
-    ///
-    /// # URL Formats
-    ///
-    /// - HTTP: `http://[user:pass@]host[:port]/database`
-    /// - HTTPS: `https://[user:pass@]host[:port]/database`
-    /// - Native: `tcp://[user:pass@]host[:port]/database[?options]`
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // HTTP connection
-    /// let conn = Connection::establish("http://localhost:8123/default").await?;
-    ///
-    /// // Native connection
-    /// let conn = Connection::establish("tcp://localhost:9000/default").await?;
-    ///
-    /// // Native with TLS
-    /// let conn = Connection::establish("tcp://localhost:9440/default?secure=true").await?;
-    /// ```
-    pub async fn establish(url: &str) -> QueryResult<Self> {
-        if url.starts_with("http://") || url.starts_with("https://") {
-            #[cfg(feature = "http")]
-            {
-                let conn = crate::http::ClickHouseConnection::new(url).await?;
-                Ok(Connection::Http(conn))
-            }
-            #[cfg(not(feature = "http"))]
-            {
-                Err(Error::ConnectionError(
-                    "HTTP backend not enabled. Add feature 'http' to Cargo.toml".to_string(),
-                ))
-            }
-        } else if url.starts_with("tcp://") {
-            #[cfg(feature = "native")]
-            {
-                let conn = crate::native::NativeConnection::establish(url).await?;
-                Ok(Connection::Native(conn))
-            }
-            #[cfg(not(feature = "native"))]
-            {
-                Err(Error::ConnectionError(
-                    "Native backend not enabled. Add feature 'native' to Cargo.toml".to_string(),
-                ))
-            }
-        } else {
-            Err(Error::ConnectionError(format!(
-                "Unknown URL scheme. Use 'http://', 'https://', or 'tcp://'. Got: {}",
-                url
-            )))
-        }
-    }
-
     /// Get the database name.
     pub fn database(&self) -> &str {
         match self {
@@ -1019,94 +966,8 @@ impl Connection {
             Connection::Http(conn) => conn.load_arrow_query(query).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "Arrow format is only supported on HTTP backend. Use stream_arrow_native() for native backend.".to_string()
+                "Arrow format is only supported on HTTP backend. Use load_zero_copy() for native backend.".to_string()
             )),
-        }
-    }
-
-    // =========================================================================
-    // Native Arrow Streaming API (native-arrow feature)
-    // =========================================================================
-
-    /// Stream Arrow RecordBatches from a SQL query (Native backend with native-arrow).
-    ///
-    /// This method provides true zero-copy streaming of Arrow RecordBatches
-    /// directly from ClickHouse's native protocol.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use futures::StreamExt;
-    ///
-    /// let mut stream = conn.stream_arrow_native("SELECT * FROM events LIMIT 1000000").await?;
-    /// while let Some(batch) = stream.next().await {
-    ///     let batch = batch?;
-    ///     println!("Received {} rows", batch.num_rows());
-    /// }
-    /// ```
-    #[cfg(all(feature = "native", feature = "native-arrow"))]
-    pub async fn stream_arrow_native(&self, sql: &str) -> QueryResult<crate::native_arrow::NativeArrowStream> {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(_) => Err(Error::QueryError(
-                "stream_arrow_native() is only available for Native backend. Use load_arrow() for HTTP.".to_string()
-            )),
-            Connection::Native(conn) => conn.stream_arrow(sql).await,
-        }
-    }
-
-    /// Stream Arrow RecordBatches from a query fragment (Native backend with native-arrow).
-    #[cfg(all(feature = "native", feature = "native-arrow"))]
-    pub async fn stream_arrow_native_query<Q>(&self, query: Q) -> QueryResult<crate::native_arrow::NativeArrowStream>
-    where
-        Q: QueryFragment<ClickHouse>,
-    {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(_) => Err(Error::QueryError(
-                "stream_arrow_native_query() is only available for Native backend.".to_string()
-            )),
-            Connection::Native(conn) => conn.stream_arrow_query(query).await,
-        }
-    }
-
-    /// Load all Arrow RecordBatches from a SQL query (Native backend with native-arrow).
-    ///
-    /// This collects all batches into memory. For large result sets,
-    /// prefer `stream_arrow_native()` for streaming.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let result = conn.load_arrow_native("SELECT * FROM small_table").await?;
-    /// println!("Total rows: {}", result.num_rows());
-    /// for batch in result.batches() {
-    ///     // Process batch...
-    /// }
-    /// ```
-    #[cfg(all(feature = "native", feature = "native-arrow"))]
-    pub async fn load_arrow_native(&self, sql: &str) -> QueryResult<crate::native_arrow::NativeArrowResult> {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(_) => Err(Error::QueryError(
-                "load_arrow_native() is only available for Native backend. Use load_arrow() for HTTP.".to_string()
-            )),
-            Connection::Native(conn) => conn.load_arrow(sql).await,
-        }
-    }
-
-    /// Load Arrow RecordBatches from a query fragment (Native backend with native-arrow).
-    #[cfg(all(feature = "native", feature = "native-arrow"))]
-    pub async fn load_arrow_native_query<Q>(&self, query: Q) -> QueryResult<crate::native_arrow::NativeArrowResult>
-    where
-        Q: QueryFragment<ClickHouse>,
-    {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(_) => Err(Error::QueryError(
-                "load_arrow_native_query() is only available for Native backend.".to_string()
-            )),
-            Connection::Native(conn) => conn.load_arrow_query(query).await,
         }
     }
 }

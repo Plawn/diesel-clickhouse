@@ -101,20 +101,6 @@ pub trait ConnectionFactory: Send + Sync + 'static {
     fn create(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = QueryResult<Connection>> + Send + '_>>;
 }
 
-/// URL-based connection factory (for backwards compatibility).
-struct UrlConnectionFactory {
-    url: String,
-}
-
-impl ConnectionFactory for UrlConnectionFactory {
-    fn create(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = QueryResult<Connection>> + Send + '_>> {
-        let url = self.url.clone();
-        Box::pin(async move {
-            Connection::establish(&url).await
-        })
-    }
-}
-
 // HTTP connection factory
 #[cfg(feature = "http")]
 impl ConnectionFactory for crate::http::HttpClientBuilder {
@@ -438,23 +424,6 @@ impl Pool {
     /// ```
     pub fn builder<F: ConnectionFactory>(factory: F) -> PoolBuilder<F> {
         PoolBuilder::new(factory)
-    }
-
-    /// Create a new connection pool from a URL.
-    ///
-    /// # Arguments
-    ///
-    /// - `url`: The ClickHouse connection URL
-    /// - `config`: Pool configuration
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let pool = Pool::new("http://localhost:8123/default", PoolConfig::default()).await?;
-    /// ```
-    pub async fn new(url: &str, config: PoolConfig) -> QueryResult<Self> {
-        let factory = UrlConnectionFactory { url: url.to_owned() };
-        PoolBuilder::new(factory).config(config).build().await
     }
 
     /// Get a connection from the pool.

@@ -204,68 +204,6 @@ pub struct ClickHouseConnection {
 }
 
 impl ClickHouseConnection {
-    /// Create a new connection from a URL.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let conn = ClickHouseConnection::establish("http://localhost:8123/my_database").await?;
-    /// ```
-    pub async fn new(url: &str) -> QueryResult<Self> {
-        let parsed = url::Url::parse(url)
-            .map_err(|e| Error::ConnectionError(format!("Invalid URL: {}", e)))?;
-
-        let path = parsed.path().trim_start_matches('/');
-        let database = if path.is_empty() {
-            "default".to_owned()
-        } else {
-            path.to_owned()
-        };
-
-        // Build URL efficiently without nested format! calls
-        let base_url = match parsed.port() {
-            Some(port) => {
-                let mut url = String::with_capacity(64);
-                url.push_str(parsed.scheme());
-                url.push_str("://");
-                url.push_str(parsed.host_str().unwrap_or("localhost"));
-                url.push(':');
-                let mut buf = itoa::Buffer::new();
-                url.push_str(buf.format(port));
-                url
-            }
-            None => {
-                let mut url = String::with_capacity(64);
-                url.push_str(parsed.scheme());
-                url.push_str("://");
-                url.push_str(parsed.host_str().unwrap_or("localhost"));
-                url
-            }
-        };
-
-        let mut client = Client::default()
-            .with_url(&base_url)
-            .with_database(&database);
-
-        // Extract user/password from URL if present
-        let username = parsed.username();
-        if !username.is_empty() {
-            client = client.with_user(username);
-        }
-        if let Some(password) = parsed.password() {
-            client = client.with_password(password);
-        }
-
-        // Test connection
-        client
-            .query("SELECT 1")
-            .execute()
-            .await
-            .map_err(|e| Error::ConnectionError(e.to_string()))?;
-
-        Ok(Self { client, database, compression: Compression::None })
-    }
-
     /// Create a connection from an existing Client.
     pub fn from_client(client: Client, database: impl Into<String>) -> Self {
         Self {

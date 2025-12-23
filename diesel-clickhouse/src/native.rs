@@ -283,7 +283,7 @@ impl NativeClientBuilder {
             url.push_str(&params.join("&"));
         }
 
-        let pool = Pool::new(&url);
+        let pool = Pool::new(url);
 
         // Test connection
         let mut client = pool
@@ -1300,6 +1300,8 @@ impl NativeConnection {
         let arrow_conn = crate::native_arrow::NativeArrowConnection::establish(
             &self.server_addr,
             &self.database,
+            &self.user,
+            &self.password,
         ).await?;
         arrow_conn.load_zero_copy(sql, callback).await
     }
@@ -1328,76 +1330,6 @@ impl NativeConnection {
     {
         let sql = build_sql_interpolated(&query)?;
         self.load_zero_copy(&sql, callback).await
-    }
-
-    /// Stream Arrow RecordBatches from a query.
-    ///
-    /// This returns a stream of Arrow RecordBatches for processing large
-    /// result sets with minimal memory usage.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use futures::StreamExt;
-    ///
-    /// let mut stream = conn.stream_arrow("SELECT * FROM events LIMIT 1000000").await?;
-    /// while let Some(batch) = stream.next().await {
-    ///     let batch = batch?;
-    ///     println!("Received {} rows", batch.num_rows());
-    /// }
-    /// ```
-    #[cfg(feature = "native-arrow")]
-    pub async fn stream_arrow(&self, sql: &str) -> QueryResult<crate::native_arrow::NativeArrowStream> {
-        let arrow_conn = crate::native_arrow::NativeArrowConnection::establish(
-            &self.server_addr,
-            &self.database,
-        ).await?;
-        arrow_conn.stream_arrow(sql).await
-    }
-
-    /// Stream Arrow RecordBatches from a query fragment.
-    ///
-    /// This is the query fragment version of `stream_arrow`.
-    #[cfg(feature = "native-arrow")]
-    pub async fn stream_arrow_query<Q>(&self, query: Q) -> QueryResult<crate::native_arrow::NativeArrowStream>
-    where
-        Q: QueryFragment<ClickHouse>,
-    {
-        let sql = build_sql_interpolated(&query)?;
-        self.stream_arrow(&sql).await
-    }
-
-    /// Load all results as Arrow RecordBatches.
-    ///
-    /// This collects all batches into memory. For large result sets,
-    /// prefer `stream_arrow()` for streaming.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let result = conn.load_arrow("SELECT * FROM small_table").await?;
-    /// println!("Total rows: {}", result.num_rows());
-    /// for batch in result.batches() {
-    ///     // Process batch...
-    /// }
-    /// ```
-    #[cfg(feature = "native-arrow")]
-    pub async fn load_arrow(&self, sql: &str) -> QueryResult<crate::native_arrow::NativeArrowResult> {
-        let arrow_conn = crate::native_arrow::NativeArrowConnection::establish(
-            &self.server_addr,
-            &self.database,
-        ).await?;
-        arrow_conn.load_arrow(sql).await
-    }
-
-    /// Load Arrow RecordBatches from a query fragment.
-    #[cfg(feature = "native-arrow")]
-    pub async fn load_arrow_query<Q>(&self, query: Q) -> QueryResult<crate::native_arrow::NativeArrowResult>
-    where
-        Q: QueryFragment<ClickHouse>,
-    {
-        let sql = build_sql_interpolated(&query)?;
-        self.load_arrow(&sql).await
     }
 }
 
@@ -1448,31 +1380,5 @@ mod tests {
         let query = SelectStatement::new(TestTable);
         let result = build_sql(&query).expect("failed to build SQL");
         assert_eq!(result, "SELECT * FROM test_table");
-    }
-
-    #[test]
-    fn test_parse_connection_url() {
-        let info = parse_connection_url("tcp://localhost:9000/mydb").unwrap();
-        assert_eq!(info.database, "mydb");
-        assert_eq!(info.host, "localhost");
-        assert_eq!(info.port, 9000);
-
-        let info = parse_connection_url("tcp://user:pass@localhost/analytics").unwrap();
-        assert_eq!(info.database, "analytics");
-        assert_eq!(info.host, "localhost");
-        assert_eq!(info.port, 9000);
-
-        let info = parse_connection_url("tcp://localhost:9000/test?secure=true").unwrap();
-        assert_eq!(info.database, "test");
-
-        let info = parse_connection_url("tcp://localhost:9000/").unwrap();
-        assert_eq!(info.database, "default");
-
-        let info = parse_connection_url("tcp://localhost").unwrap();
-        assert_eq!(info.database, "default");
-        assert_eq!(info.server_addr(), "localhost:9000");
-
-        // Invalid URL should error
-        assert!(parse_connection_url("not a url").is_err());
     }
 }

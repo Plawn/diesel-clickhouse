@@ -13,7 +13,8 @@ name = "diesel-clickhouse"
 path = "src/main.rs"
 
 [dependencies]
-diesel-clickhouse = { workspace = true, features = ["http", "migrations"] }
+diesel-clickhouse = { workspace = true, features = ["http", "native", "migrations"] }
+url = "2"
 diesel-clickhouse-migrations.workspace = true
 
 # Async runtime

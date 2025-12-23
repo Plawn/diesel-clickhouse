@@ -36,6 +36,75 @@ use diesel_clickhouse_migrations::{
 
 mod config;
 
+/// Establish a connection from a URL string.
+///
+/// Parses the URL and uses the appropriate builder (HTTP or Native).
+async fn establish_from_url(url_str: &str) -> Result<Connection> {
+    let parsed = url::Url::parse(url_str)
+        .map_err(|e| anyhow::anyhow!("Invalid URL: {}", e))?;
+
+    let host = parsed.host_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing host in URL"))?;
+    let port = parsed.port();
+    let database = parsed.path().trim_start_matches('/');
+    let database = if database.is_empty() { "default" } else { database };
+    let user = parsed.username();
+    let password = parsed.password().unwrap_or("");
+
+    if url_str.starts_with("http://") || url_str.starts_with("https://") {
+        let mut builder = Connection::http()
+            .host(host)
+            .database(database);
+
+        if let Some(p) = port {
+            builder = builder.port(p);
+        } else if url_str.starts_with("https://") {
+            builder = builder.port(8443);
+        } else {
+            builder = builder.port(8123);
+        }
+
+        if !user.is_empty() {
+            builder = builder.user(user);
+        }
+        if !password.is_empty() {
+            builder = builder.password(password);
+        }
+
+        Ok(builder.build().await?)
+    } else if url_str.starts_with("tcp://") {
+        let mut builder = Connection::native()
+            .host(host)
+            .database(database)
+            .user(if user.is_empty() { "default" } else { user })
+            .password(password);
+
+        if let Some(p) = port {
+            builder = builder.port(p);
+        } else {
+            builder = builder.port(9000);
+        }
+
+        // Parse query params for native options
+        for (key, value) in parsed.query_pairs() {
+            match key.as_ref() {
+                "secure" if value == "true" => builder = builder.secure(true),
+                "compression" if value == "lz4" => {
+                    builder = builder.compression(diesel_clickhouse::native::NativeCompression::Lz4)
+                }
+                _ => {}
+            }
+        }
+
+        Ok(builder.build().await?)
+    } else {
+        Err(anyhow::anyhow!(
+            "Unknown URL scheme. Use 'http://', 'https://', or 'tcp://'. Got: {}",
+            url_str
+        ))
+    }
+}
+
 use config::Config;
 
 /// diesel-clickhouse CLI - Migration tool for ClickHouse
@@ -209,7 +278,7 @@ async fn run_database_command(command: DatabaseCommands, config: &Config) -> Res
         DatabaseCommands::Reset => {
             println!("{}", "Resetting database...".cyan());
 
-            let mut conn = Connection::establish(&config.database_url).await?;
+            let mut conn = establish_from_url(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             // Revert all migrations
@@ -239,7 +308,7 @@ async fn run_migration_command(command: MigrationCommands, config: &Config) -> R
         MigrationCommands::Run { version } => {
             println!("{}", "Running migrations...".cyan());
 
-            let mut conn = Connection::establish(&config.database_url).await?;
+            let mut conn = establish_from_url(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             let applied = if let Some(version) = version {
@@ -262,7 +331,7 @@ async fn run_migration_command(command: MigrationCommands, config: &Config) -> R
         MigrationCommands::Revert { count, all } => {
             println!("{}", "Reverting migrations...".cyan());
 
-            let mut conn = Connection::establish(&config.database_url).await?;
+            let mut conn = establish_from_url(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             let count = if all {
@@ -286,7 +355,7 @@ async fn run_migration_command(command: MigrationCommands, config: &Config) -> R
         MigrationCommands::Redo { count } => {
             println!("{}", "Redoing migrations...".cyan());
 
-            let mut conn = Connection::establish(&config.database_url).await?;
+            let mut conn = establish_from_url(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             let redone = conn.redo_migrations(&source, count).await?;
@@ -321,7 +390,7 @@ async fn run_migration_command(command: MigrationCommands, config: &Config) -> R
         MigrationCommands::List => {
             println!("{}", "Migrations:".cyan());
 
-            let mut conn = Connection::establish(&config.database_url).await?;
+            let mut conn = establish_from_url(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             let applied = conn.applied_migrations().await?;
@@ -350,7 +419,7 @@ async fn run_migration_command(command: MigrationCommands, config: &Config) -> R
         MigrationCommands::Pending => {
             println!("{}", "Pending migrations:".cyan());
 
-            let mut conn = Connection::establish(&config.database_url).await?;
+            let mut conn = establish_from_url(&config.database_url).await?;
             let source = FileBasedMigrations::new(&config.migrations_dir);
 
             let pending = conn.pending_migrations(&source).await?;
@@ -382,7 +451,7 @@ async fn run_print_schema(
 ) -> Result<()> {
     eprintln!("{}", "Generating schema...".cyan());
 
-    let conn = Connection::establish(&config.database_url).await?;
+    let conn = establish_from_url(&config.database_url).await?;
 
     // Get database name from connection
     let database = conn.database();
