@@ -302,31 +302,17 @@ impl ClickHouseConnection {
 
 /// Build SQL from a QueryFragment.
 ///
-/// Returns an error if the query fragment fails to produce valid SQL.
-/// Bindings are automatically inlined into the SQL string for display/logging.
+/// Returns the SQL string with `?` placeholders for parameters.
+/// This is a lightweight function for display/debugging purposes.
 ///
-/// Note: For actual query execution, use `build_sql_native()` which preserves
-/// placeholders for native parameter binding and query plan caching.
+/// For actual query execution, use the connection methods which apply
+/// native parameter binding via `build_sql_native()`.
 pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
     let mut builder = GenericQueryBuilder::default();
     let mut collector = GenericBindCollector::default();
     let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
     fragment.walk_ast(pass)?;
-
-    // Inline bindings into the SQL (for display/logging purposes)
-    let mut sql = builder.finish();
-    let bindable_values = collector.bindable_values();
-
-    if !bindable_values.is_empty() {
-        // Replace each ? placeholder with its binding value (in reverse order)
-        for binding in bindable_values.iter().rev() {
-            if let Some(pos) = sql.rfind('?') {
-                sql.replace_range(pos..pos + 1, &binding.sql_literal());
-            }
-        }
-    }
-
-    Ok(sql)
+    Ok(builder.finish())
 }
 
 // Re-export for convenience
@@ -363,17 +349,6 @@ impl NativeCompiledQuery {
             query = query.bind(binding);
         }
         query
-    }
-
-    /// Get SQL with bindings inlined (for debugging/logging).
-    pub fn sql_with_inlined_bindings(&self) -> String {
-        let mut sql = self.sql.clone();
-        for binding in self.bindings.iter().rev() {
-            if let Some(pos) = sql.rfind('?') {
-                sql.replace_range(pos..pos + 1, &binding.sql_literal());
-            }
-        }
-        sql
     }
 }
 
@@ -463,8 +438,8 @@ impl ClickHouseConnection {
     where
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = build_sql(&query)?;
-        Ok(self.client.query(&sql))
+        let compiled = build_sql_native(&query)?;
+        Ok(compiled.bind_to(self.client.query(&compiled.sql)))
     }
 
     /// Stream rows from a query using a cursor.
@@ -504,9 +479,8 @@ impl ClickHouseConnection {
         T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead,
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = build_sql(&query)?;
-        self.client
-            .query(&sql)
+        let compiled = build_sql_native(&query)?;
+        compiled.bind_to(self.client.query(&compiled.sql))
             .fetch::<T>()
             .map_err(Error::query_from)
     }
@@ -741,9 +715,13 @@ impl ClickHouseConnection {
     /// - **SIMD-ready**: Arrow's layout enables vectorized operations
     /// - **Recommended for**: Large analytical queries, data pipelines
     pub async fn load_arrow(&self, sql: &str) -> QueryResult<crate::arrow::ArrowResult> {
+        self.load_arrow_with_bindings(self.client.query(sql)).await
+    }
+
+    /// Internal method to load Arrow with optional bindings applied to the query.
+    async fn load_arrow_with_bindings(&self, query: clickhouse::query::Query) -> QueryResult<crate::arrow::ArrowResult> {
         // Execute query with ArrowStream format
-        let mut cursor = self.client
-            .query(sql)
+        let mut cursor = query
             .fetch_bytes("ArrowStream")
             .map_err(Error::query_from)?;
 
@@ -791,9 +769,20 @@ impl ClickHouseConnection {
     where
         F: FnMut(::arrow::array::RecordBatch) -> QueryResult<()>,
     {
+        self.load_arrow_callback_with_bindings(self.client.query(sql), callback).await
+    }
+
+    /// Internal method to load Arrow with callback, with optional bindings.
+    async fn load_arrow_callback_with_bindings<F>(
+        &self,
+        query: clickhouse::query::Query,
+        callback: F,
+    ) -> QueryResult<usize>
+    where
+        F: FnMut(::arrow::array::RecordBatch) -> QueryResult<()>,
+    {
         // Execute query with ArrowStream format
-        let mut cursor = self.client
-            .query(sql)
+        let mut cursor = query
             .fetch_bytes("ArrowStream")
             .map_err(Error::query_from)?;
 
@@ -826,8 +815,8 @@ impl ClickHouseConnection {
     where
         Q: QueryFragment<ClickHouse>,
     {
-        let sql = build_sql(&query)?;
-        self.load_arrow(&sql).await
+        let compiled = build_sql_native(&query)?;
+        self.load_arrow_with_bindings(compiled.bind_to(self.client.query(&compiled.sql))).await
     }
 
     // =========================================================================
@@ -904,13 +893,22 @@ impl ClickHouseConnection {
     ///     }
     /// ).await?;
     /// ```
-    pub async fn load_zero_copy_query<Q, F>(&self, query: Q, callback: F) -> QueryResult<usize>
+    pub async fn load_zero_copy_query<Q, F>(&self, query: Q, mut callback: F) -> QueryResult<usize>
     where
         Q: QueryFragment<ClickHouse>,
         F: for<'a> FnMut(crate::arrow::ArrowRow<'a>) -> QueryResult<()>,
     {
-        let sql = build_sql(&query)?;
-        self.load_zero_copy(&sql, callback).await
+        let compiled = build_sql_native(&query)?;
+        let result = self.load_arrow_with_bindings(compiled.bind_to(self.client.query(&compiled.sql))).await?;
+        let column_indices = crate::arrow::build_column_index(result.schema());
+
+        let mut total_count = 0;
+        for batch in result.batches() {
+            let count = crate::arrow::for_each_row(batch, &column_indices, &mut callback)?;
+            total_count += count;
+        }
+
+        Ok(total_count)
     }
 }
 
@@ -1068,6 +1066,7 @@ mod tests {
             .filter(sql_literal::<diesel_clickhouse_types::Bool>("id > 10"))
             .limit(100);
         let result = build_sql(&query).expect("failed to build SQL");
-        assert_eq!(result, "SELECT * FROM test_table WHERE id > 10 LIMIT 100");
+        // build_sql returns SQL with placeholders, not inlined values
+        assert_eq!(result, "SELECT * FROM test_table WHERE id > 10 LIMIT ?");
     }
 }
