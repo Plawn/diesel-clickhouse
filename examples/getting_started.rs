@@ -354,30 +354,42 @@ async fn main() -> anyhow::Result<()> {
     println!("\n\n=== Streaming Demo ===\n");
 
     // HTTP Streaming - true row-by-row streaming, O(1) memory
-    // Uses the RowStream API which works with clickhouse::Row types
-    println!("--- HTTP Backend: stream() ---");
-    let mut stream = http_conn
-        .stream::<User, _>(users::table.filter(users::active.eq(true)))
-        .await?;
+    println!("--- HTTP Backend: stream_for_each ---");
     let mut http_count = 0u64;
-    while let Some(user) = stream.next().await? {
-        println!("  [HTTP stream] User: {} (age {})", user.name, user.age);
-        http_count += 1;
-    }
+    http_conn
+        .stream_for_each(users::table.filter(users::active.eq(true)), |user: User| {
+            println!("  [HTTP stream] User: {} (age {})", user.name, user.age);
+            http_count += 1;
+            Ok(())
+        })
+        .await?;
     println!("Streamed {} users via HTTP\n", http_count);
 
-    // Native backend also supports stream() but loads all rows first
-    // For true streaming on Native, use stream_for_each() with FromAnyBlock types
-    println!("--- Native Backend: stream() ---");
-    let mut stream = native_conn
-        .stream::<User, _>(users::table.filter(users::active.eq(true)))
-        .await?;
+    // Native Streaming - true block-by-block streaming, O(block_size) memory
+    // Uses clickhouse-rs stream_blocks() for true network streaming
+    println!("--- Native Backend: stream_for_each ---");
     let mut native_count = 0u64;
-    while let Some(user) = stream.next().await? {
-        println!("  [Native stream] User: {} (age {})", user.name, user.age);
-        native_count += 1;
-    }
-    println!("Streamed {} users via Native", native_count);
+    native_conn
+        .stream_for_each(users::table.filter(users::active.eq(true)), |user: User| {
+            println!("  [Native stream] User: {} (age {})", user.name, user.age);
+            native_count += 1;
+            Ok(())
+        })
+        .await?;
+    println!("Streamed {} users via Native\n", native_count);
+
+    // Async callback version - useful for I/O operations per row
+    println!("--- Async Streaming (HTTP) ---");
+    http_conn
+        .stream_for_each_async(
+            users::table.filter(users::id.gt(10u64)),
+            |user: User| async move {
+                // Simulate async processing (e.g., HTTP call, database write)
+                println!("  [async] Processing user: {}", user.name);
+                Ok(())
+            },
+        )
+        .await?;
 
     // Cleanup
     http_conn.execute("TRUNCATE TABLE posts").await?;

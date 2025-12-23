@@ -262,6 +262,21 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
+        // Generate FromAnyBlock for Native backend streaming
+        #[cfg(feature = "native")]
+        impl ::diesel_clickhouse::native::FromAnyBlock for #name {
+            fn from_any_block<K: ::diesel_clickhouse::native::types::ColumnType>(
+                block: &::diesel_clickhouse::native::NativeBlock<K>,
+                row_idx: usize,
+            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
+                Ok(Self {
+                    #(
+                        #field_names: <#field_types as ::diesel_clickhouse::native::BlockValue<K>>::get_value(block, row_idx, #column_names)?,
+                    )*
+                })
+            }
+        }
+
         // Generate ToNativeBlock for Native backend (optimized INSERT)
         #[cfg(feature = "native")]
         impl ::diesel_clickhouse::native::ToNativeBlock for #name {
@@ -437,6 +452,21 @@ pub fn derive_row(input: TokenStream) -> TokenStream {
                 Ok(Self {
                     #(
                         #field_names: ::diesel_clickhouse::native::BlockValue::get_value(block, row_idx, #column_names)?,
+                    )*
+                })
+            }
+        }
+
+        // Implement FromAnyBlock for Native backend streaming
+        #[cfg(feature = "native")]
+        impl ::diesel_clickhouse::native::FromAnyBlock for #name {
+            fn from_any_block<K: ::diesel_clickhouse::native::types::ColumnType>(
+                block: &::diesel_clickhouse::native::NativeBlock<K>,
+                row_idx: usize,
+            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
+                Ok(Self {
+                    #(
+                        #field_names: <#field_types as ::diesel_clickhouse::native::BlockValue<K>>::get_value(block, row_idx, #column_names)?,
                     )*
                 })
             }
