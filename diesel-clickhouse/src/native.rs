@@ -1346,6 +1346,9 @@ impl NativeConnection {
 
     /// Stream rows from raw SQL, returning an async iterator.
     ///
+    /// This method provides true lazy streaming with zero channel overhead.
+    /// Data is fetched on-demand when `next()` is called.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
@@ -1359,59 +1362,41 @@ impl NativeConnection {
     where
         T: FromAnyBlock + Send + 'static,
     {
-        // Channel buffer for blocks (not individual rows)
-        // Small buffer since each block is already ~65K rows
-        let (tx, rx) = tokio::sync::mpsc::channel(4);
         let pool = self.pool.clone();
         let sql = sql.to_string();
 
-        // Spawn background task to read blocks and send them
-        tokio::spawn(async move {
-            let client_result = pool.get_handle().await;
-            let mut client = match client_result {
+        let stream = async_stream::stream! {
+            // Get connection handle
+            let mut client = match pool.get_handle().await {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = tx.send(Err(Error::ConnectionError(Cow::Owned(
+                    yield Err(Error::ConnectionError(Cow::Owned(
                         format!("Failed to get connection handle: {}", e)
-                    )))).await;
+                    )));
                     return;
                 }
             };
 
+            // Stream blocks from server
             let mut block_stream = client.query(&sql).stream_blocks();
 
             while let Some(block_result) = block_stream.next().await {
                 match block_result {
                     Ok(block) => {
-                        // Deserialize entire block at once
-                        let row_count = block.row_count();
-                        let mut rows = Vec::with_capacity(row_count);
-
-                        for row_idx in 0..row_count {
-                            match T::from_any_block(&block, row_idx) {
-                                Ok(row) => rows.push(row),
-                                Err(e) => {
-                                    let _ = tx.send(Err(e)).await;
-                                    return;
-                                }
-                            }
-                        }
-
-                        // Send entire block through channel
-                        if tx.send(Ok(rows)).await.is_err() {
-                            // Receiver dropped, stop streaming
-                            return;
+                        // Yield each row from the block
+                        for row_idx in 0..block.row_count() {
+                            yield T::from_any_block(&block, row_idx);
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(Err(Error::query_from(e))).await;
+                        yield Err(Error::query_from(e));
                         return;
                     }
                 }
             }
-        });
+        };
 
-        crate::stream::NativeBlockStream::new(rx)
+        crate::stream::NativeBlockStream::new(stream)
     }
 
     /// Load a single row.

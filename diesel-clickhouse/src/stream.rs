@@ -63,30 +63,26 @@ pub enum RowStream<T> {
 
 /// True streaming iterator over rows from a Native backend.
 ///
-/// This struct uses a background task that reads blocks from the server
-/// and sends deserialized blocks through a channel. Rows are buffered locally
-/// to minimize channel overhead. Memory usage is O(block_size) instead of O(n).
+/// This struct wraps an async stream that reads blocks directly from the server.
+/// No background task or channel is used - the stream is lazy and pulls data
+/// on demand. Memory usage is O(block_size) instead of O(n).
 ///
 /// # Performance
 ///
-/// Blocks are sent through the channel (typically ~65K rows per block), not
-/// individual rows. This reduces channel operations by ~65000x compared to
-/// per-row streaming, while maintaining the same memory profile.
+/// - Zero channel overhead (no mpsc, no task spawn)
+/// - True lazy evaluation - data is fetched only when `next()` is called
+/// - Backpressure is automatic - slow consumers slow down the network reads
 #[cfg(feature = "native")]
 pub struct NativeBlockStream<T> {
-    /// Receiver for blocks from the background task
-    receiver: tokio::sync::mpsc::Receiver<QueryResult<Vec<T>>>,
-    /// Local buffer of rows from the current block
-    buffer: std::vec::IntoIter<T>,
+    inner: std::pin::Pin<Box<dyn futures::Stream<Item = QueryResult<T>> + Send>>,
 }
 
 #[cfg(feature = "native")]
 impl<T> NativeBlockStream<T> {
-    /// Create a new block stream from a channel receiver.
-    pub fn new(receiver: tokio::sync::mpsc::Receiver<QueryResult<Vec<T>>>) -> Self {
+    /// Create a new block stream from a boxed async stream.
+    pub fn new(stream: impl futures::Stream<Item = QueryResult<T>> + Send + 'static) -> Self {
         Self {
-            receiver,
-            buffer: Vec::new().into_iter(),
+            inner: Box::pin(stream),
         }
     }
 
@@ -96,19 +92,11 @@ impl<T> NativeBlockStream<T> {
     /// `Ok(None)` when the stream is exhausted,
     /// or `Err(e)` if an error occurs.
     pub async fn next(&mut self) -> QueryResult<Option<T>> {
-        // First, try to get from local buffer (no async overhead)
-        if let Some(row) = self.buffer.next() {
-            return Ok(Some(row));
-        }
-
-        // Buffer empty, fetch next block from channel
-        match self.receiver.recv().await {
-            Some(Ok(block)) => {
-                self.buffer = block.into_iter();
-                Ok(self.buffer.next())
-            }
+        use futures::StreamExt;
+        match self.inner.next().await {
+            Some(Ok(row)) => Ok(Some(row)),
             Some(Err(e)) => Err(e),
-            None => Ok(None), // Stream exhausted
+            None => Ok(None),
         }
     }
 }
