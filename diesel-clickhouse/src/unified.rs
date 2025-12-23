@@ -54,6 +54,15 @@
 //!         users::table.filter(users::active.eq(true))
 //!     ).await?;
 //!
+//!     // STREAMING - memory-efficient for large datasets
+//!     conn.stream_for_each(
+//!         users::table.filter(users::active.eq(true)),
+//!         |user: User| {
+//!             println!("User: {}", user.name);
+//!             Ok(())
+//!         }
+//!     ).await?;
+//!
 //!     Ok(())
 //! }
 //! ```
@@ -83,6 +92,62 @@
 //!     let block = native_conn.query_raw("SELECT * FROM users").await?;
 //! }
 //! ```
+//!
+//! ## Streaming
+//!
+//! For large result sets, use streaming to process rows without loading everything
+//! into memory. Both backends support true network streaming:
+//!
+//! - **HTTP**: Row-by-row streaming via cursor - O(1) memory
+//! - **Native**: Block-by-block streaming - O(block_size) memory
+//!
+//! ### Using `stream()` (returns a RowStream)
+//!
+//! ```rust,ignore
+//! use diesel_clickhouse::prelude::*;
+//!
+//! // Stream results row by row
+//! let mut stream = conn.stream::<User, _>(
+//!     users::table.filter(users::active.eq(true))
+//! ).await?;
+//!
+//! while let Some(user) = stream.next().await? {
+//!     println!("User: {} - {}", user.id, user.name);
+//! }
+//! ```
+//!
+//! ### Using `stream_for_each()` (callback-based, recommended for Native)
+//!
+//! ```rust,ignore
+//! // Process each row with a callback - true streaming for both backends
+//! conn.stream_for_each(
+//!     users::table.filter(users::active.eq(true)),
+//!     |user: User| {
+//!         println!("Processing: {}", user.name);
+//!         Ok(())
+//!     }
+//! ).await?;
+//!
+//! // Async callback version
+//! conn.stream_for_each_async(
+//!     users::table.select((users::id, users::name)),
+//!     |user: User| async move {
+//!         process_user_async(user).await;
+//!         Ok(())
+//!     }
+//! ).await?;
+//! ```
+//!
+//! ### Streaming Comparison
+//!
+//! | Method | HTTP Backend | Native Backend | Memory |
+//! |--------|--------------|----------------|--------|
+//! | `load()` | All in memory | All in memory | O(n) |
+//! | `stream()` | True streaming | Buffered* | O(1) / O(n)* |
+//! | `stream_for_each()` | True streaming | True streaming | O(1) / O(block) |
+//!
+//! \* `stream()` on Native loads all rows first then iterates. Use `stream_for_each()`
+//! for true streaming on Native backend.
 
 use std::borrow::Cow;
 
@@ -580,6 +645,147 @@ impl Connection {
                 let rows: Vec<T> = conn.load(query).await?;
                 Ok(crate::stream::RowStream::from(rows))
             }
+        }
+    }
+
+    // =========================================================================
+    // Streaming with Callback (true streaming for both backends)
+    // =========================================================================
+
+    /// Stream rows from a query with a callback.
+    ///
+    /// This method provides true streaming for both backends:
+    /// - **HTTP**: Rows fetched incrementally via cursor
+    /// - **Native**: Blocks fetched incrementally, rows processed per block
+    ///
+    /// Memory usage is O(block_size) instead of O(total_rows).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.stream_for_each(
+    ///     users::table.filter(users::active.eq(true)),
+    ///     |user: User| {
+    ///         println!("User: {}", user.name);
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    #[cfg(all(feature = "http", not(feature = "native")))]
+    pub async fn stream_for_each<T, Q, F>(&self, query: Q, mut callback: F) -> QueryResult<()>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+        F: FnMut(T) -> QueryResult<()>,
+    {
+        match self {
+            Connection::Http(conn) => {
+                let mut cursor: clickhouse::query::RowCursor<T> = conn.stream(query)?;
+                while let Some(row) = cursor.next().await.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))? {
+                    callback(row)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Stream rows from a query with a callback.
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    pub async fn stream_for_each<T, Q, F>(&self, query: Q, callback: F) -> QueryResult<()>
+    where
+        T: crate::native::FromAnyBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+        F: FnMut(T) -> QueryResult<()>,
+    {
+        match self {
+            Connection::Native(conn) => conn.stream_for_each(query, callback).await,
+        }
+    }
+
+    /// Stream rows from a query with a callback.
+    #[cfg(all(feature = "http", feature = "native"))]
+    pub async fn stream_for_each<T, Q, F>(&self, query: Q, mut callback: F) -> QueryResult<()>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromAnyBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+        F: FnMut(T) -> QueryResult<()>,
+    {
+        match self {
+            Connection::Http(conn) => {
+                let mut cursor: clickhouse::query::RowCursor<T> = conn.stream(query)?;
+                while let Some(row) = cursor.next().await.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))? {
+                    callback(row)?;
+                }
+                Ok(())
+            }
+            Connection::Native(conn) => conn.stream_for_each(query, callback).await,
+        }
+    }
+
+    /// Stream rows from a query with an async callback.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.stream_for_each_async(
+    ///     users::table.filter(users::active.eq(true)),
+    ///     |user: User| async move {
+    ///         process_user(user).await;
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    #[cfg(all(feature = "http", not(feature = "native")))]
+    pub async fn stream_for_each_async<T, Q, F, Fut>(&self, query: Q, mut callback: F) -> QueryResult<()>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+        F: FnMut(T) -> Fut,
+        Fut: std::future::Future<Output = QueryResult<()>>,
+    {
+        match self {
+            Connection::Http(conn) => {
+                let mut cursor: clickhouse::query::RowCursor<T> = conn.stream(query)?;
+                while let Some(row) = cursor.next().await.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))? {
+                    callback(row).await?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Stream rows from a query with an async callback.
+    #[cfg(all(feature = "native", not(feature = "http")))]
+    pub async fn stream_for_each_async<T, Q, F, Fut>(&self, query: Q, callback: F) -> QueryResult<()>
+    where
+        T: crate::native::FromAnyBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+        F: FnMut(T) -> Fut,
+        Fut: std::future::Future<Output = QueryResult<()>>,
+    {
+        match self {
+            Connection::Native(conn) => conn.stream_for_each_async(query, callback).await,
+        }
+    }
+
+    /// Stream rows from a query with an async callback.
+    #[cfg(all(feature = "http", feature = "native"))]
+    pub async fn stream_for_each_async<T, Q, F, Fut>(&self, query: Q, mut callback: F) -> QueryResult<()>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromAnyBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+        F: FnMut(T) -> Fut,
+        Fut: std::future::Future<Output = QueryResult<()>>,
+    {
+        match self {
+            Connection::Http(conn) => {
+                let mut cursor: clickhouse::query::RowCursor<T> = conn.stream(query)?;
+                while let Some(row) = cursor.next().await.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))? {
+                    callback(row).await?;
+                }
+                Ok(())
+            }
+            Connection::Native(conn) => conn.stream_for_each_async(query, callback).await,
         }
     }
 

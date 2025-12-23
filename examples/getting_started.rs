@@ -348,6 +348,37 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("Loaded {} users via Native backend", users.len());
 
+    // =========================================================================
+    // Streaming Demo - Memory-efficient processing for large datasets
+    // =========================================================================
+    println!("\n\n=== Streaming Demo ===\n");
+
+    // HTTP Streaming - true row-by-row streaming, O(1) memory
+    // Uses the RowStream API which works with clickhouse::Row types
+    println!("--- HTTP Backend: stream() ---");
+    let mut stream = http_conn
+        .stream::<User, _>(users::table.filter(users::active.eq(true)))
+        .await?;
+    let mut http_count = 0u64;
+    while let Some(user) = stream.next().await? {
+        println!("  [HTTP stream] User: {} (age {})", user.name, user.age);
+        http_count += 1;
+    }
+    println!("Streamed {} users via HTTP\n", http_count);
+
+    // Native backend also supports stream() but loads all rows first
+    // For true streaming on Native, use stream_for_each() with FromAnyBlock types
+    println!("--- Native Backend: stream() ---");
+    let mut stream = native_conn
+        .stream::<User, _>(users::table.filter(users::active.eq(true)))
+        .await?;
+    let mut native_count = 0u64;
+    while let Some(user) = stream.next().await? {
+        println!("  [Native stream] User: {} (age {})", user.name, user.age);
+        native_count += 1;
+    }
+    println!("Streamed {} users via Native", native_count);
+
     // Cleanup
     http_conn.execute("TRUNCATE TABLE posts").await?;
     http_conn.execute("TRUNCATE TABLE users").await?;

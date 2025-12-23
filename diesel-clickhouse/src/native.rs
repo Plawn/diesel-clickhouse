@@ -52,6 +52,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use clickhouse_rs::{Pool, ClientHandle, Block, types::Complex};
+use futures::StreamExt;
 
 use crate::core::backend::{BindableValue, BindCollector, ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
 use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
@@ -65,6 +66,9 @@ pub use clickhouse_rs::{Block as NativeBlock, row, types};
 
 /// Type alias for the complex block type used by FromNativeBlock
 pub type ComplexBlock = Block<Complex>;
+
+/// Type alias for the simple block type (used in streaming)
+pub type SimpleBlock = Block<clickhouse_rs::types::Simple>;
 
 // =============================================================================
 // Compression Mode
@@ -342,112 +346,70 @@ pub trait FromNativeBlock: Sized {
     ) -> QueryResult<Self>;
 }
 
+/// Trait for deserializing from any block type (Simple or Complex).
+/// This is automatically implemented for types that implement FromNativeBlock
+/// and have field types that implement BlockValue for all K.
+pub trait FromAnyBlock: Sized {
+    /// Deserialize a row from a block of any type at the given index.
+    fn from_any_block<K: clickhouse_rs::types::ColumnType>(
+        block: &Block<K>,
+        row_idx: usize,
+    ) -> QueryResult<Self>;
+}
+
 /// Helper trait for extracting typed values from a Block column.
 ///
 /// This is used by the `#[derive(Row)]` macro to extract individual field values.
-pub trait BlockValue: Sized {
+/// Generic over the column type K to support both Complex and Simple blocks.
+pub trait BlockValue<K: clickhouse_rs::types::ColumnType = Complex>: Sized {
     /// Get a value from the block at the given row and column name.
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self>;
+    fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self>;
 }
 
-// Implement BlockValue for common types
-impl BlockValue for u8 {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get u8 column '{}': {}", column, e))))
-    }
+// Macro to implement BlockValue for primitive types with generic K
+macro_rules! impl_block_value {
+    ($ty:ty, $name:literal) => {
+        impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for $ty {
+            fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
+                block.get(row_idx, column)
+                    .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get {} column '{}': {}", $name, column, e))))
+            }
+        }
+    };
 }
 
-impl BlockValue for u16 {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get u16 column '{}': {}", column, e))))
-    }
-}
+// Implement BlockValue for common types (generic over K)
+impl_block_value!(u8, "u8");
+impl_block_value!(u16, "u16");
+impl_block_value!(u32, "u32");
+impl_block_value!(u64, "u64");
+impl_block_value!(i8, "i8");
+impl_block_value!(i16, "i16");
+impl_block_value!(i32, "i32");
+impl_block_value!(i64, "i64");
+impl_block_value!(f32, "f32");
+impl_block_value!(f64, "f64");
+impl_block_value!(bool, "bool");
 
-impl BlockValue for u32 {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get u32 column '{}': {}", column, e))))
-    }
-}
-
-impl BlockValue for u64 {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get u64 column '{}': {}", column, e))))
-    }
-}
-
-impl BlockValue for i8 {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get i8 column '{}': {}", column, e))))
-    }
-}
-
-impl BlockValue for i16 {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get i16 column '{}': {}", column, e))))
-    }
-}
-
-impl BlockValue for i32 {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get i32 column '{}': {}", column, e))))
-    }
-}
-
-impl BlockValue for i64 {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get i64 column '{}': {}", column, e))))
-    }
-}
-
-impl BlockValue for f32 {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get f32 column '{}': {}", column, e))))
-    }
-}
-
-impl BlockValue for f64 {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get f64 column '{}': {}", column, e))))
-    }
-}
-
-impl BlockValue for String {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
+impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for String {
+    fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         let s: &str = block.get(row_idx, column)
             .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get String column '{}': {}", column, e))))?;
         Ok(s.to_string())
     }
 }
 
-impl BlockValue for bool {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
-        // Try to get as bool directly (ClickHouse Bool type)
-        block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get bool column '{}': {}", column, e))))
-    }
-}
-
 #[cfg(feature = "chrono")]
-impl BlockValue for chrono::DateTime<chrono_tz::Tz> {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
+impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for chrono::DateTime<chrono_tz::Tz> {
+    fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
             .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get DateTime column '{}': {}", column, e))))
     }
 }
 
 #[cfg(feature = "chrono")]
-impl BlockValue for chrono::DateTime<chrono::FixedOffset> {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
+impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for chrono::DateTime<chrono::FixedOffset> {
+    fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         // Get as DateTime<Tz> and convert to FixedOffset
         let dt: chrono::DateTime<chrono_tz::Tz> = block.get(row_idx, column)
             .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get DateTime column '{}': {}", column, e))))?;
@@ -456,8 +418,8 @@ impl BlockValue for chrono::DateTime<chrono::FixedOffset> {
 }
 
 #[cfg(feature = "chrono")]
-impl BlockValue for chrono::DateTime<chrono::Utc> {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
+impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for chrono::DateTime<chrono::Utc> {
+    fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         // Get as DateTime<Tz> and convert to Utc
         let dt: chrono::DateTime<chrono_tz::Tz> = block.get(row_idx, column)
             .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get DateTime column '{}': {}", column, e))))?;
@@ -465,8 +427,8 @@ impl BlockValue for chrono::DateTime<chrono::Utc> {
     }
 }
 
-impl<T: BlockValue> BlockValue for Option<T> {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
+impl<K: clickhouse_rs::types::ColumnType, T: BlockValue<K>> BlockValue<K> for Option<T> {
+    fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         // Try to get the value, return None if it's NULL
         match T::get_value(block, row_idx, column) {
             Ok(v) => Ok(Some(v)),
@@ -475,11 +437,11 @@ impl<T: BlockValue> BlockValue for Option<T> {
     }
 }
 
-impl<T> BlockValue for Vec<T>
+impl<K: clickhouse_rs::types::ColumnType, T> BlockValue<K> for Vec<T>
 where
     for<'a> Vec<T>: clickhouse_rs::types::FromSql<'a>,
 {
-    fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
+    fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
             .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get Vec column '{}': {}", column, e))))
     }
@@ -1257,6 +1219,112 @@ impl NativeConnection {
     pub async fn load_raw<T: FromNativeBlock + Send>(&self, sql: &str) -> QueryResult<Vec<T>> {
         let block = self.query_raw(sql).await?;
         block_to_vec_optimized(&block)
+    }
+
+    // =========================================================================
+    // Streaming Methods
+    // =========================================================================
+
+    /// Stream rows from a query with a callback.
+    ///
+    /// This method uses true network streaming - blocks are fetched incrementally
+    /// from the server and processed one at a time. Memory usage is O(block_size)
+    /// instead of O(total_rows).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.stream_for_each(
+    ///     users::table.filter(users::active.eq(true)),
+    ///     |user: User| {
+    ///         println!("User: {}", user.name);
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    pub async fn stream_for_each<T, Q, F>(&self, query: Q, callback: F) -> QueryResult<()>
+    where
+        T: FromAnyBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+        F: FnMut(T) -> QueryResult<()>,
+    {
+        let sql = build_sql_interpolated(&query)?;
+        self.stream_for_each_raw(&sql, callback).await
+    }
+
+    /// Stream rows from raw SQL with a callback.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.stream_for_each_raw(
+    ///     "SELECT id, name FROM users",
+    ///     |user: User| {
+    ///         println!("User: {}", user.name);
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    pub async fn stream_for_each_raw<T, F>(&self, sql: &str, mut callback: F) -> QueryResult<()>
+    where
+        T: FromAnyBlock + Send,
+        F: FnMut(T) -> QueryResult<()>,
+    {
+        let mut client = self.get_handle().await?;
+        let mut block_stream = client.query(sql).stream_blocks();
+
+        while let Some(block_result) = block_stream.next().await {
+            let block = block_result.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))?;
+            for row_idx in 0..block.row_count() {
+                let item = T::from_any_block(&block, row_idx)?;
+                callback(item)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stream rows from a query with an async callback.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.stream_for_each_async(
+    ///     users::table.filter(users::active.eq(true)),
+    ///     |user: User| async move {
+    ///         process_user(user).await;
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    pub async fn stream_for_each_async<T, Q, F, Fut>(&self, query: Q, callback: F) -> QueryResult<()>
+    where
+        T: FromAnyBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+        F: FnMut(T) -> Fut,
+        Fut: std::future::Future<Output = QueryResult<()>>,
+    {
+        let sql = build_sql_interpolated(&query)?;
+        self.stream_for_each_async_raw(&sql, callback).await
+    }
+
+    /// Stream rows from raw SQL with an async callback.
+    pub async fn stream_for_each_async_raw<T, F, Fut>(&self, sql: &str, mut callback: F) -> QueryResult<()>
+    where
+        T: FromAnyBlock + Send,
+        F: FnMut(T) -> Fut,
+        Fut: std::future::Future<Output = QueryResult<()>>,
+    {
+        let mut client = self.get_handle().await?;
+        let mut block_stream = client.query(sql).stream_blocks();
+
+        while let Some(block_result) = block_stream.next().await {
+            let block = block_result.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))?;
+            for row_idx in 0..block.row_count() {
+                let item = T::from_any_block(&block, row_idx)?;
+                callback(item).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Load a single row.
