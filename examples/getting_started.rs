@@ -4,21 +4,7 @@
 //! Just use `#[row]` attribute for your structs and the same code works everywhere!
 //!
 //! Run with:
-//!   # HTTP backend (default)
-//!   cargo run --example getting_started --features http
-//!
-//!   # Native backend
-//!   cargo run --example getting_started --features native
-//!
-//!   # With Arrow zero-copy (HTTP)
-//!   cargo run --example getting_started --features "http,arrow"
-//!
-//!   # With true zero-copy streaming (Native Arrow)
-//!   cargo run --example getting_started --features "native-arrow"
-//!
-//!   # With URL (auto-detects backend from scheme)
-//!   CLICKHOUSE_URL=http://default:default@localhost:8123/test_db cargo run --example getting_started --features http
-//!   CLICKHOUSE_URL=tcp://default:default@localhost:9000/test_db cargo run --example getting_started --features native
+//!   cargo run --example getting_started
 //!
 //! Prerequisites: docker-compose up -d
 
@@ -107,40 +93,27 @@ pub struct User {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Connect using the appropriate backend based on enabled features
-    #[cfg(all(feature = "native", not(feature = "http")))]
-    let mut conn = {
-        println!("Connecting via Native backend");
-        Connection::native()
-            .host("localhost")
-            .user("default")
-            .password("default")
-            .database("test_db")
-            .port(9000)
-            .build()
-            .await?
-    };
-
-    #[cfg(feature = "http")]
-    let mut conn = {
-        println!("Connecting via HTTP backend");
-        Connection::http()
-            .host("localhost")
-            .user("default")
-            .password("default")
-            .database("test_db")
-            .port(8123)
-            .build()
-            .await?
-    };
+    // =========================================================================
+    // Connect via HTTP backend
+    // =========================================================================
+    println!("=== HTTP Backend Demo ===\n");
+    println!("Connecting via HTTP backend...");
+    let mut http_conn = Connection::http()
+        .host("localhost")
+        .user("default")
+        .password("default")
+        .database("test_db")
+        .port(8123)
+        .build()
+        .await?;
 
     // Clean up any existing data from previous runs
-    conn.execute("TRUNCATE TABLE IF EXISTS posts").await?;
-    conn.execute("TRUNCATE TABLE IF EXISTS users").await?;
+    http_conn.execute("TRUNCATE TABLE IF EXISTS posts").await?;
+    http_conn.execute("TRUNCATE TABLE IF EXISTS users").await?;
 
     // Run migrations
     println!("Running migrations...");
-    let applied = conn.run_pending_migrations(&MIGRATIONS).await?;
+    let applied = http_conn.run_pending_migrations(&MIGRATIONS).await?;
     println!("Applied {} migrations", applied.len());
 
     // INSERT users - idiomatic Diesel style with .execute(&conn)
@@ -169,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
     ];
     insert_into(users::table)
         .values(new_users.as_slice())
-        .execute(&conn)
+        .execute(&http_conn)
         .await?;
     println!("Inserted {} users", new_users.len());
 
@@ -196,34 +169,34 @@ async fn main() -> anyhow::Result<()> {
     ];
     insert_into(posts::table)
         .values(new_posts.as_slice())
-        .execute(&conn)
+        .execute(&http_conn)
         .await?;
     println!("Inserted {} posts", new_posts.len());
 
-    // SELECT with filters - idiomatic style with .load(&conn)
+    // SELECT with filters
     let active_users: Vec<User> = users::table
         .filter(users::active.eq(true))
         .and_filter(users::age.gt(18))
         .order_by(users::age.desc())
         .limit(10)
-        .load(&conn)
+        .load(&http_conn)
         .await?;
     println!(
         "Active users over 25: {:?}",
         active_users.iter().map(|u| &u.name).collect::<Vec<_>>()
     );
 
-    // SELECT first - using .first(&conn)
+    // SELECT first
     let alice: User = users::table
         .filter(users::name.eq("Alice"))
-        .first(&conn)
+        .first(&http_conn)
         .await?;
     println!("Found: {} ({})", alice.name, alice.email);
 
-    // SELECT optional - using .get_result(&conn)
+    // SELECT optional
     let maybe_user: Option<User> = users::table
         .filter(users::name.eq("Unknown"))
-        .get_result(&conn)
+        .get_result(&http_conn)
         .await?;
     println!("Unknown user: {:?}", maybe_user);
 
@@ -239,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
         .select((users::name, posts::title))
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
         .filter(users::active.eq(true))
-        .load(&conn)
+        .load(&http_conn)
         .await?;
     println!("Users with posts (flat):");
     for uwp in &users_with_posts {
@@ -268,117 +241,129 @@ async fn main() -> anyhow::Result<()> {
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
         .filter(users::active.eq(true))
         .group_by((users::id, users::name))
-        .load(&conn)
+        .load(&http_conn)
         .await?;
     println!("\nUsers with all their posts (grouped):");
     for u in &users_with_all_posts {
         println!("  {} ({} posts): {:?}", u.name, u.post_count, u.post_titles);
     }
 
-    // UPDATE - idiomatic style
+    // UPDATE
     update(users::table)
         .filter(users::id.eq(1u64))
         .set(users::name.eq("Alice Updated"))
-        .execute(&conn)
+        .execute(&http_conn)
         .await?;
 
     // =========================================================================
-    // Zero-Copy Processing (Arrow-based)
+    // Zero-Copy Processing (Arrow-based) - HTTP
     // =========================================================================
     //
     // For large datasets, zero-copy parsing avoids allocating strings/vectors
     // for each row. Instead, you get borrowed references directly into Arrow buffers.
 
-    #[cfg(feature = "arrow")]
-    {
-        println!("\n--- Zero-Copy with Arrow (HTTP backend) ---");
+    println!("\n--- Zero-Copy with Arrow (HTTP) ---");
 
-        // Re-insert some data for the demo
-        insert_into(users::table)
-            .values(
-                vec![
-                    NewUser {
-                        id: 10,
-                        name: "ZeroCopy1".into(),
-                        email: "zc1@test.com".into(),
-                        age: 20,
-                        active: true,
-                    },
-                    NewUser {
-                        id: 11,
-                        name: "ZeroCopy2".into(),
-                        email: "zc2@test.com".into(),
-                        age: 30,
-                        active: true,
-                    },
-                    NewUser {
-                        id: 12,
-                        name: "ZeroCopy3".into(),
-                        email: "zc3@test.com".into(),
-                        age: 40,
-                        active: false,
-                    },
-                ]
-                .as_slice(),
-            )
-            .execute(&conn)
-            .await?;
-
-        // Process rows with zero-copy - no String allocations per row!
-        let count = conn
-            .load_zero_copy(
-                "SELECT id, name, email, age FROM users WHERE id >= 10",
-                |row| {
-                    // These are borrowed references into the Arrow buffer - zero allocations!
-                    let id = row.get_u64("id")?;
-                    let name = row.get_str("name")?; // &str, not String
-                    let email = row.get_str("email")?; // &str, not String
-                    let age = row.get_u8("age")?;
-
-                    println!(
-                        "  [zero-copy] User {}: {} ({}) - age {}",
-                        id, name, email, age
-                    );
-                    Ok(())
+    // Re-insert some data for the demo
+    insert_into(users::table)
+        .values(
+            vec![
+                NewUser {
+                    id: 10,
+                    name: "ZeroCopy1".into(),
+                    email: "zc1@test.com".into(),
+                    age: 20,
+                    active: true,
                 },
-            )
-            .await?;
-        println!("Processed {} rows with zero-copy", count);
+                NewUser {
+                    id: 11,
+                    name: "ZeroCopy2".into(),
+                    email: "zc2@test.com".into(),
+                    age: 30,
+                    active: true,
+                },
+                NewUser {
+                    id: 12,
+                    name: "ZeroCopy3".into(),
+                    email: "zc3@test.com".into(),
+                    age: 40,
+                    active: false,
+                },
+            ]
+            .as_slice(),
+        )
+        .execute(&http_conn)
+        .await?;
 
-        // You can also use the columnar Arrow API directly for analytics
-        let result = conn
-            .load_arrow("SELECT id, name, age FROM users WHERE id >= 10")
-            .await?;
-        println!(
-            "Arrow result: {} rows, {} columns",
-            result.num_rows(),
-            result.num_columns()
-        );
-    }
-
-    #[cfg(all(feature = "native", feature = "native-arrow"))]
-    {
-        println!("\n--- True Zero-Copy Streaming (Native Arrow) ---");
-
-        // Re-insert some data for the demo
-        conn.execute("INSERT INTO users (id, name, email, age, active) VALUES (20, 'Stream1', 's1@test.com', 25, 1), (21, 'Stream2', 's2@test.com', 35, 1)").await?;
-
-        // Use the row-by-row API with zero-copy access
-        let count = conn
-            .load_zero_copy("SELECT id, name, email FROM users WHERE id >= 20", |row| {
+    // Process rows with zero-copy - no String allocations per row!
+    let count = http_conn
+        .load_zero_copy(
+            "SELECT id, name, email, age FROM users WHERE id >= 10",
+            |row| {
+                // These are borrowed references into the Arrow buffer - zero allocations!
                 let id = row.get_u64("id")?;
-                let name = row.get_str("name")?; // Zero-copy borrow!
-                println!("  [native zero-copy] User {}: {}", id, name);
+                let name = row.get_str("name")?; // &str, not String
+                let email = row.get_str("email")?; // &str, not String
+                let age = row.get_u8("age")?;
+
+                println!(
+                    "  [zero-copy] User {}: {} ({}) - age {}",
+                    id, name, email, age
+                );
                 Ok(())
-            })
-            .await?;
-        println!("Processed {} rows via native zero-copy streaming", count);
-    }
+            },
+        )
+        .await?;
+    println!("Processed {} rows with zero-copy", count);
+
+    // You can also use the columnar Arrow API directly for analytics
+    let result = http_conn
+        .load_arrow("SELECT id, name, age FROM users WHERE id >= 10")
+        .await?;
+    println!(
+        "Arrow result: {} rows, {} columns",
+        result.num_rows(),
+        result.num_columns()
+    );
+
+    // =========================================================================
+    // Native Backend Demo
+    // =========================================================================
+    println!("\n\n=== Native Backend Demo ===\n");
+    println!("Connecting via Native backend...");
+    let native_conn = Connection::native()
+        .host("localhost")
+        .user("default")
+        .password("default")
+        .database("test_db")
+        .port(9000)
+        .build()
+        .await?;
+
+    // Query using native backend
+    let users: Vec<User> = users::table
+        .filter(users::active.eq(true))
+        .limit(5)
+        .load(&native_conn)
+        .await?;
+    println!("Loaded {} users via Native backend", users.len());
+
+    // Zero-copy with Native Arrow streaming
+    println!("\n--- Zero-Copy with Native Arrow ---");
+    let count = native_conn
+        .load_zero_copy("SELECT id, name, email FROM users WHERE id >= 10", |row| {
+            let id = row.get_u64("id")?;
+            let name = row.get_str("name")?; // Zero-copy borrow!
+            println!("  [native zero-copy] User {}: {}", id, name);
+            Ok(())
+        })
+        .await?;
+    println!("Processed {} rows via native zero-copy streaming", count);
 
     // Cleanup
-    conn.execute("TRUNCATE TABLE posts").await?;
-    conn.execute("TRUNCATE TABLE users").await?;
-    println!("Done!");
+    http_conn.execute("TRUNCATE TABLE posts").await?;
+    http_conn.execute("TRUNCATE TABLE users").await?;
+    println!("\nDone!");
 
     Ok(())
 }

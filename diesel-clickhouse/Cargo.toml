@@ -9,7 +9,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["http", "chrono"]
+default = ["http", "chrono", "arrow", "native", "native-arrow"]
 
 # Backends
 http = ["dep:clickhouse"]

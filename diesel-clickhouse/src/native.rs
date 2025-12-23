@@ -1292,7 +1292,6 @@ impl NativeConnection {
     ///     }
     /// ).await?;
     /// ```
-    #[cfg(feature = "native-arrow")]
     pub async fn load_zero_copy<F>(&self, sql: &str, callback: F) -> QueryResult<usize>
     where
         F: for<'a> FnMut(crate::native_arrow::ArrowRow<'a>) -> QueryResult<()>,

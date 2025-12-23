@@ -50,7 +50,7 @@ edition = "2021"
 publish = false
 
 [features]
-default = ["http", "migrations"]
+default = ["http", "native", "migrations", "arrow", "native-arrow"]
 http = ["diesel-clickhouse/http"]
 native = ["diesel-clickhouse/native", "diesel-clickhouse/chrono", "dep:clickhouse-rs"]
 migrations = ["diesel-clickhouse/migrations"]

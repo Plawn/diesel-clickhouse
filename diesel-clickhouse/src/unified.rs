@@ -824,7 +824,6 @@ impl Connection {
     ///
     /// - **HTTP + Arrow**: Full support with true zero-copy
     /// - **Native + native-arrow**: Full support with true zero-copy streaming
-    #[cfg(feature = "arrow")]
     pub async fn load_zero_copy<F>(&self, sql: &str, callback: F) -> QueryResult<usize>
     where
         F: for<'a> FnMut(crate::arrow::ArrowRow<'a>) -> QueryResult<()>,
@@ -832,12 +831,8 @@ impl Connection {
         match self {
             #[cfg(feature = "http")]
             Connection::Http(conn) => conn.load_zero_copy(sql, callback).await,
-            #[cfg(all(feature = "native", feature = "native-arrow"))]
+            #[cfg(all(feature = "native"))]
             Connection::Native(conn) => conn.load_zero_copy(sql, callback).await,
-            #[cfg(all(feature = "native", not(feature = "native-arrow")))]
-            Connection::Native(_) => Err(Error::QueryError(
-                "Zero-copy parsing requires 'native-arrow' feature for Native backend.".to_string()
-            )),
         }
     }
 

@@ -26,6 +26,9 @@
 - compilation des query ?
 - sur le mode zero copy utiliser des vrais query et pas des strings
 - unifier les zero copy arrow
+- native arrow zero copy
+  - derive row
+  - query pas string
 
 https://github.com/ClickHouse/ClickHouse/pull/39906
 Le PR #39906 a étendu le protocole natif pour supporter les query parameters — les paramètres sont maintenant transmis dans les paquets Query juste après le texte de la requête GitHub
