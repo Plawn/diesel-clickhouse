@@ -64,18 +64,30 @@ pub enum RowStream<T> {
 /// True streaming iterator over rows from a Native backend.
 ///
 /// This struct uses a background task that reads blocks from the server
-/// and sends deserialized rows through a channel. This provides true streaming
-/// with O(block_size) memory usage instead of O(n).
+/// and sends deserialized blocks through a channel. Rows are buffered locally
+/// to minimize channel overhead. Memory usage is O(block_size) instead of O(n).
+///
+/// # Performance
+///
+/// Blocks are sent through the channel (typically ~65K rows per block), not
+/// individual rows. This reduces channel operations by ~65000x compared to
+/// per-row streaming, while maintaining the same memory profile.
 #[cfg(feature = "native")]
 pub struct NativeBlockStream<T> {
-    receiver: tokio::sync::mpsc::Receiver<QueryResult<T>>,
+    /// Receiver for blocks from the background task
+    receiver: tokio::sync::mpsc::Receiver<QueryResult<Vec<T>>>,
+    /// Local buffer of rows from the current block
+    buffer: std::vec::IntoIter<T>,
 }
 
 #[cfg(feature = "native")]
 impl<T> NativeBlockStream<T> {
     /// Create a new block stream from a channel receiver.
-    pub fn new(receiver: tokio::sync::mpsc::Receiver<QueryResult<T>>) -> Self {
-        Self { receiver }
+    pub fn new(receiver: tokio::sync::mpsc::Receiver<QueryResult<Vec<T>>>) -> Self {
+        Self {
+            receiver,
+            buffer: Vec::new().into_iter(),
+        }
     }
 
     /// Get the next row from the stream.
@@ -84,8 +96,17 @@ impl<T> NativeBlockStream<T> {
     /// `Ok(None)` when the stream is exhausted,
     /// or `Err(e)` if an error occurs.
     pub async fn next(&mut self) -> QueryResult<Option<T>> {
+        // First, try to get from local buffer (no async overhead)
+        if let Some(row) = self.buffer.next() {
+            return Ok(Some(row));
+        }
+
+        // Buffer empty, fetch next block from channel
         match self.receiver.recv().await {
-            Some(Ok(row)) => Ok(Some(row)),
+            Some(Ok(block)) => {
+                self.buffer = block.into_iter();
+                Ok(self.buffer.next())
+            }
             Some(Err(e)) => Err(e),
             None => Ok(None), // Stream exhausted
         }

@@ -427,10 +427,11 @@ impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for chrono::DateTime<chr
 
 impl<K: clickhouse_rs::types::ColumnType, T: BlockValue<K>> BlockValue<K> for Option<T> {
     fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
-        // Try to get the value, return None if it's NULL
+        // Try to get the value, return None only if it's actually NULL
         match T::get_value(block, row_idx, column) {
             Ok(v) => Ok(Some(v)),
-            Err(_) => Ok(None), // Assume error means NULL for Nullable columns
+            Err(Error::DeserializationError(ref msg)) if msg.contains("Nullable") => Ok(None),
+            Err(e) => Err(e), // Propagate real errors instead of masking them
         }
     }
 }
@@ -1358,13 +1359,13 @@ impl NativeConnection {
     where
         T: FromAnyBlock + Send + 'static,
     {
-        // Channel buffer size - balances memory usage vs throughput
-        // Using 1024 rows buffer which is reasonable for most use cases
-        let (tx, rx) = tokio::sync::mpsc::channel(1024);
+        // Channel buffer for blocks (not individual rows)
+        // Small buffer since each block is already ~65K rows
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
         let pool = self.pool.clone();
         let sql = sql.to_string();
 
-        // Spawn background task to read blocks and send rows
+        // Spawn background task to read blocks and send them
         tokio::spawn(async move {
             let client_result = pool.get_handle().await;
             let mut client = match client_result {
@@ -1382,12 +1383,24 @@ impl NativeConnection {
             while let Some(block_result) = block_stream.next().await {
                 match block_result {
                     Ok(block) => {
-                        for row_idx in 0..block.row_count() {
-                            let item_result = T::from_any_block(&block, row_idx);
-                            if tx.send(item_result).await.is_err() {
-                                // Receiver dropped, stop streaming
-                                return;
+                        // Deserialize entire block at once
+                        let row_count = block.row_count();
+                        let mut rows = Vec::with_capacity(row_count);
+
+                        for row_idx in 0..row_count {
+                            match T::from_any_block(&block, row_idx) {
+                                Ok(row) => rows.push(row),
+                                Err(e) => {
+                                    let _ = tx.send(Err(e)).await;
+                                    return;
+                                }
                             }
+                        }
+
+                        // Send entire block through channel
+                        if tx.send(Ok(rows)).await.is_err() {
+                            // Receiver dropped, stop streaming
+                            return;
                         }
                     }
                     Err(e) => {
