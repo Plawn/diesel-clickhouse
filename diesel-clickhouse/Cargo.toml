@@ -41,6 +41,9 @@ native-tls-native = ["clickhouse-rs?/tls"]
 # Tracing
 tracing = ["dep:tracing"]
 
+# Apache Arrow zero-copy columnar format
+arrow = ["dep:arrow", "http"]
+
 [dependencies]
 diesel-clickhouse-core.workspace = true
 diesel-clickhouse-types.workspace = true
@@ -62,6 +65,9 @@ percent-encoding = { version = "2", optional = true }
 
 # Zero-copy parsing
 smallvec = "1.11"
+
+# Optional - Apache Arrow
+arrow = { workspace = true, optional = true }
 
 # Optional - Other
 chrono = { workspace = true, optional = true }

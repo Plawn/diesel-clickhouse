@@ -801,6 +801,7 @@ impl ClickHouseConnection {
     /// - No allocations per row (values are borrowed from response buffer)
     /// - Ideal for large result sets with simple data access patterns
     /// - For complex nested types (Array, Map), consider using `load_json()` instead
+    /// - Uses streaming internally for O(1) memory usage regardless of result size
     pub async fn load_zero_copy<F>(
         &self,
         sql: &str,
@@ -810,34 +811,15 @@ impl ClickHouseConnection {
     where
         F: for<'a, 'b> FnMut(crate::zero_copy::ZeroCopyRow<'a, 'b>) -> QueryResult<()>,
     {
-        // Execute query with TabSeparated format (no header)
-        let mut cursor = self.client
-            .query(sql)
-            .fetch_bytes("TabSeparated")
-            .map_err(|e| Error::QueryError(e.to_string()))?;
-
-        // Collect all bytes (we need the full buffer for zero-copy)
-        let mut all_bytes = Vec::with_capacity(4096);
-        loop {
-            match cursor.next().await {
-                Ok(Some(chunk)) => {
-                    all_bytes.extend_from_slice(&chunk);
-                }
-                Ok(None) => break,
-                Err(e) => return Err(Error::QueryError(e.to_string())),
-            }
-        }
-
-        // Parse using zero-copy TSV parser
-        let parser = crate::zero_copy::TsvParser::new(&all_bytes, columns);
-        parser.for_each(callback)
+        // Delegate to streaming implementation for O(1) memory usage
+        self.load_zero_copy_streaming(sql, columns, callback).await
     }
 
     /// Load rows using zero-copy streaming parsing with a callback.
     ///
-    /// Unlike `load_zero_copy`, this method processes rows as chunks arrive
-    /// from the network, which can reduce memory usage for very large result sets.
-    /// However, rows that span chunk boundaries require buffering.
+    /// This method processes rows as chunks arrive from the network,
+    /// providing O(1) memory usage regardless of result set size.
+    /// Rows that span chunk boundaries are automatically buffered.
     ///
     /// # Arguments
     ///
@@ -930,6 +912,145 @@ impl ClickHouseConnection {
     {
         let sql = build_sql(&query)?;
         self.load_zero_copy(&sql, columns, callback).await
+    }
+}
+
+// =============================================================================
+// Apache Arrow API
+// =============================================================================
+
+#[cfg(feature = "arrow")]
+impl ClickHouseConnection {
+    /// Load query results as Apache Arrow RecordBatches.
+    ///
+    /// This method uses ClickHouse's ArrowStream format for true zero-copy
+    /// columnar data access. Arrow is the most efficient format for analytical
+    /// workloads and enables seamless interoperability with tools like Polars,
+    /// DataFusion, and DuckDB.
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - The SQL query to execute
+    ///
+    /// # Returns
+    ///
+    /// An `ArrowResult` containing the schema and record batches.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::prelude::*;
+    /// use diesel_clickhouse::arrow::array::{Int64Array, StringArray};
+    ///
+    /// let result = conn.load_arrow("SELECT id, name FROM users").await?;
+    ///
+    /// println!("Schema: {:?}", result.schema());
+    /// println!("Total rows: {}", result.num_rows());
+    ///
+    /// for batch in result {
+    ///     let ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    ///     let names = batch.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+    ///
+    ///     for i in 0..batch.num_rows() {
+    ///         println!("User {}: {}", ids.value(i), names.value(i));
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Performance Notes
+    ///
+    /// - **Zero-copy**: Data is accessed directly without parsing
+    /// - **Columnar**: Efficient for queries accessing few columns
+    /// - **SIMD-ready**: Arrow's layout enables vectorized operations
+    /// - **Recommended for**: Large analytical queries, data pipelines
+    pub async fn load_arrow(&self, sql: &str) -> QueryResult<crate::arrow::ArrowResult> {
+        // Execute query with ArrowStream format
+        let mut cursor = self.client
+            .query(sql)
+            .fetch_bytes("ArrowStream")
+            .map_err(|e| Error::QueryError(e.to_string()))?;
+
+        // Collect all bytes (Arrow IPC stream needs complete data)
+        let mut all_bytes = Vec::with_capacity(8192);
+        loop {
+            match cursor.next().await {
+                Ok(Some(chunk)) => {
+                    all_bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => return Err(Error::QueryError(e.to_string())),
+            }
+        }
+
+        // Parse Arrow IPC stream
+        crate::arrow::parse_arrow_stream(&all_bytes)
+    }
+
+    /// Load query results as Arrow with a callback for each batch.
+    ///
+    /// This method processes batches as they are parsed, which can be more
+    /// memory-efficient for very large result sets.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::arrow::array::Int64Array;
+    ///
+    /// let total = conn.load_arrow_callback(
+    ///     "SELECT id FROM huge_table",
+    ///     |batch| {
+    ///         let ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    ///         println!("Processing {} rows", ids.len());
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// println!("Processed {} total rows", total);
+    /// ```
+    pub async fn load_arrow_callback<F>(
+        &self,
+        sql: &str,
+        callback: F,
+    ) -> QueryResult<usize>
+    where
+        F: FnMut(::arrow::array::RecordBatch) -> QueryResult<()>,
+    {
+        // Execute query with ArrowStream format
+        let mut cursor = self.client
+            .query(sql)
+            .fetch_bytes("ArrowStream")
+            .map_err(|e| Error::QueryError(e.to_string()))?;
+
+        // Collect bytes
+        let mut all_bytes = Vec::with_capacity(8192);
+        loop {
+            match cursor.next().await {
+                Ok(Some(chunk)) => {
+                    all_bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => return Err(Error::QueryError(e.to_string())),
+            }
+        }
+
+        // Parse with callback
+        crate::arrow::parse_arrow_stream_callback(&all_bytes, callback)
+    }
+
+    /// Load query results from a QueryFragment as Arrow.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let result = conn.load_arrow_query(
+    ///     users::table.filter(users::active.eq(true))
+    /// ).await?;
+    /// ```
+    pub async fn load_arrow_query<Q>(&self, query: Q) -> QueryResult<crate::arrow::ArrowResult>
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        let sql = build_sql(&query)?;
+        self.load_arrow(&sql).await
     }
 }
 

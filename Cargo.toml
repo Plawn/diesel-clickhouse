@@ -125,6 +125,9 @@ bumpalo = { version = "3.16", features = ["collections"] }
 string-interner = "0.17"
 rayon = "1.10"
 
+# Apache Arrow (optional, for zero-copy columnar data)
+arrow = { version = "53", default-features = false, features = ["ipc"] }
+
 # Test dependencies (for integration tests)
 tempfile = "3"
 reqwest = { version = "0.11", features = ["blocking"] }

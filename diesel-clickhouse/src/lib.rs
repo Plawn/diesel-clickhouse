@@ -349,6 +349,36 @@ pub mod zero_copy;
 #[cfg(feature = "http")]
 pub use zero_copy::{ZeroCopyRow, BorrowedValue, TsvParser, StreamingTsvParser};
 
+/// Apache Arrow integration for zero-copy columnar data processing.
+///
+/// This module provides high-performance data loading using Apache Arrow's
+/// columnar format. Arrow enables true zero-copy data access and is optimized
+/// for analytical workloads.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::prelude::*;
+/// use diesel_clickhouse::arrow::array::{Int64Array, StringArray};
+///
+/// // Load data as Arrow RecordBatches
+/// let result = conn.load_arrow("SELECT id, name FROM users").await?;
+///
+/// for batch in result {
+///     let ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+///     let names = batch.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+///
+///     for i in 0..batch.num_rows() {
+///         println!("User {}: {}", ids.value(i), names.value(i));
+///     }
+/// }
+/// ```
+#[cfg(feature = "arrow")]
+pub mod arrow;
+
+#[cfg(feature = "arrow")]
+pub use arrow::{ArrowResult, parse_arrow_stream};
+
 /// Batch insertion utilities.
 ///
 /// Provides `BatchInserter` for efficient bulk inserts.

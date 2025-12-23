@@ -188,7 +188,7 @@ pub struct ZeroCopyRow<'a, 'b> {
     /// Column values (inline storage for small rows)
     values: SmallVec<[BorrowedValue<'a>; 16]>,
     /// Column name to index mapping
-    column_indices: &'b HashMap<String, usize>,
+    column_indices: &'b HashMap<Box<str>, usize>,
 }
 
 impl<'a, 'b> ZeroCopyRow<'a, 'b> {
@@ -196,7 +196,7 @@ impl<'a, 'b> ZeroCopyRow<'a, 'b> {
     #[inline]
     pub(crate) fn new(
         values: SmallVec<[BorrowedValue<'a>; 16]>,
-        column_indices: &'b HashMap<String, usize>,
+        column_indices: &'b HashMap<Box<str>, usize>,
     ) -> Self {
         Self { values, column_indices }
     }
@@ -300,9 +300,11 @@ impl<'a, 'b> ZeroCopyRow<'a, 'b> {
 ///
 /// This parser operates on borrowed byte slices without allocating
 /// for each field value.
+///
+/// Uses `Box<str>` internally for column names (more compact than String).
 pub struct TsvParser<'a> {
     data: &'a [u8],
-    column_indices: HashMap<String, usize>,
+    column_indices: HashMap<Box<str>, usize>,
 }
 
 impl<'a> TsvParser<'a> {
@@ -310,10 +312,10 @@ impl<'a> TsvParser<'a> {
     ///
     /// Column names must match the order of columns in the query result.
     pub fn new(data: &'a [u8], columns: &[&str]) -> Self {
-        let column_indices: HashMap<String, usize> = columns
+        let column_indices: HashMap<Box<str>, usize> = columns
             .iter()
             .enumerate()
-            .map(|(i, name)| ((*name).to_string(), i))
+            .map(|(i, name)| (Box::from(*name), i))
             .collect();
 
         Self { data, column_indices }
@@ -389,18 +391,20 @@ impl<'a> TsvParser<'a> {
 /// A streaming TSV parser that processes data chunk by chunk.
 ///
 /// This parser maintains internal state to handle rows that span chunk boundaries.
+///
+/// Uses `Box<str>` internally for column names (more compact than String).
 pub struct StreamingTsvParser {
-    column_indices: HashMap<String, usize>,
+    column_indices: HashMap<Box<str>, usize>,
     buffer: Vec<u8>,
 }
 
 impl StreamingTsvParser {
     /// Create a new streaming parser with the given column names.
     pub fn new(columns: &[&str]) -> Self {
-        let column_indices: HashMap<String, usize> = columns
+        let column_indices: HashMap<Box<str>, usize> = columns
             .iter()
             .enumerate()
-            .map(|(i, name)| ((*name).to_string(), i))
+            .map(|(i, name)| (Box::from(*name), i))
             .collect();
 
         Self {

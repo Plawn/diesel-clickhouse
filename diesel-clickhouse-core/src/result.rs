@@ -1,5 +1,6 @@
 //! Error types and Result alias for diesel-clickhouse.
 
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Result type alias for diesel-clickhouse operations.
@@ -241,14 +242,17 @@ impl Row for RawRow {
 /// making repeated column lookups by name much faster.
 ///
 /// Use this when you need to access columns by name multiple times.
+///
+/// Uses `Arc<str>` internally to share column names between the
+/// name list and index map without cloning string data.
 #[derive(Debug)]
 pub struct IndexedRow {
-    /// Column names in order.
-    names: Vec<String>,
+    /// Column names in order (shared with name_to_index via Arc).
+    names: Vec<Arc<str>>,
     /// Column values in order.
     values: Vec<Vec<u8>>,
-    /// Name to index mapping for O(1) lookup.
-    name_to_index: std::collections::HashMap<String, usize>,
+    /// Name to index mapping for O(1) lookup (shares strings with names).
+    name_to_index: std::collections::HashMap<Arc<str>, usize>,
 }
 
 impl IndexedRow {
@@ -271,10 +275,12 @@ impl IndexedRow {
     }
 
     /// Add a column to the row.
+    ///
+    /// Uses `Arc<str>` to share the column name without cloning string data.
     pub fn add_column(&mut self, name: impl Into<String>, value: Vec<u8>) {
-        let name = name.into();
+        let name: Arc<str> = Arc::from(name.into());
         let index = self.names.len();
-        self.name_to_index.insert(name.clone(), index);
+        self.name_to_index.insert(Arc::clone(&name), index); // Cheap pointer clone
         self.names.push(name);
         self.values.push(value);
     }
@@ -308,7 +314,7 @@ impl Row for IndexedRow {
 
     #[inline]
     fn column_name(&self, index: usize) -> Option<&str> {
-        self.names.get(index).map(|s| s.as_str())
+        self.names.get(index).map(|s| &**s)
     }
 }
 
@@ -316,18 +322,25 @@ impl Row for IndexedRow {
 ///
 /// This is useful when processing many rows with the same columns,
 /// as it allows sharing the column name -> index mapping.
+///
+/// Uses `Arc<str>` internally to share column names without cloning.
 #[derive(Debug, Clone)]
 pub struct ColumnIndex {
-    name_to_index: std::collections::HashMap<String, usize>,
-    names: Vec<String>,
+    name_to_index: std::collections::HashMap<Arc<str>, usize>,
+    names: Vec<Arc<str>>,
 }
 
 impl ColumnIndex {
     /// Create a new column index from column names.
+    ///
+    /// Converts strings to `Arc<str>` for efficient sharing without cloning.
     pub fn new(names: Vec<String>) -> Self {
-        let name_to_index = names.iter()
+        // Convert to Arc<str> once, then share via cheap Arc::clone
+        let names: Vec<Arc<str>> = names.into_iter().map(Arc::from).collect();
+        let name_to_index = names
+            .iter()
             .enumerate()
-            .map(|(i, name)| (name.clone(), i))
+            .map(|(i, name)| (Arc::clone(name), i)) // Cheap pointer clone
             .collect();
         Self { name_to_index, names }
     }
@@ -341,7 +354,7 @@ impl ColumnIndex {
     /// Get column name by index.
     #[inline]
     pub fn name(&self, index: usize) -> Option<&str> {
-        self.names.get(index).map(|s| s.as_str())
+        self.names.get(index).map(|s| &**s)
     }
 
     /// Get the number of columns.

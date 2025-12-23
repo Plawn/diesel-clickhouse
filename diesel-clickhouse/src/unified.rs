@@ -878,7 +878,7 @@ impl Connection {
     ///
     /// # Backend Support
     ///
-    /// - **HTTP**: Full support with true zero-copy parsing
+    /// - **HTTP**: Full support with true zero-copy streaming (O(1) memory)
     /// - **Native**: Not supported (returns error). Use `load()` instead.
     #[cfg(feature = "http")]
     pub async fn load_zero_copy<F>(
@@ -901,8 +901,8 @@ impl Connection {
 
     /// Load rows using zero-copy streaming parsing with a callback (HTTP backend only).
     ///
-    /// Unlike `load_zero_copy`, this method processes rows as chunks arrive
-    /// from the network, which can reduce peak memory usage for very large result sets.
+    /// Processes rows as chunks arrive from the network, providing O(1) memory
+    /// usage regardless of result set size. This is an alias for `load_zero_copy`.
     ///
     /// # Example
     ///
@@ -965,6 +965,102 @@ impl Connection {
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
                 "Zero-copy parsing is only supported on HTTP backend.".to_string()
+            )),
+        }
+    }
+
+    // =========================================================================
+    // Apache Arrow API
+    // =========================================================================
+
+    /// Load query results as Apache Arrow RecordBatches (HTTP backend only).
+    ///
+    /// This method uses ClickHouse's ArrowStream format for true zero-copy
+    /// columnar data access. Arrow is the most efficient format for analytical
+    /// workloads and enables seamless interoperability with tools like Polars,
+    /// DataFusion, and DuckDB.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::prelude::*;
+    /// use diesel_clickhouse::arrow::array::{Int64Array, StringArray};
+    ///
+    /// let result = conn.load_arrow("SELECT id, name FROM users").await?;
+    ///
+    /// for batch in result {
+    ///     let ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    ///     for i in 0..batch.num_rows() {
+    ///         println!("ID: {}", ids.value(i));
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Backend Support
+    ///
+    /// - **HTTP**: Full support with ArrowStream format
+    /// - **Native**: Not supported (returns error)
+    #[cfg(feature = "arrow")]
+    pub async fn load_arrow(&self, sql: &str) -> QueryResult<crate::arrow::ArrowResult> {
+        match self {
+            Connection::Http(conn) => conn.load_arrow(sql).await,
+            #[cfg(feature = "native")]
+            Connection::Native(_) => Err(Error::QueryError(
+                "Arrow format is only supported on HTTP backend.".to_string()
+            )),
+        }
+    }
+
+    /// Load query results as Arrow with a callback for each batch (HTTP backend only).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let total = conn.load_arrow_callback(
+    ///     "SELECT * FROM huge_table",
+    ///     |batch| {
+    ///         println!("Processing {} rows", batch.num_rows());
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    #[cfg(feature = "arrow")]
+    pub async fn load_arrow_callback<F>(
+        &self,
+        sql: &str,
+        callback: F,
+    ) -> QueryResult<usize>
+    where
+        F: FnMut(::arrow::array::RecordBatch) -> QueryResult<()>,
+    {
+        match self {
+            Connection::Http(conn) => conn.load_arrow_callback(sql, callback).await,
+            #[cfg(feature = "native")]
+            Connection::Native(_) => Err(Error::QueryError(
+                "Arrow format is only supported on HTTP backend.".to_string()
+            )),
+        }
+    }
+
+    /// Load query results from a QueryFragment as Arrow (HTTP backend only).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let result = conn.load_arrow_query(
+    ///     users::table.filter(users::active.eq(true))
+    /// ).await?;
+    /// ```
+    #[cfg(feature = "arrow")]
+    pub async fn load_arrow_query<Q>(&self, query: Q) -> QueryResult<crate::arrow::ArrowResult>
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        match self {
+            Connection::Http(conn) => conn.load_arrow_query(query).await,
+            #[cfg(feature = "native")]
+            Connection::Native(_) => Err(Error::QueryError(
+                "Arrow format is only supported on HTTP backend.".to_string()
             )),
         }
     }

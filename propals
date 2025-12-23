@@ -26,3 +26,8 @@
   | Async insert mode   | Support du mode async_insert de ClickHouse |
   | Metrics/Tracing     | Instrumenter avec tracing pour profiling   |
   | Zero-copy parsing   | Parser les réponses sans copier les bytes  |
+
+
+---
+perfo
+| TsvParser.column_indices          | HashMap<String, usize>  | HashMap<Box<str>, usize>  | -8 bytes/string |
