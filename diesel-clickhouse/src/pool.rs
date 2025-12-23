@@ -84,6 +84,7 @@
 //!     .await?;
 //! ```
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use crate::Connection;
 use crate::core::result::{Error, QueryResult};
@@ -445,8 +446,8 @@ impl Pool {
             self.inner.available.acquire(),
         )
         .await
-        .map_err(|e| Error::ConnectionError(format!("Pool connection timeout: {}", e)))?
-        .map_err(|e| Error::ConnectionError(format!("Pool closed: {}", e)))?;
+        .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Pool connection timeout: {}", e))))?
+        .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Pool closed: {}", e))))?;
 
         // Forget the permit - we'll add it back when the connection is returned
         permit.forget();

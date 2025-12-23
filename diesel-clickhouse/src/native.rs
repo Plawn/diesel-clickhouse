@@ -47,6 +47,9 @@
 //! let users: Vec<User> = conn.load(users::table.filter(users::active.eq(true))).await?;
 //! ```
 
+use std::borrow::Cow;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use clickhouse_rs::{Pool, ClientHandle, Block, types::Complex};
 
@@ -55,8 +58,6 @@ use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
 use crate::core::escape::escape_identifier;
 use crate::core::query_builder::{AstPass, QueryFragment};
 use crate::core::result::{Error, QueryResult};
-
-use std::time::Duration;
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 
 // Re-export clickhouse-rs types for convenience
@@ -223,15 +224,15 @@ impl NativeClientBuilder {
     /// - Connection to the server fails
     pub async fn build(self) -> QueryResult<crate::Connection> {
         let host = self.host.ok_or_else(||
-            Error::ConnectionError("host is required".to_string()))?;
+            Error::ConnectionError(Cow::Borrowed("host is required")))?;
         let port = self.port.ok_or_else(||
-            Error::ConnectionError("port is required".to_string()))?;
+            Error::ConnectionError(Cow::Borrowed("port is required")))?;
         let database = self.database.ok_or_else(||
-            Error::ConnectionError("database is required".to_string()))?;
+            Error::ConnectionError(Cow::Borrowed("database is required")))?;
         let user = self.user.ok_or_else(||
-            Error::ConnectionError("user is required".to_string()))?;
+            Error::ConnectionError(Cow::Borrowed("user is required")))?;
         let password = self.password.ok_or_else(||
-            Error::ConnectionError("password is required".to_string()))?;
+            Error::ConnectionError(Cow::Borrowed("password is required")))?;
 
         // URL-encode user, password, and database to handle special characters
         // Only encode characters that have special meaning in URLs
@@ -289,13 +290,13 @@ impl NativeClientBuilder {
         let mut client = pool
             .get_handle()
             .await
-            .map_err(|e| Error::ConnectionError(format!("Failed to connect: {}", e)))?;
+            .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to connect: {}", e))))?;
 
         client
             .query("SELECT 1")
             .fetch_all()
             .await
-            .map_err(|e| Error::ConnectionError(format!("Connection test failed: {}", e)))?;
+            .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Connection test failed: {}", e))))?;
 
         let server_addr = format!("{}:{}", host, port);
 
@@ -353,77 +354,77 @@ pub trait BlockValue: Sized {
 impl BlockValue for u8 {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get u8 column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get u8 column '{}': {}", column, e))))
     }
 }
 
 impl BlockValue for u16 {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get u16 column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get u16 column '{}': {}", column, e))))
     }
 }
 
 impl BlockValue for u32 {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get u32 column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get u32 column '{}': {}", column, e))))
     }
 }
 
 impl BlockValue for u64 {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get u64 column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get u64 column '{}': {}", column, e))))
     }
 }
 
 impl BlockValue for i8 {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get i8 column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get i8 column '{}': {}", column, e))))
     }
 }
 
 impl BlockValue for i16 {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get i16 column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get i16 column '{}': {}", column, e))))
     }
 }
 
 impl BlockValue for i32 {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get i32 column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get i32 column '{}': {}", column, e))))
     }
 }
 
 impl BlockValue for i64 {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get i64 column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get i64 column '{}': {}", column, e))))
     }
 }
 
 impl BlockValue for f32 {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get f32 column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get f32 column '{}': {}", column, e))))
     }
 }
 
 impl BlockValue for f64 {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get f64 column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get f64 column '{}': {}", column, e))))
     }
 }
 
 impl BlockValue for String {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         let s: &str = block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get String column '{}': {}", column, e)))?;
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get String column '{}': {}", column, e))))?;
         Ok(s.to_string())
     }
 }
@@ -432,7 +433,7 @@ impl BlockValue for bool {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         // Try to get as bool directly (ClickHouse Bool type)
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get bool column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get bool column '{}': {}", column, e))))
     }
 }
 
@@ -440,7 +441,7 @@ impl BlockValue for bool {
 impl BlockValue for chrono::DateTime<chrono_tz::Tz> {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get DateTime column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get DateTime column '{}': {}", column, e))))
     }
 }
 
@@ -449,7 +450,7 @@ impl BlockValue for chrono::DateTime<chrono::FixedOffset> {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         // Get as DateTime<Tz> and convert to FixedOffset
         let dt: chrono::DateTime<chrono_tz::Tz> = block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get DateTime column '{}': {}", column, e)))?;
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get DateTime column '{}': {}", column, e))))?;
         Ok(dt.fixed_offset())
     }
 }
@@ -459,7 +460,7 @@ impl BlockValue for chrono::DateTime<chrono::Utc> {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         // Get as DateTime<Tz> and convert to Utc
         let dt: chrono::DateTime<chrono_tz::Tz> = block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get DateTime column '{}': {}", column, e)))?;
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get DateTime column '{}': {}", column, e))))?;
         Ok(dt.with_timezone(&chrono::Utc))
     }
 }
@@ -480,7 +481,7 @@ where
 {
     fn get_value(block: &ComplexBlock, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(format!("Failed to get Vec column '{}': {}", column, e)))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get Vec column '{}': {}", column, e))))
     }
 }
 
@@ -554,6 +555,27 @@ pub trait IntoBlockColumn {
 
     /// Add the column to a block.
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block;
+}
+
+/// Trait for types that can be added as a column to a Block by taking ownership.
+///
+/// This is an optimization to avoid cloning for types like `String` and `Vec<T>`.
+/// Use this trait when you have owned values and want to avoid unnecessary allocations.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // With IntoBlockColumn (requires clone):
+/// IntoBlockColumn::push_to_column(&my_string, &mut column);
+///
+/// // With IntoBlockColumnOwned (no clone, takes ownership):
+/// IntoBlockColumnOwned::push_to_column_owned(my_string, &mut column);
+/// ```
+pub trait IntoBlockColumnOwned: IntoBlockColumn + Sized {
+    /// Add this value to a column data vector, taking ownership.
+    ///
+    /// This avoids cloning for types like `String` and `Vec<T>`.
+    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData);
 }
 
 // Implement IntoBlockColumn for primitive types
@@ -749,6 +771,12 @@ impl IntoBlockColumn for String {
     }
 }
 
+impl IntoBlockColumnOwned for String {
+    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
+        column.push(value);
+    }
+}
+
 impl IntoBlockColumn for &str {
     type ColumnData = Vec<String>;
 
@@ -782,6 +810,15 @@ where
 
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
         block.column(name, data)
+    }
+}
+
+impl<T: Clone> IntoBlockColumnOwned for Vec<T>
+where
+    Vec<Vec<T>>: clickhouse_rs::types::column::ColumnFrom,
+{
+    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
+        column.push(value);
     }
 }
 
@@ -943,7 +980,7 @@ impl NativeConnection {
         self.pool
             .get_handle()
             .await
-            .map_err(|e| Error::ConnectionError(format!("Failed to get handle: {}", e)))
+            .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to get handle: {}", e))))
     }
 
     /// Execute a raw SQL query (no results).
@@ -952,7 +989,7 @@ impl NativeConnection {
         client
             .execute(sql)
             .await
-            .map_err(|e| Error::QueryError(e.to_string()))?;
+            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))?;
         Ok(())
     }
 
@@ -991,7 +1028,7 @@ impl NativeConnection {
             .query(sql)
             .fetch_all()
             .await
-            .map_err(|e| Error::QueryError(e.to_string()))
+            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
     }
 
     /// Execute a query fragment and return the result block.
@@ -1021,7 +1058,7 @@ impl NativeConnection {
         client
             .insert(table, block)
             .await
-            .map_err(|e| Error::QueryError(format!("Insert failed: {}", e)))?;
+            .map_err(|e| Error::QueryError(Cow::Owned(format!("Insert failed: {}", e))))?;
         Ok(())
     }
 
@@ -1124,11 +1161,11 @@ fn interpolate_bindings(sql: &str, bindings: &[BindableValue]) -> QueryResult<St
     for ch in sql.chars() {
         if ch == '?' {
             if binding_idx >= bindings.len() {
-                return Err(Error::QueryError(format!(
+                return Err(Error::QueryError(Cow::Owned(format!(
                     "Not enough bind values: expected at least {}, got {}",
                     binding_idx + 1,
                     bindings.len()
-                )));
+                ))));
             }
             result.push_str(&bindings[binding_idx].sql_literal());
             binding_idx += 1;
@@ -1138,11 +1175,11 @@ fn interpolate_bindings(sql: &str, bindings: &[BindableValue]) -> QueryResult<St
     }
 
     if binding_idx != bindings.len() {
-        return Err(Error::QueryError(format!(
+        return Err(Error::QueryError(Cow::Owned(format!(
             "Too many bind values: expected {}, got {}",
             binding_idx,
             bindings.len()
-        )));
+        ))));
     }
 
     Ok(result)

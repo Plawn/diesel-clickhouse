@@ -6,6 +6,7 @@
 //! Based on [ch2rs](https://github.com/ClickHouse/ch2rs) (MIT License).
 //! Original authors: ClickHouse Contributors, Paul Loyd <pavelko95@gmail.com>
 
+use std::borrow::Cow;
 use std::fmt;
 
 use crate::result::{Error, QueryResult};
@@ -229,14 +230,14 @@ pub fn parse_type(raw: &str) -> QueryResult<ClickHouseSqlType> {
     let raw = if let Some(args) = extract_inner(raw, "SimpleAggregateFunction") {
         // SimpleAggregateFunction(func, Type) -> Type
         extract_second_arg(args).ok_or_else(|| {
-            Error::TypeParseError(format!(
+            Error::TypeParseError(Cow::Owned(format!(
                 "invalid SimpleAggregateFunction format: {raw}"
-            ))
+            )))
         })?
     } else if let Some(args) = extract_inner(raw, "AggregateFunction") {
         // AggregateFunction(func, Type) -> Type
         extract_second_arg(args).ok_or_else(|| {
-            Error::TypeParseError(format!("invalid AggregateFunction format: {raw}"))
+            Error::TypeParseError(Cow::Owned(format!("invalid AggregateFunction format: {raw}")))
         })?
     } else {
         raw
@@ -311,7 +312,7 @@ fn parse_type_inner(raw: &str) -> QueryResult<ClickHouseSqlType> {
                 let prec = prec
                     .trim()
                     .parse::<u8>()
-                    .map_err(|_| Error::TypeParseError(format!("invalid DateTime64 precision: {prec}")))?;
+                    .map_err(|_| Error::TypeParseError(Cow::Owned(format!("invalid DateTime64 precision: {prec}"))))?;
                 ClickHouseSqlType::DateTime64(prec, tz.map(|s| s.trim().trim_matches('\'').into()))
             }
             // FixedString(n)
@@ -319,47 +320,47 @@ fn parse_type_inner(raw: &str) -> QueryResult<ClickHouseSqlType> {
                 let n = inner
                     .trim()
                     .parse::<u32>()
-                    .map_err(|_| Error::TypeParseError(format!("invalid FixedString size: {inner}")))?;
+                    .map_err(|_| Error::TypeParseError(Cow::Owned(format!("invalid FixedString size: {inner}"))))?;
                 ClickHouseSqlType::FixedString(n)
             }
             // Decimal(p, s)
             else if let Some(inner) = extract_inner(raw, "Decimal") {
                 let (p, s) = split_two_args(inner).ok_or_else(|| {
-                    Error::TypeParseError(format!("invalid Decimal format: {raw}"))
+                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal format: {raw}")))
                 })?;
                 let p = p.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(format!("invalid Decimal precision: {p}"))
+                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal precision: {p}")))
                 })?;
                 let s = s.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(format!("invalid Decimal scale: {s}"))
+                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal scale: {s}")))
                 })?;
                 ClickHouseSqlType::Decimal(p, s)
             }
             // Decimal32(s)
             else if let Some(inner) = extract_inner(raw, "Decimal32") {
                 let s = inner.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(format!("invalid Decimal32 scale: {inner}"))
+                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal32 scale: {inner}")))
                 })?;
                 ClickHouseSqlType::Decimal32(s)
             }
             // Decimal64(s)
             else if let Some(inner) = extract_inner(raw, "Decimal64") {
                 let s = inner.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(format!("invalid Decimal64 scale: {inner}"))
+                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal64 scale: {inner}")))
                 })?;
                 ClickHouseSqlType::Decimal64(s)
             }
             // Decimal128(s)
             else if let Some(inner) = extract_inner(raw, "Decimal128") {
                 let s = inner.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(format!("invalid Decimal128 scale: {inner}"))
+                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal128 scale: {inner}")))
                 })?;
                 ClickHouseSqlType::Decimal128(s)
             }
             // Decimal256(s)
             else if let Some(inner) = extract_inner(raw, "Decimal256") {
                 let s = inner.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(format!("invalid Decimal256 scale: {inner}"))
+                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal256 scale: {inner}")))
                 })?;
                 ClickHouseSqlType::Decimal256(s)
             }
@@ -386,7 +387,7 @@ fn parse_type_inner(raw: &str) -> QueryResult<ClickHouseSqlType> {
             // Map(key, value)
             else if let Some(inner) = extract_inner(raw, "Map") {
                 let (key, value) = split_two_args(inner).ok_or_else(|| {
-                    Error::TypeParseError(format!("invalid Map format: {raw}"))
+                    Error::TypeParseError(Cow::Owned(format!("invalid Map format: {raw}")))
                 })?;
                 let key = parse_type_inner(key.trim())?;
                 let value = parse_type_inner(value.trim())?;
@@ -494,7 +495,7 @@ where
 
         // Parse 'Name' = Value
         let (name, value) = part.split_once(" = ").ok_or_else(|| {
-            Error::TypeParseError(format!("invalid enum variant format: {part}"))
+            Error::TypeParseError(Cow::Owned(format!("invalid enum variant format: {part}")))
         })?;
 
         // Remove quotes from name
@@ -502,7 +503,7 @@ where
 
         // Parse value
         let value: T = value.trim().parse().map_err(|e| {
-            Error::TypeParseError(format!("invalid enum value '{value}': {e}"))
+            Error::TypeParseError(Cow::Owned(format!("invalid enum value '{value}': {e}")))
         })?;
 
         result.push((name.into(), value));
@@ -547,7 +548,7 @@ fn parse_nested_fields(s: &str) -> QueryResult<Vec<(std::string::String, ClickHo
 
         // Split "name Type" - find first space not inside parens
         let (name, type_str) = split_name_type(part).ok_or_else(|| {
-            Error::TypeParseError(format!("invalid Nested field format: {part}"))
+            Error::TypeParseError(Cow::Owned(format!("invalid Nested field format: {part}")))
         })?;
 
         let ty = parse_type_inner(type_str)?;

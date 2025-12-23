@@ -84,6 +84,8 @@
 //! }
 //! ```
 
+use std::borrow::Cow;
+
 use crate::core::backend::ClickHouse;
 use crate::core::query_builder::QueryFragment;
 use crate::core::result::{Error, QueryResult};
@@ -527,7 +529,7 @@ impl Connection {
             Connection::Http(conn) => conn.load_binary(query).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "load_binary() is only supported on HTTP backend. Native backend uses its own binary protocol via load().".to_string()
+                Cow::Borrowed("load_binary() is only supported on HTTP backend. Native backend uses its own binary protocol via load().")
             )),
         }
     }
@@ -545,7 +547,7 @@ impl Connection {
             Connection::Http(conn) => conn.load_binary_one(query).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "load_binary_one() is only supported on HTTP backend.".to_string()
+                Cow::Borrowed("load_binary_one() is only supported on HTTP backend.")
             )),
         }
     }
@@ -563,7 +565,7 @@ impl Connection {
             Connection::Http(conn) => conn.load_binary_optional(query).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "load_binary_optional() is only supported on HTTP backend.".to_string()
+                Cow::Borrowed("load_binary_optional() is only supported on HTTP backend.")
             )),
         }
     }
@@ -627,7 +629,7 @@ impl Connection {
         match self {
             #[cfg(feature = "http")]
             Connection::Http(_) => Err(Error::QueryError(
-                "load_optimized() is only supported on Native backend. Use load_binary() for HTTP optimization.".to_string()
+                Cow::Borrowed("load_optimized() is only supported on Native backend. Use load_binary() for HTTP optimization.")
             )),
             Connection::Native(conn) => conn.load_optimized(query).await,
         }
@@ -645,7 +647,7 @@ impl Connection {
         match self {
             #[cfg(feature = "http")]
             Connection::Http(_) => Err(Error::QueryError(
-                "load_optimized_one() is only supported on Native backend.".to_string()
+                Cow::Borrowed("load_optimized_one() is only supported on Native backend.")
             )),
             Connection::Native(conn) => conn.load_optimized_one(query).await,
         }
@@ -663,7 +665,7 @@ impl Connection {
         match self {
             #[cfg(feature = "http")]
             Connection::Http(_) => Err(Error::QueryError(
-                "load_optimized_optional() is only supported on Native backend.".to_string()
+                Cow::Borrowed("load_optimized_optional() is only supported on Native backend.")
             )),
             Connection::Native(conn) => conn.load_optimized_optional(query).await,
         }
@@ -714,7 +716,7 @@ impl Connection {
             }
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "For Native backend, use stream_native() with #[derive(Row)] types.".to_string()
+                Cow::Borrowed("For Native backend, use stream_native() with #[derive(Row)] types.")
             )),
         }
     }
@@ -834,7 +836,7 @@ impl Connection {
             Connection::Http(conn) => conn.load_zero_copy(sql, callback).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "Zero-copy parsing is not supported for Native backend. Use HTTP backend instead.".to_string()
+                Cow::Borrowed("Zero-copy parsing is not supported for Native backend. Use HTTP backend instead.")
             )),
         }
     }
@@ -865,7 +867,7 @@ impl Connection {
             Connection::Http(conn) => conn.load_zero_copy_query(query, callback).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "Zero-copy parsing is not supported for Native backend. Use HTTP backend instead.".to_string()
+                Cow::Borrowed("Zero-copy parsing is not supported for Native backend. Use HTTP backend instead.")
             )),
         }
     }
@@ -907,7 +909,7 @@ impl Connection {
             Connection::Http(conn) => conn.load_arrow(sql).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "Arrow format is only supported on HTTP backend.".to_string()
+                Cow::Borrowed("Arrow format is only supported on HTTP backend.")
             )),
         }
     }
@@ -938,7 +940,7 @@ impl Connection {
             Connection::Http(conn) => conn.load_arrow_callback(sql, callback).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "Arrow format is only supported on HTTP backend.".to_string()
+                Cow::Borrowed("Arrow format is only supported on HTTP backend.")
             )),
         }
     }
@@ -962,7 +964,7 @@ impl Connection {
             Connection::Http(conn) => conn.load_arrow_query(query).await,
             #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "Arrow format is only supported on HTTP backend. Use load_zero_copy() for native backend.".to_string()
+                Cow::Borrowed("Arrow format is only supported on HTTP backend. Use load_zero_copy() for native backend.")
             )),
         }
     }

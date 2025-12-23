@@ -1,5 +1,6 @@
 //! Error types and Result alias for diesel-clickhouse.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -7,38 +8,41 @@ use thiserror::Error;
 pub type QueryResult<T> = Result<T, Error>;
 
 /// Error types for diesel-clickhouse.
+///
+/// Uses `Cow<'static, str>` for error messages to avoid allocations
+/// when using static error messages, while still supporting dynamic messages.
 #[derive(Error, Debug)]
 pub enum Error {
     /// Connection error.
     #[error("Connection error: {0}")]
-    ConnectionError(String),
+    ConnectionError(Cow<'static, str>),
 
     /// Query execution error.
     #[error("Query error: {0}")]
-    QueryError(String),
+    QueryError(Cow<'static, str>),
 
     /// Insert operation error.
     #[error("Insert error: {0}")]
-    InsertError(String),
+    InsertError(Cow<'static, str>),
 
     /// Serialization error (Rust -> ClickHouse).
     #[error("Serialization error: {0}")]
-    SerializationError(String),
+    SerializationError(Cow<'static, str>),
 
     /// Deserialization error (ClickHouse -> Rust).
     #[error("Deserialization error: {0}")]
-    DeserializationError(String),
+    DeserializationError(Cow<'static, str>),
 
     /// Type mismatch between expected and actual types.
     #[error("Type mismatch: expected {expected}, got {actual}")]
     TypeMismatch {
-        expected: String,
-        actual: String,
+        expected: Cow<'static, str>,
+        actual: Cow<'static, str>,
     },
 
     /// Column not found in query result.
     #[error("Column not found: {0}")]
-    ColumnNotFound(String),
+    ColumnNotFound(Cow<'static, str>),
 
     /// No rows returned when at least one was expected.
     #[error("Not found: query returned no results")]
@@ -46,21 +50,21 @@ pub enum Error {
 
     /// Connection pool error.
     #[error("Pool error: {0}")]
-    PoolError(String),
+    PoolError(Cow<'static, str>),
 
     /// Configuration error.
     #[error("Configuration error: {0}")]
-    ConfigError(String),
+    ConfigError(Cow<'static, str>),
 
     /// Invalid query construction.
     #[error("Invalid query: {0}")]
-    InvalidQuery(String),
+    InvalidQuery(Cow<'static, str>),
 
     /// ClickHouse server returned an error.
     #[error("ClickHouse server error (code {code}): {message}")]
     ServerError {
         code: i32,
-        message: String,
+        message: Cow<'static, str>,
     },
 
     /// Query timeout.
@@ -69,7 +73,7 @@ pub enum Error {
 
     /// Type parsing error (from ClickHouse type string).
     #[error("Type parse error: {0}")]
-    TypeParseError(String),
+    TypeParseError(Cow<'static, str>),
 
     /// IO error.
     #[error("IO error: {0}")]
@@ -114,31 +118,41 @@ impl Error {
         }
     }
 
-    /// Create a connection error.
+    /// Create a connection error from a dynamic string.
     pub fn connection(msg: impl Into<String>) -> Self {
-        Error::ConnectionError(msg.into())
+        Error::ConnectionError(Cow::Owned(msg.into()))
     }
 
-    /// Create a query error.
+    /// Create a connection error from a static string (no allocation).
+    pub fn connection_static(msg: &'static str) -> Self {
+        Error::ConnectionError(Cow::Borrowed(msg))
+    }
+
+    /// Create a query error from a dynamic string.
     pub fn query(msg: impl Into<String>) -> Self {
-        Error::QueryError(msg.into())
+        Error::QueryError(Cow::Owned(msg.into()))
     }
 
-    /// Create a serialization error.
+    /// Create a query error from a static string (no allocation).
+    pub fn query_static(msg: &'static str) -> Self {
+        Error::QueryError(Cow::Borrowed(msg))
+    }
+
+    /// Create a serialization error from a dynamic string.
     pub fn serialize(msg: impl Into<String>) -> Self {
-        Error::SerializationError(msg.into())
+        Error::SerializationError(Cow::Owned(msg.into()))
     }
 
-    /// Create a deserialization error.
+    /// Create a deserialization error from a dynamic string.
     pub fn deserialize(msg: impl Into<String>) -> Self {
-        Error::DeserializationError(msg.into())
+        Error::DeserializationError(Cow::Owned(msg.into()))
     }
 
     /// Create a type mismatch error.
     pub fn type_mismatch(expected: impl Into<String>, actual: impl Into<String>) -> Self {
         Error::TypeMismatch {
-            expected: expected.into(),
-            actual: actual.into(),
+            expected: Cow::Owned(expected.into()),
+            actual: Cow::Owned(actual.into()),
         }
     }
 }
@@ -146,13 +160,13 @@ impl Error {
 // Conversion from diesel-clickhouse-types errors
 impl From<diesel_clickhouse_types::DeserializeError> for Error {
     fn from(e: diesel_clickhouse_types::DeserializeError) -> Self {
-        Error::DeserializationError(e.to_string())
+        Error::DeserializationError(Cow::Owned(e.to_string()))
     }
 }
 
 impl From<diesel_clickhouse_types::SerializeError> for Error {
     fn from(e: diesel_clickhouse_types::SerializeError) -> Self {
-        Error::SerializationError(e.to_string())
+        Error::SerializationError(Cow::Owned(e.to_string()))
     }
 }
 
@@ -170,7 +184,7 @@ pub trait ResultExt<T> {
 
 impl<T> ResultExt<T> for QueryResult<T> {
     fn context(self, context: impl Into<String>) -> QueryResult<T> {
-        self.map_err(|e| Error::QueryError(format!("{}: {}", context.into(), e)))
+        self.map_err(|e| Error::QueryError(Cow::Owned(format!("{}: {}", context.into(), e))))
     }
 
     fn with_context<F, S>(self, f: F) -> QueryResult<T>
@@ -178,7 +192,7 @@ impl<T> ResultExt<T> for QueryResult<T> {
         F: FnOnce() -> S,
         S: Into<String>,
     {
-        self.map_err(|e| Error::QueryError(format!("{}: {}", f().into(), e)))
+        self.map_err(|e| Error::QueryError(Cow::Owned(format!("{}: {}", f().into(), e))))
     }
 }
 
@@ -421,9 +435,9 @@ mod tests {
 
     #[test]
     fn test_error_is_retryable() {
-        assert!(Error::ConnectionError("test".into()).is_retryable());
+        assert!(Error::connection_static("test").is_retryable());
         assert!(Error::Timeout(std::time::Duration::from_secs(1)).is_retryable());
-        assert!(!Error::QueryError("test".into()).is_retryable());
+        assert!(!Error::query_static("test").is_retryable());
         assert!(!Error::NotFound.is_retryable());
     }
 

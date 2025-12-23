@@ -22,6 +22,7 @@
 //! inserter.flush().await?;
 //! ```
 
+use std::borrow::Cow;
 use std::marker::PhantomData;
 
 use crate::core::backend::{BindCollector, ClickHouse, GenericQueryBuilder, GenericBindCollector, QueryBuilder};
@@ -325,7 +326,7 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     pub async fn push(&self, row: R) -> QueryResult<()> {
         let should_flush = {
             let mut buffer = self.buffer.lock()
-                .map_err(|e| Error::QueryError(format!("BufferedAsyncInserter Mutex poisoned: {}", e)))?;
+                .map_err(|e| Error::QueryError(Cow::Owned(format!("BufferedAsyncInserter Mutex poisoned: {}", e))))?;
             buffer.push(row);
             buffer.len() >= self.buffer_size
         };
@@ -343,7 +344,7 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     pub async fn flush_buffer(&self) -> QueryResult<()> {
         let rows: Vec<R> = {
             let mut buffer = self.buffer.lock()
-                .map_err(|e| Error::QueryError(format!("BufferedAsyncInserter Mutex poisoned: {}", e)))?;
+                .map_err(|e| Error::QueryError(Cow::Owned(format!("BufferedAsyncInserter Mutex poisoned: {}", e))))?;
             std::mem::take(&mut *buffer)
         };
 
@@ -365,7 +366,7 @@ impl<'a, T: Table, R: Insertable<T> + Clone> BufferedAsyncInserter<'a, T, R> {
     /// Returns an error if the internal Mutex is poisoned.
     pub fn buffered_count(&self) -> QueryResult<usize> {
         let buffer = self.buffer.lock()
-            .map_err(|e| Error::QueryError(format!("BufferedAsyncInserter Mutex poisoned: {}", e)))?;
+            .map_err(|e| Error::QueryError(Cow::Owned(format!("BufferedAsyncInserter Mutex poisoned: {}", e))))?;
         Ok(buffer.len())
     }
 

@@ -53,6 +53,8 @@ use arrow::array::{
 };
 use arrow::ipc::reader::StreamReader;
 
+use std::borrow::Cow;
+
 use crate::core::result::{Error, QueryResult};
 
 /// Re-export arrow types for convenience
@@ -113,7 +115,7 @@ impl<'a> ArrowRow<'a> {
         self.column_indices
             .get(name)
             .copied()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' not found", name)))
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' not found", name))))
     }
 
     /// Get a string value (zero-copy borrow).
@@ -122,10 +124,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not a string", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not a string", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -136,7 +138,7 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not a string", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not a string", name))))?;
 
         if array.is_null(self.row_index) {
             Ok(None)
@@ -151,10 +153,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<BinaryArray>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not binary", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not binary", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -165,10 +167,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<BooleanArray>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not boolean", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not boolean", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -179,10 +181,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<Int8Array>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Int8", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Int8", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -193,10 +195,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<Int16Array>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Int16", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Int16", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -207,10 +209,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<Int32Array>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Int32", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Int32", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -221,10 +223,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<Int64Array>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Int64", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Int64", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -235,10 +237,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<UInt8Array>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not UInt8", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not UInt8", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -249,10 +251,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<UInt16Array>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not UInt16", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not UInt16", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -263,10 +265,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<UInt32Array>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not UInt32", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not UInt32", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -277,10 +279,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<UInt64Array>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not UInt64", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not UInt64", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -291,10 +293,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<Float32Array>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Float32", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Float32", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -305,10 +307,10 @@ impl<'a> ArrowRow<'a> {
         let index = self.column_index(name)?;
         let col = self.batch.column(index);
         let array = col.as_any().downcast_ref::<Float64Array>()
-            .ok_or_else(|| Error::DeserializationError(format!("Column '{}' is not Float64", name)))?;
+            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Float64", name))))?;
 
         if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(format!("Column '{}' is null", name)));
+            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
         }
         Ok(array.value(self.row_index))
     }
@@ -466,20 +468,20 @@ impl IntoIterator for ArrowResult {
 pub fn parse_arrow_stream(data: &[u8]) -> QueryResult<ArrowResult> {
     if data.is_empty() {
         return Err(Error::DeserializationError(
-            "Empty Arrow stream data".to_string(),
+            Cow::Borrowed("Empty Arrow stream data"),
         ));
     }
 
     let cursor = Cursor::new(data);
     let reader = StreamReader::try_new(cursor, None)
-        .map_err(|e| Error::DeserializationError(format!("Failed to create Arrow reader: {}", e)))?;
+        .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to create Arrow reader: {}", e))))?;
 
     let schema = reader.schema();
     let mut batches = Vec::new();
 
     for batch_result in reader {
         let batch = batch_result
-            .map_err(|e| Error::DeserializationError(format!("Failed to read Arrow batch: {}", e)))?;
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to read Arrow batch: {}", e))))?;
         batches.push(batch);
     }
 
@@ -500,12 +502,12 @@ where
 
     let cursor = Cursor::new(data);
     let reader = StreamReader::try_new(cursor, None)
-        .map_err(|e| Error::DeserializationError(format!("Failed to create Arrow reader: {}", e)))?;
+        .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to create Arrow reader: {}", e))))?;
 
     let mut count = 0;
     for batch_result in reader {
         let batch = batch_result
-            .map_err(|e| Error::DeserializationError(format!("Failed to read Arrow batch: {}", e)))?;
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to read Arrow batch: {}", e))))?;
         let rows = batch.num_rows();
         callback(batch)?;
         count += rows;

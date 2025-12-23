@@ -1,5 +1,7 @@
 //! Deserialization traits for query results.
 
+use std::borrow::Cow;
+
 use crate::result::{QueryResult, Row, Error};
 use diesel_clickhouse_types::{SqlType, FromClickHouse};
 
@@ -52,9 +54,9 @@ impl_from_row_primitive!(bool, Bool);
 impl FromRow for String {
     fn from_row(row: &dyn Row) -> QueryResult<Self> {
         let bytes = row.get_by_index(0)
-            .ok_or_else(|| Error::ColumnNotFound("column 0".into()))?;
+            .ok_or_else(|| Error::ColumnNotFound(Cow::Borrowed("column 0")))?;
         String::from_utf8(bytes.to_vec())
-            .map_err(|e| Error::DeserializationError(e.to_string()))
+            .map_err(|e| Error::DeserializationError(Cow::Owned(e.to_string())))
     }
 }
 
@@ -157,7 +159,7 @@ impl<'a> RowFields<'a> {
     /// Get a field by name.
     pub fn get<T: FromRow>(&self, name: &str) -> QueryResult<T> {
         let bytes = self.row.get_by_name(name)
-            .ok_or_else(|| Error::ColumnNotFound(name.into()))?;
+            .ok_or_else(|| Error::ColumnNotFound(Cow::Owned(name.to_string())))?;
 
         // Create a single-column row for the value
         let single_row = SingleValueRow(bytes);
