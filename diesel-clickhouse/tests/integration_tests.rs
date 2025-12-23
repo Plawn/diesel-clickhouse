@@ -438,7 +438,6 @@ mod clickhouse_integration {
         let mut results: Vec<(u64, String, f64)> = Vec::new();
         let count = conn.load_zero_copy(
             &format!("SELECT id, name, score FROM {} ORDER BY id", table_name),
-            &["id", "name", "score"],
             |row| {
                 let id = row.get_u64("id")?;
                 let name = row.get_str("name")?.to_string();
@@ -489,9 +488,8 @@ mod clickhouse_integration {
 
         // Test streaming zero-copy load
         let mut sum: u64 = 0;
-        let count = conn.load_zero_copy_streaming(
+        let count = conn.load_zero_copy(
             &format!("SELECT id, value FROM {} ORDER BY id", table_name),
-            &["id", "value"],
             |row| {
                 let id = row.get_u64("id")?;
                 sum += id;
@@ -540,7 +538,6 @@ mod clickhouse_integration {
         let mut results: Vec<(u64, Option<String>)> = Vec::new();
         let count = conn.load_zero_copy(
             &format!("SELECT id, name FROM {} ORDER BY id", table_name),
-            &["id", "name"],
             |row| {
                 let id = row.get_u64("id")?;
                 let name = row.get_optional_str("name")?.map(|s| s.to_string());
@@ -590,7 +587,6 @@ mod clickhouse_integration {
         let mut results: Vec<(u64, String)> = Vec::new();
         let count = conn.load_zero_copy(
             &format!("SELECT id, name FROM {} ORDER BY id", table_name),
-            &["id", "name"],
             |row| {
                 let id = row.get_u64("id")?;
                 let name = row.get_str("name")?.to_string();

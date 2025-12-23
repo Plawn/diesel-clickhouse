@@ -41,7 +41,6 @@ name = "native_test"
 path = "examples/native_test.rs"
 required-features = ["native"]
 
-
 # Dependencies for examples (workspace root package)
 [package]
 name = "diesel-clickhouse-examples"
@@ -50,12 +49,11 @@ edition = "2021"
 publish = false
 
 [features]
-default = ["http", "native", "migrations", "arrow", "native-arrow"]
+default = ["http", "native", "migrations", "arrow"]
 http = ["diesel-clickhouse/http"]
 native = ["diesel-clickhouse/native", "diesel-clickhouse/chrono", "dep:clickhouse-rs"]
 migrations = ["diesel-clickhouse/migrations"]
 arrow = ["diesel-clickhouse/arrow"]
-native-arrow = ["diesel-clickhouse/native-arrow", "dep:futures"]
 
 [dependencies]
 diesel-clickhouse = { path = "diesel-clickhouse", default-features = false, features = ["migrations"] }
@@ -73,7 +71,6 @@ anyhow = "1"
 url = "2"
 time = { version = "0.3", features = ["formatting", "macros"] }
 include_dir = "0.7"
-futures = { version = "0.3", optional = true }
 
 [workspace.package]
 version = "0.1.0"
@@ -129,10 +126,7 @@ string-interner = "0.17"
 rayon = "1.10"
 
 # Apache Arrow (optional, for zero-copy columnar data)
-arrow = { version = "57", default-features = false, features = ["ipc"] }
-
-# ClickHouse Arrow client (for native protocol with true zero-copy streaming)
-clickhouse-arrow = { version = "0.2", default-features = false, features = ["derive"] }
+arrow = { version = "57", default-features = false, features = ["ipc", "ipc_compression"] }
 
 # Test dependencies (for integration tests)
 tempfile = "3"

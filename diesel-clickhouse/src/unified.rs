@@ -823,7 +823,8 @@ impl Connection {
     /// # Backend Support
     ///
     /// - **HTTP + Arrow**: Full support with true zero-copy
-    /// - **Native + native-arrow**: Full support with true zero-copy streaming
+    /// - **Native**: Not supported (returns error)
+    #[cfg(feature = "arrow")]
     pub async fn load_zero_copy<F>(&self, sql: &str, callback: F) -> QueryResult<usize>
     where
         F: for<'a> FnMut(crate::arrow::ArrowRow<'a>) -> QueryResult<()>,
@@ -831,14 +832,16 @@ impl Connection {
         match self {
             #[cfg(feature = "http")]
             Connection::Http(conn) => conn.load_zero_copy(sql, callback).await,
-            #[cfg(all(feature = "native"))]
-            Connection::Native(conn) => conn.load_zero_copy(sql, callback).await,
+            #[cfg(feature = "native")]
+            Connection::Native(_) => Err(Error::QueryError(
+                "Zero-copy parsing is not supported for Native backend. Use HTTP backend instead.".to_string()
+            )),
         }
     }
 
     /// Load rows from a query fragment using zero-copy parsing.
     ///
-    /// Works with both HTTP and Native backends when appropriate features are enabled.
+    /// Works with HTTP backend when Arrow feature is enabled.
     ///
     /// # Example
     ///
@@ -860,11 +863,9 @@ impl Connection {
         match self {
             #[cfg(feature = "http")]
             Connection::Http(conn) => conn.load_zero_copy_query(query, callback).await,
-            #[cfg(all(feature = "native", feature = "native-arrow"))]
-            Connection::Native(conn) => conn.load_zero_copy_query(query, callback).await,
-            #[cfg(all(feature = "native", not(feature = "native-arrow")))]
+            #[cfg(feature = "native")]
             Connection::Native(_) => Err(Error::QueryError(
-                "Zero-copy parsing requires 'native-arrow' feature for Native backend.".to_string()
+                "Zero-copy parsing is not supported for Native backend. Use HTTP backend instead.".to_string()
             )),
         }
     }

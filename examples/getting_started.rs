@@ -348,18 +348,6 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     println!("Loaded {} users via Native backend", users.len());
 
-    // Zero-copy with Native Arrow streaming
-    println!("\n--- Zero-Copy with Native Arrow ---");
-    let count = native_conn
-        .load_zero_copy("SELECT id, name, email FROM users WHERE id >= 10", |row| {
-            let id = row.get_u64("id")?;
-            let name = row.get_str("name")?; // Zero-copy borrow!
-            println!("  [native zero-copy] User {}: {}", id, name);
-            Ok(())
-        })
-        .await?;
-    println!("Processed {} rows via native zero-copy streaming", count);
-
     // Cleanup
     http_conn.execute("TRUNCATE TABLE posts").await?;
     http_conn.execute("TRUNCATE TABLE users").await?;

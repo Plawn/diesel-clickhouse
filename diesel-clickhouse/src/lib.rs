@@ -277,13 +277,6 @@ pub use native::NativeConnection;
 #[cfg(feature = "native")]
 pub use native::{NativeClientBuilder, NativeCompression};
 
-/// Native Arrow backend with true zero-copy streaming.
-///
-/// Uses `clickhouse-arrow` for the native protocol with Arrow support.
-/// This module is internal - use `NativeConnection::load_zero_copy` instead.
-#[cfg(feature = "native-arrow")]
-pub(crate) mod native_arrow;
-
 /// Unified connection interface.
 ///
 /// Provides a single API that works with both HTTP and Native backends.

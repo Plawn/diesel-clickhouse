@@ -9,7 +9,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["http", "chrono", "arrow", "native", "native-arrow"]
+default = ["http", "chrono", "arrow", "native"]
 
 # Backends
 http = ["dep:clickhouse"]
@@ -44,9 +44,6 @@ tracing = ["dep:tracing"]
 # Apache Arrow zero-copy columnar format
 arrow = ["dep:arrow"]
 
-# Native Arrow streaming (true zero-copy with native protocol)
-native-arrow = ["dep:clickhouse-arrow", "arrow"]
-
 [dependencies]
 diesel-clickhouse-core.workspace = true
 diesel-clickhouse-types.workspace = true
@@ -71,9 +68,6 @@ smallvec = "1.11"
 
 # Optional - Apache Arrow
 arrow = { workspace = true, optional = true }
-
-# Optional - ClickHouse Arrow (native protocol with streaming)
-clickhouse-arrow = { workspace = true, optional = true }
 
 # Optional - Other
 chrono = { workspace = true, optional = true }
