@@ -155,6 +155,28 @@ impl Error {
             actual: Cow::Owned(actual.into()),
         }
     }
+
+    /// Create a query error from any error type implementing Display.
+    ///
+    /// This is designed to be used with `.map_err(Error::query_from)`.
+    #[inline]
+    pub fn query_from(e: impl std::fmt::Display) -> Self {
+        Error::QueryError(Cow::Owned(e.to_string()))
+    }
+
+    /// Create a connection error from any error type implementing Display.
+    ///
+    /// This is designed to be used with `.map_err(Error::connection_from)`.
+    #[inline]
+    pub fn connection_from(e: impl std::fmt::Display) -> Self {
+        Error::ConnectionError(Cow::Owned(e.to_string()))
+    }
+
+    /// Create an insert error from any error type implementing Display.
+    #[inline]
+    pub fn insert_from(e: impl std::fmt::Display) -> Self {
+        Error::InsertError(Cow::Owned(e.to_string()))
+    }
 }
 
 // Conversion from diesel-clickhouse-types errors

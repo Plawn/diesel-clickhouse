@@ -35,8 +35,6 @@
 //! }
 //! ```
 
-use std::borrow::Cow;
-
 use crate::core::result::QueryResult;
 #[cfg(any(feature = "http", feature = "native"))]
 use crate::core::result::Error;
@@ -111,7 +109,7 @@ impl<T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead> RowStream<
                 cursor
                     .next()
                     .await
-                    .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+                    .map_err(Error::query_from)
             }
             #[cfg(feature = "native")]
             RowStream::Native(stream) => stream.next().await,

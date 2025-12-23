@@ -951,7 +951,7 @@ impl NativeConnection {
         client
             .execute(sql)
             .await
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))?;
+            .map_err(Error::query_from)?;
         Ok(())
     }
 
@@ -990,7 +990,7 @@ impl NativeConnection {
             .query(sql)
             .fetch_all()
             .await
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 
     /// Execute a query fragment and return the result block.
@@ -1274,7 +1274,7 @@ impl NativeConnection {
         let mut block_stream = client.query(sql).stream_blocks();
 
         while let Some(block_result) = block_stream.next().await {
-            let block = block_result.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))?;
+            let block = block_result.map_err(Error::query_from)?;
             for row_idx in 0..block.row_count() {
                 let item = T::from_any_block(&block, row_idx)?;
                 callback(item)?;
@@ -1318,7 +1318,7 @@ impl NativeConnection {
         let mut block_stream = client.query(sql).stream_blocks();
 
         while let Some(block_result) = block_stream.next().await {
-            let block = block_result.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))?;
+            let block = block_result.map_err(Error::query_from)?;
             for row_idx in 0..block.row_count() {
                 let item = T::from_any_block(&block, row_idx)?;
                 callback(item).await?;
@@ -1401,7 +1401,7 @@ impl NativeConnection {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(Err(Error::QueryError(Cow::Owned(e.to_string())))).await;
+                        let _ = tx.send(Err(Error::query_from(e))).await;
                         return;
                     }
                 }

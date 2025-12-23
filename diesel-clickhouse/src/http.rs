@@ -185,7 +185,7 @@ impl HttpClientBuilder {
 
         // Test connection
         client.query("SELECT 1").execute().await
-            .map_err(|e| Error::ConnectionError(Cow::Owned(e.to_string())))?;
+            .map_err(Error::connection_from)?;
 
         let http_conn = ClickHouseConnection {
             client,
@@ -264,7 +264,7 @@ impl ClickHouseConnection {
             .query(sql)
             .execute()
             .await
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 
     /// Execute a query fragment (UPDATE, DELETE, etc).
@@ -284,7 +284,7 @@ impl ClickHouseConnection {
         query
             .execute()
             .await
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 
     /// Build SQL from a query fragment without executing.
@@ -508,7 +508,7 @@ impl ClickHouseConnection {
         self.client
             .query(&sql)
             .fetch::<T>()
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 
     /// Stream rows from a query with native parameter binding.
@@ -533,7 +533,7 @@ impl ClickHouseConnection {
         let query = compiled.bind_to(self.client.query(&compiled.sql));
         query
             .fetch::<T>()
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 
     /// Create an inserter for a table.
@@ -611,7 +611,7 @@ impl ClickHouseConnection {
         for param in params {
             query = query.bind(param);
         }
-        query.execute().await.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+        query.execute().await.map_err(Error::query_from)
     }
 
     /// Load rows with bound parameters using native Row deserialization.
@@ -628,12 +628,12 @@ impl ClickHouseConnection {
     ///     name: String,
     /// }
     ///
-    /// let users: Vec<User> = conn.fetch_bound(
+    /// let users: Vec<User> = conn.load_bound(
     ///     "SELECT id, name FROM users WHERE active = ?",
     ///     |q| q.bind(true),
     /// ).await?;
     /// ```
-    pub async fn fetch_bound<T, F>(&self, sql: &str, bind_fn: F) -> QueryResult<Vec<T>>
+    pub async fn load_bound<T, F>(&self, sql: &str, bind_fn: F) -> QueryResult<Vec<T>>
     where
         T: clickhouse::RowOwned + clickhouse::RowRead + Send,
         F: FnOnce(clickhouse::query::Query) -> clickhouse::query::Query,
@@ -642,7 +642,7 @@ impl ClickHouseConnection {
         query
             .fetch_all()
             .await
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 
     /// Fetch a single row with bound parameters.
@@ -652,12 +652,12 @@ impl ClickHouseConnection {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let user: User = conn.fetch_one_bound(
+    /// let user: User = conn.load_one_bound(
     ///     "SELECT id, name FROM users WHERE id = ?",
     ///     |q| q.bind(42u64),
     /// ).await?;
     /// ```
-    pub async fn fetch_one_bound<T, F>(&self, sql: &str, bind_fn: F) -> QueryResult<T>
+    pub async fn load_one_bound<T, F>(&self, sql: &str, bind_fn: F) -> QueryResult<T>
     where
         T: clickhouse::RowOwned + clickhouse::RowRead + Send,
         F: FnOnce(clickhouse::query::Query) -> clickhouse::query::Query,
@@ -666,7 +666,7 @@ impl ClickHouseConnection {
         query
             .fetch_one()
             .await
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 
     /// Fetch an optional row with bound parameters.
@@ -674,12 +674,12 @@ impl ClickHouseConnection {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let user: Option<User> = conn.fetch_optional_bound(
+    /// let user: Option<User> = conn.load_optional_bound(
     ///     "SELECT id, name FROM users WHERE id = ?",
     ///     |q| q.bind(42u64),
     /// ).await?;
     /// ```
-    pub async fn fetch_optional_bound<T, F>(&self, sql: &str, bind_fn: F) -> QueryResult<Option<T>>
+    pub async fn load_optional_bound<T, F>(&self, sql: &str, bind_fn: F) -> QueryResult<Option<T>>
     where
         T: clickhouse::RowOwned + clickhouse::RowRead + Send,
         F: FnOnce(clickhouse::query::Query) -> clickhouse::query::Query,
@@ -688,7 +688,7 @@ impl ClickHouseConnection {
         query
             .fetch_optional()
             .await
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 }
 
@@ -745,7 +745,7 @@ impl ClickHouseConnection {
         let mut cursor = self.client
             .query(sql)
             .fetch_bytes("ArrowStream")
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))?;
+            .map_err(Error::query_from)?;
 
         // Collect all bytes (Arrow IPC stream needs complete data)
         let mut all_bytes = Vec::with_capacity(8192);
@@ -755,7 +755,7 @@ impl ClickHouseConnection {
                     all_bytes.extend_from_slice(&chunk);
                 }
                 Ok(None) => break,
-                Err(e) => return Err(Error::QueryError(Cow::Owned(e.to_string()))),
+                Err(e) => return Err(Error::query_from(e)),
             }
         }
 
@@ -795,7 +795,7 @@ impl ClickHouseConnection {
         let mut cursor = self.client
             .query(sql)
             .fetch_bytes("ArrowStream")
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))?;
+            .map_err(Error::query_from)?;
 
         // Collect bytes
         let mut all_bytes = Vec::with_capacity(8192);
@@ -805,7 +805,7 @@ impl ClickHouseConnection {
                     all_bytes.extend_from_slice(&chunk);
                 }
                 Ok(None) => break,
-                Err(e) => return Err(Error::QueryError(Cow::Owned(e.to_string()))),
+                Err(e) => return Err(Error::query_from(e)),
             }
         }
 
@@ -996,7 +996,7 @@ impl ClickHouseConnection {
         query
             .fetch_all()
             .await
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 
     /// Load a single row using RowBinary format.
@@ -1010,7 +1010,7 @@ impl ClickHouseConnection {
         query
             .fetch_one()
             .await
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 
     /// Load an optional row using RowBinary format.
@@ -1024,7 +1024,7 @@ impl ClickHouseConnection {
         query
             .fetch_optional()
             .await
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 
     /// Load rows from raw SQL using RowBinary format.
@@ -1036,7 +1036,7 @@ impl ClickHouseConnection {
             .query(sql)
             .fetch_all()
             .await
-            .map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))
+            .map_err(Error::query_from)
     }
 }
 

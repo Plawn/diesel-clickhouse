@@ -678,7 +678,7 @@ impl Connection {
         match self {
             Connection::Http(conn) => {
                 let mut cursor: clickhouse::query::RowCursor<T> = conn.stream(query)?;
-                while let Some(row) = cursor.next().await.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))? {
+                while let Some(row) = cursor.next().await.map_err(Error::query_from)? {
                     callback(row)?;
                 }
                 Ok(())
@@ -710,7 +710,7 @@ impl Connection {
         match self {
             Connection::Http(conn) => {
                 let mut cursor: clickhouse::query::RowCursor<T> = conn.stream(query)?;
-                while let Some(row) = cursor.next().await.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))? {
+                while let Some(row) = cursor.next().await.map_err(Error::query_from)? {
                     callback(row)?;
                 }
                 Ok(())
@@ -743,7 +743,7 @@ impl Connection {
         match self {
             Connection::Http(conn) => {
                 let mut cursor: clickhouse::query::RowCursor<T> = conn.stream(query)?;
-                while let Some(row) = cursor.next().await.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))? {
+                while let Some(row) = cursor.next().await.map_err(Error::query_from)? {
                     callback(row).await?;
                 }
                 Ok(())
@@ -777,7 +777,7 @@ impl Connection {
         match self {
             Connection::Http(conn) => {
                 let mut cursor: clickhouse::query::RowCursor<T> = conn.stream(query)?;
-                while let Some(row) = cursor.next().await.map_err(|e| Error::QueryError(Cow::Owned(e.to_string())))? {
+                while let Some(row) = cursor.next().await.map_err(Error::query_from)? {
                     callback(row).await?;
                 }
                 Ok(())
@@ -786,35 +786,11 @@ impl Connection {
         }
     }
 
-    // =========================================================================
-    // Fetch Methods (aliases for load methods)
-    // =========================================================================
-
     impl_load_methods! {
-        /// Fetch all rows from a query (alias for `load()`).
-        delegate fn fetch_all(&self, query) -> Vec<T> {
-            self.load(query).await
-        }
-    }
-
-    impl_load_methods! {
-        raw fn fetch_all_raw(&self, sql: &str) -> Vec<T> {
+        /// Load all rows from a raw SQL string.
+        raw fn load_raw(&self, sql: &str) -> Vec<T> {
             http(conn) => conn.load_raw(sql).await,
             native(conn) => conn.load_raw(sql).await,
-        }
-    }
-
-    impl_load_methods! {
-        /// Fetch exactly one row from a query (alias for `load_one()`).
-        delegate fn fetch_one(&self, query) -> T {
-            self.load_one(query).await
-        }
-    }
-
-    impl_load_methods! {
-        /// Fetch zero or one row from a query (alias for `load_optional()`).
-        delegate fn fetch_optional(&self, query) -> Option<T> {
-            self.load_optional(query).await
         }
     }
 
