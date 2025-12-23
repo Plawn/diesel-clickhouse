@@ -25,7 +25,6 @@
 - zero copy en native ?
 - compilation des query ?
 - sur le mode zero copy utiliser des vrais query et pas des strings
-- unifier les zero copy arrow
 - native arrow zero copy
   - derive row
   - query pas string

@@ -334,8 +334,8 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     name: String,
 /// }
 ///
-/// // Now you can use load_binary() for best performance
-/// let users: Vec<User> = conn.load_binary(query).await?;
+/// // Now you can use load() for best performance
+/// let users: Vec<User> = conn.load(query).await?;
 /// ```
 ///
 /// # Attributes

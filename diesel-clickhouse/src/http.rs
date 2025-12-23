@@ -967,7 +967,7 @@ impl ClickHouseConnection {
     /// }
     ///
     /// // Fast RowBinary loading
-    /// let users: Vec<User> = conn.load_binary(
+    /// let users: Vec<User> = conn.load_optimized(
     ///     users::table.filter(users::active.eq(true))
     /// ).await?;
     /// ```
@@ -978,17 +978,17 @@ impl ClickHouseConnection {
     /// - 2-3x faster parsing than JSON
     /// - Lower memory allocations
     /// - Native type handling without string conversion
-    pub async fn load_binary<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    pub async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
     where
         T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
         Q: QueryFragment<ClickHouse>,
     {
         let compiled = build_sql_native(&query)?;
-        self.load_binary_native(&compiled).await
+        self.load_compiled(&compiled).await
     }
 
     /// Load rows using RowBinary with a pre-compiled query.
-    pub async fn load_binary_native<T>(&self, compiled: &NativeCompiledQuery) -> QueryResult<Vec<T>>
+    pub async fn load_compiled<T>(&self, compiled: &NativeCompiledQuery) -> QueryResult<Vec<T>>
     where
         T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
     {
@@ -1000,7 +1000,7 @@ impl ClickHouseConnection {
     }
 
     /// Load a single row using RowBinary format.
-    pub async fn load_binary_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    pub async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
     where
         T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
         Q: QueryFragment<ClickHouse>,
@@ -1014,7 +1014,7 @@ impl ClickHouseConnection {
     }
 
     /// Load an optional row using RowBinary format.
-    pub async fn load_binary_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
+    pub async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
     where
         T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
         Q: QueryFragment<ClickHouse>,
@@ -1028,7 +1028,7 @@ impl ClickHouseConnection {
     }
 
     /// Load rows from raw SQL using RowBinary format.
-    pub async fn load_binary_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
+    pub async fn load_raw<T>(&self, sql: &str) -> QueryResult<Vec<T>>
     where
         T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
     {

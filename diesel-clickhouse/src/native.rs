@@ -1218,15 +1218,12 @@ impl<T: QueryFragment<ClickHouse> + Send + Sync> ExecuteMut for T {}
 
 impl NativeConnection {
     // =========================================================================
-    // Optimized Loading (direct Block deserialization)
+    // Loading (direct Block deserialization)
     // =========================================================================
 
-    /// Load rows using optimized direct Block deserialization.
+    /// Load rows using direct Block deserialization.
     ///
-    /// This method deserializes rows directly from the native Block without
-    /// JSON intermediate conversion, providing 2-3x better performance than
-    /// `load_json()`.
-    ///
+    /// This method deserializes rows directly from the native Block.
     /// Types must implement `FromNativeBlock`, which is automatically generated
     /// by `#[derive(Row)]`.
     ///
@@ -1239,67 +1236,64 @@ impl NativeConnection {
     ///     name: String,
     /// }
     ///
-    /// // Optimized: direct Block → struct deserialization
-    /// let users: Vec<User> = conn.load_optimized(users::table.select_all()).await?;
+    /// let users: Vec<User> = conn.load(users::table.select_all()).await?;
     /// ```
-    pub async fn load_optimized<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    pub async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
     where
         T: FromNativeBlock + Send,
         Q: QueryFragment<ClickHouse> + Send,
     {
         let sql = build_sql_interpolated(&query)?;
-        self.load_optimized_raw(&sql).await
+        self.load_raw(&sql).await
     }
 
-    /// Load rows from raw SQL using optimized direct Block deserialization.
-    ///
-    /// This is the raw SQL version of `load_optimized()`.
+    /// Load rows from raw SQL.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// let users: Vec<User> = conn.load_optimized_raw("SELECT id, name FROM users").await?;
+    /// let users: Vec<User> = conn.load_raw("SELECT id, name FROM users").await?;
     /// ```
-    pub async fn load_optimized_raw<T: FromNativeBlock + Send>(&self, sql: &str) -> QueryResult<Vec<T>> {
+    pub async fn load_raw<T: FromNativeBlock + Send>(&self, sql: &str) -> QueryResult<Vec<T>> {
         let block = self.query_raw(sql).await?;
         block_to_vec_optimized(&block)
     }
 
-    /// Load a single row using optimized deserialization.
+    /// Load a single row.
     ///
     /// Returns an error if no rows are returned.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// let user: User = conn.load_optimized_one(users::table.filter(users::id.eq(1))).await?;
+    /// let user: User = conn.load_one(users::table.filter(users::id.eq(1))).await?;
     /// ```
-    pub async fn load_optimized_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    pub async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
     where
         T: FromNativeBlock + Send,
         Q: QueryFragment<ClickHouse> + Send,
     {
-        let mut results = self.load_optimized(query).await?;
+        let mut results = self.load(query).await?;
         results.pop().ok_or(Error::NotFound)
     }
 
-    /// Load an optional single row using optimized deserialization.
+    /// Load an optional single row.
     ///
     /// Returns `None` if no rows are returned.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// let user: Option<User> = conn.load_optimized_optional(
+    /// let user: Option<User> = conn.load_optional(
     ///     users::table.filter(users::id.eq(1))
     /// ).await?;
     /// ```
-    pub async fn load_optimized_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
+    pub async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
     where
         T: FromNativeBlock + Send,
         Q: QueryFragment<ClickHouse> + Send,
     {
-        let mut results = self.load_optimized(query).await?;
+        let mut results = self.load(query).await?;
         Ok(results.pop())
     }
 }

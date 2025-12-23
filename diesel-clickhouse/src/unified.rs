@@ -420,7 +420,7 @@ impl Connection {
         Q: QueryFragment<ClickHouse>,
     {
         match self {
-            Connection::Http(conn) => conn.load_binary(query).await,
+            Connection::Http(conn) => conn.load(query).await,
         }
     }
 
@@ -432,7 +432,7 @@ impl Connection {
         Q: QueryFragment<ClickHouse> + Send,
     {
         match self {
-            Connection::Native(conn) => conn.load_optimized(query).await,
+            Connection::Native(conn) => conn.load(query).await,
         }
     }
 
@@ -444,8 +444,8 @@ impl Connection {
         Q: QueryFragment<ClickHouse> + Send,
     {
         match self {
-            Connection::Http(conn) => conn.load_binary(query).await,
-            Connection::Native(conn) => conn.load_optimized(query).await,
+            Connection::Http(conn) => conn.load(query).await,
+            Connection::Native(conn) => conn.load(query).await,
         }
     }
 
@@ -483,93 +483,6 @@ impl Connection {
         }
     }
 
-    // =========================================================================
-    // Optimized RowBinary Loading (HTTP only) - kept for explicit access
-    // =========================================================================
-
-    /// Load rows using RowBinary format (2-3x faster than JSON).
-    ///
-    /// This method uses ClickHouse's native RowBinary format which is
-    /// significantly faster than JSONEachRow. Only available for HTTP backend.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use diesel_clickhouse::prelude::*;
-    ///
-    /// #[derive(Debug, Row)]
-    /// struct User {
-    ///     id: u64,
-    ///     name: String,
-    /// }
-    ///
-    /// // Fast RowBinary loading (HTTP only)
-    /// let users: Vec<User> = conn.load_binary(
-    ///     users::table.filter(users::active.eq(true))
-    /// ).await?;
-    /// ```
-    ///
-    /// # Performance
-    ///
-    /// - 2-3x faster parsing than JSON
-    /// - Lower memory allocations
-    /// - Native type handling
-    ///
-    /// # Backend Support
-    ///
-    /// - **HTTP**: Full support with RowBinary format
-    /// - **Native**: Not supported (native backend uses its own binary protocol)
-    #[cfg(feature = "http")]
-    pub async fn load_binary<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
-        Q: QueryFragment<ClickHouse>,
-    {
-        match self {
-            Connection::Http(conn) => conn.load_binary(query).await,
-            #[cfg(feature = "native")]
-            Connection::Native(_) => Err(Error::QueryError(
-                Cow::Borrowed("load_binary() is only supported on HTTP backend. Native backend uses its own binary protocol via load().")
-            )),
-        }
-    }
-
-    /// Load a single row using RowBinary format.
-    ///
-    /// Returns an error if no rows are found.
-    #[cfg(feature = "http")]
-    pub async fn load_binary_one<T, Q>(&self, query: Q) -> QueryResult<T>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
-        Q: QueryFragment<ClickHouse>,
-    {
-        match self {
-            Connection::Http(conn) => conn.load_binary_one(query).await,
-            #[cfg(feature = "native")]
-            Connection::Native(_) => Err(Error::QueryError(
-                Cow::Borrowed("load_binary_one() is only supported on HTTP backend.")
-            )),
-        }
-    }
-
-    /// Load an optional row using RowBinary format.
-    ///
-    /// Returns `None` if no rows are found.
-    #[cfg(feature = "http")]
-    pub async fn load_binary_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
-    where
-        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
-        Q: QueryFragment<ClickHouse>,
-    {
-        match self {
-            Connection::Http(conn) => conn.load_binary_optional(query).await,
-            #[cfg(feature = "native")]
-            Connection::Native(_) => Err(Error::QueryError(
-                Cow::Borrowed("load_binary_optional() is only supported on HTTP backend.")
-            )),
-        }
-    }
-
     /// Get the underlying HTTP connection (if HTTP backend).
     #[cfg(feature = "http")]
     pub fn as_http(&self) -> Option<&crate::http::ClickHouseConnection> {
@@ -587,87 +500,6 @@ impl Connection {
             #[cfg(feature = "http")]
             Connection::Http(_) => None,
             Connection::Native(conn) => Some(conn),
-        }
-    }
-
-    // =========================================================================
-    // Optimized Native Loading (direct Block deserialization, no JSON)
-    // =========================================================================
-
-    /// Load rows using optimized direct Block deserialization (Native backend only).
-    ///
-    /// This method deserializes rows directly from the native Block without
-    /// JSON intermediate conversion, providing 2-3x better performance than
-    /// the standard `load()` method.
-    ///
-    /// Types must implement `FromNativeBlock`, which is automatically generated
-    /// by `#[derive(Row)]`.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// #[derive(Debug, Row)]
-    /// struct User {
-    ///     id: u64,
-    ///     name: String,
-    /// }
-    ///
-    /// // Optimized: direct Block → struct deserialization (Native backend)
-    /// let users: Vec<User> = conn.load_optimized(users::table.select_all()).await?;
-    /// ```
-    ///
-    /// # Backend Support
-    ///
-    /// - **Native**: Full support with direct Block deserialization
-    /// - **HTTP**: Not supported (use `load_binary()` for HTTP optimization)
-    #[cfg(feature = "native")]
-    pub async fn load_optimized<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
-    where
-        T: crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(_) => Err(Error::QueryError(
-                Cow::Borrowed("load_optimized() is only supported on Native backend. Use load_binary() for HTTP optimization.")
-            )),
-            Connection::Native(conn) => conn.load_optimized(query).await,
-        }
-    }
-
-    /// Load a single row using optimized Native deserialization.
-    ///
-    /// Returns an error if no rows are found.
-    #[cfg(feature = "native")]
-    pub async fn load_optimized_one<T, Q>(&self, query: Q) -> QueryResult<T>
-    where
-        T: crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(_) => Err(Error::QueryError(
-                Cow::Borrowed("load_optimized_one() is only supported on Native backend.")
-            )),
-            Connection::Native(conn) => conn.load_optimized_one(query).await,
-        }
-    }
-
-    /// Load an optional row using optimized Native deserialization.
-    ///
-    /// Returns `None` if no rows are found.
-    #[cfg(feature = "native")]
-    pub async fn load_optimized_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
-    where
-        T: crate::native::FromNativeBlock + Send,
-        Q: QueryFragment<ClickHouse> + Send,
-    {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(_) => Err(Error::QueryError(
-                Cow::Borrowed("load_optimized_optional() is only supported on Native backend.")
-            )),
-            Connection::Native(conn) => conn.load_optimized_optional(query).await,
         }
     }
 
@@ -749,9 +581,16 @@ impl Connection {
         T: crate::native::FromNativeBlock + Send,
         Q: QueryFragment<ClickHouse> + Send,
     {
-        // Load all rows using optimized binary deserialization, then iterate
-        let rows: Vec<T> = self.load_optimized(query).await?;
-        Ok(crate::stream::RowStream::from(rows))
+        match self {
+            #[cfg(feature = "http")]
+            Connection::Http(_) => Err(Error::QueryError(
+                Cow::Borrowed("stream_native() is only supported on Native backend.")
+            )),
+            Connection::Native(conn) => {
+                let rows: Vec<T> = conn.load(query).await?;
+                Ok(crate::stream::RowStream::from(rows))
+            }
+        }
     }
 
     // =========================================================================
@@ -767,8 +606,8 @@ impl Connection {
 
     impl_load_methods! {
         raw fn fetch_all_raw(&self, sql: &str) -> Vec<T> {
-            http(conn) => conn.load_binary_raw(sql).await,
-            native(conn) => conn.load_optimized_raw(sql).await,
+            http(conn) => conn.load_raw(sql).await,
+            native(conn) => conn.load_raw(sql).await,
         }
     }
 
