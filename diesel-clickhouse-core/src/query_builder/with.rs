@@ -124,61 +124,64 @@ where
     }
 }
 
-// Tuple of 2 CTEs
-impl<Q1, Q2, DB> CteList<DB> for (Cte<Q1>, Cte<Q2>)
-where
-    Q1: QueryFragment<DB>,
-    Q2: QueryFragment<DB>,
-    DB: Backend,
-{
-    fn walk_ctes<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-        self.0.walk_ast(pass.reborrow())?;
-        pass.push_sql(", ");
-        self.1.walk_ast(pass.reborrow())?;
-        Ok(())
-    }
+/// Macro to implement CteList for tuples of CTEs.
+///
+/// This macro generates implementations for tuples of increasing size,
+/// allowing up to 12 CTEs in a single WITH clause.
+macro_rules! impl_cte_list_tuple {
+    // Base case: single element (already handled by Cte<Q> impl)
+
+    // Two elements
+    (($idx0:tt, $Q0:ident), ($idx1:tt, $Q1:ident)) => {
+        impl<$Q0, $Q1, DB> CteList<DB> for (Cte<$Q0>, Cte<$Q1>)
+        where
+            $Q0: QueryFragment<DB>,
+            $Q1: QueryFragment<DB>,
+            DB: Backend,
+        {
+            fn walk_ctes<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+                self.$idx0.walk_ast(pass.reborrow())?;
+                pass.push_sql(", ");
+                self.$idx1.walk_ast(pass.reborrow())?;
+                Ok(())
+            }
+        }
+    };
+
+    // Three or more elements - recursive pattern
+    (($idx0:tt, $Q0:ident), $(($idx:tt, $Q:ident)),+) => {
+        impl<$Q0, $($Q,)+ DB> CteList<DB> for (Cte<$Q0>, $(Cte<$Q>,)+)
+        where
+            $Q0: QueryFragment<DB>,
+            $($Q: QueryFragment<DB>,)+
+            DB: Backend,
+        {
+            fn walk_ctes<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+                self.$idx0.walk_ast(pass.reborrow())?;
+                $(
+                    pass.push_sql(", ");
+                    self.$idx.walk_ast(pass.reborrow())?;
+                )+
+                Ok(())
+            }
+        }
+    };
 }
 
-// Tuple of 3 CTEs
-impl<Q1, Q2, Q3, DB> CteList<DB> for (Cte<Q1>, Cte<Q2>, Cte<Q3>)
-where
-    Q1: QueryFragment<DB>,
-    Q2: QueryFragment<DB>,
-    Q3: QueryFragment<DB>,
-    DB: Backend,
-{
-    fn walk_ctes<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-        self.0.walk_ast(pass.reborrow())?;
-        pass.push_sql(", ");
-        self.1.walk_ast(pass.reborrow())?;
-        pass.push_sql(", ");
-        self.2.walk_ast(pass.reborrow())?;
-        Ok(())
-    }
-}
+// Generate CteList implementations for tuples of 2-12 CTEs
+impl_cte_list_tuple!((0, Q0), (1, Q1));
+impl_cte_list_tuple!((0, Q0), (1, Q1), (2, Q2));
+impl_cte_list_tuple!((0, Q0), (1, Q1), (2, Q2), (3, Q3));
+impl_cte_list_tuple!((0, Q0), (1, Q1), (2, Q2), (3, Q3), (4, Q4));
+impl_cte_list_tuple!((0, Q0), (1, Q1), (2, Q2), (3, Q3), (4, Q4), (5, Q5));
+impl_cte_list_tuple!((0, Q0), (1, Q1), (2, Q2), (3, Q3), (4, Q4), (5, Q5), (6, Q6));
+impl_cte_list_tuple!((0, Q0), (1, Q1), (2, Q2), (3, Q3), (4, Q4), (5, Q5), (6, Q6), (7, Q7));
+impl_cte_list_tuple!((0, Q0), (1, Q1), (2, Q2), (3, Q3), (4, Q4), (5, Q5), (6, Q6), (7, Q7), (8, Q8));
+impl_cte_list_tuple!((0, Q0), (1, Q1), (2, Q2), (3, Q3), (4, Q4), (5, Q5), (6, Q6), (7, Q7), (8, Q8), (9, Q9));
+impl_cte_list_tuple!((0, Q0), (1, Q1), (2, Q2), (3, Q3), (4, Q4), (5, Q5), (6, Q6), (7, Q7), (8, Q8), (9, Q9), (10, Q10));
+impl_cte_list_tuple!((0, Q0), (1, Q1), (2, Q2), (3, Q3), (4, Q4), (5, Q5), (6, Q6), (7, Q7), (8, Q8), (9, Q9), (10, Q10), (11, Q11));
 
-// Tuple of 4 CTEs
-impl<Q1, Q2, Q3, Q4, DB> CteList<DB> for (Cte<Q1>, Cte<Q2>, Cte<Q3>, Cte<Q4>)
-where
-    Q1: QueryFragment<DB>,
-    Q2: QueryFragment<DB>,
-    Q3: QueryFragment<DB>,
-    Q4: QueryFragment<DB>,
-    DB: Backend,
-{
-    fn walk_ctes<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-        self.0.walk_ast(pass.reborrow())?;
-        pass.push_sql(", ");
-        self.1.walk_ast(pass.reborrow())?;
-        pass.push_sql(", ");
-        self.2.walk_ast(pass.reborrow())?;
-        pass.push_sql(", ");
-        self.3.walk_ast(pass.reborrow())?;
-        Ok(())
-    }
-}
-
-// Vec of CTEs
+// Vec of CTEs (for dynamic number of CTEs)
 impl<Q, DB> CteList<DB> for Vec<Cte<Q>>
 where
     Q: QueryFragment<DB>,
@@ -301,54 +304,70 @@ impl Default for WithQueriesBuilder<()> {
     }
 }
 
-impl<Q1> WithQueriesBuilder<Cte<Q1>> {
-    /// Add a second CTE.
-    pub fn cte<Q2>(self, name: impl Into<String>, query: Q2) -> WithQueriesBuilder<(Cte<Q1>, Cte<Q2>)> {
-        WithQueriesBuilder {
-            ctes: (self.ctes, Cte::new(name, query)),
+/// Macro to implement WithQueriesBuilder for different tuple sizes.
+///
+/// This generates the `.cte()` method to add another CTE and the `.query()` method
+/// to finalize the builder. Supports up to 12 CTEs.
+macro_rules! impl_with_queries_builder {
+    // Single CTE case
+    (1: $Q1:ident) => {
+        impl<$Q1> WithQueriesBuilder<Cte<$Q1>> {
+            /// Add another CTE.
+            pub fn cte<Qnew>(self, name: impl Into<String>, query: Qnew) -> WithQueriesBuilder<(Cte<$Q1>, Cte<Qnew>)> {
+                WithQueriesBuilder {
+                    ctes: (self.ctes, Cte::new(name, query)),
+                }
+            }
+
+            /// Set the main query and build.
+            pub fn query<MainQuery>(self, query: MainQuery) -> WithClause<Cte<$Q1>, MainQuery> {
+                WithClause::new(self.ctes, query)
+            }
         }
-    }
+    };
 
-    /// Set the main query and build.
-    pub fn query<MainQuery>(self, query: MainQuery) -> WithClause<Cte<Q1>, MainQuery> {
-        WithClause::new(self.ctes, query)
-    }
-}
+    // N-tuple case where we can add one more CTE
+    // Args: current_tuple_types ; next_tuple_types ; tuple_accessors
+    ($($Q:ident),+ ; $($Qnext:ident),+ ; $($acc:tt),+) => {
+        impl<$($Q,)+> WithQueriesBuilder<($(Cte<$Q>,)+)> {
+            /// Add another CTE.
+            pub fn cte<Qnew>(self, name: impl Into<String>, query: Qnew) -> WithQueriesBuilder<($(Cte<$Qnext>,)+)> {
+                WithQueriesBuilder {
+                    ctes: ($(self.ctes.$acc,)+ Cte::new(name, query)),
+                }
+            }
 
-impl<Q1, Q2> WithQueriesBuilder<(Cte<Q1>, Cte<Q2>)> {
-    /// Add a third CTE.
-    pub fn cte<Q3>(self, name: impl Into<String>, query: Q3) -> WithQueriesBuilder<(Cte<Q1>, Cte<Q2>, Cte<Q3>)> {
-        WithQueriesBuilder {
-            ctes: (self.ctes.0, self.ctes.1, Cte::new(name, query)),
+            /// Set the main query and build.
+            pub fn query<MainQuery>(self, query: MainQuery) -> WithClause<($(Cte<$Q>,)+), MainQuery> {
+                WithClause::new(self.ctes, query)
+            }
         }
-    }
+    };
 
-    /// Set the main query and build.
-    pub fn query<MainQuery>(self, query: MainQuery) -> WithClause<(Cte<Q1>, Cte<Q2>), MainQuery> {
-        WithClause::new(self.ctes, query)
-    }
-}
-
-impl<Q1, Q2, Q3> WithQueriesBuilder<(Cte<Q1>, Cte<Q2>, Cte<Q3>)> {
-    /// Add a fourth CTE.
-    pub fn cte<Q4>(self, name: impl Into<String>, query: Q4) -> WithQueriesBuilder<(Cte<Q1>, Cte<Q2>, Cte<Q3>, Cte<Q4>)> {
-        WithQueriesBuilder {
-            ctes: (self.ctes.0, self.ctes.1, self.ctes.2, Cte::new(name, query)),
+    // Final tuple (at max capacity, can only call .query())
+    (final: $($Q:ident),+) => {
+        impl<$($Q,)+> WithQueriesBuilder<($(Cte<$Q>,)+)> {
+            /// Set the main query and build.
+            pub fn query<MainQuery>(self, query: MainQuery) -> WithClause<($(Cte<$Q>,)+), MainQuery> {
+                WithClause::new(self.ctes, query)
+            }
         }
-    }
-
-    /// Set the main query and build.
-    pub fn query<MainQuery>(self, query: MainQuery) -> WithClause<(Cte<Q1>, Cte<Q2>, Cte<Q3>), MainQuery> {
-        WithClause::new(self.ctes, query)
-    }
+    };
 }
 
-impl<Q1, Q2, Q3, Q4> WithQueriesBuilder<(Cte<Q1>, Cte<Q2>, Cte<Q3>, Cte<Q4>)> {
-    /// Set the main query and build.
-    pub fn query<MainQuery>(self, query: MainQuery) -> WithClause<(Cte<Q1>, Cte<Q2>, Cte<Q3>, Cte<Q4>), MainQuery> {
-        WithClause::new(self.ctes, query)
-    }
-}
+// Generate WithQueriesBuilder implementations for 1-12 CTEs
+impl_with_queries_builder!(1: Q1);
+impl_with_queries_builder!(Q1, Q2 ; Q1, Q2, Qnew ; 0, 1);
+impl_with_queries_builder!(Q1, Q2, Q3 ; Q1, Q2, Q3, Qnew ; 0, 1, 2);
+impl_with_queries_builder!(Q1, Q2, Q3, Q4 ; Q1, Q2, Q3, Q4, Qnew ; 0, 1, 2, 3);
+impl_with_queries_builder!(Q1, Q2, Q3, Q4, Q5 ; Q1, Q2, Q3, Q4, Q5, Qnew ; 0, 1, 2, 3, 4);
+impl_with_queries_builder!(Q1, Q2, Q3, Q4, Q5, Q6 ; Q1, Q2, Q3, Q4, Q5, Q6, Qnew ; 0, 1, 2, 3, 4, 5);
+impl_with_queries_builder!(Q1, Q2, Q3, Q4, Q5, Q6, Q7 ; Q1, Q2, Q3, Q4, Q5, Q6, Q7, Qnew ; 0, 1, 2, 3, 4, 5, 6);
+impl_with_queries_builder!(Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8 ; Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Qnew ; 0, 1, 2, 3, 4, 5, 6, 7);
+impl_with_queries_builder!(Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9 ; Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Qnew ; 0, 1, 2, 3, 4, 5, 6, 7, 8);
+impl_with_queries_builder!(Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10 ; Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Qnew ; 0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+impl_with_queries_builder!(Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11 ; Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Qnew ; 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+impl_with_queries_builder!(final: Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12);
 
 /// Start building a WITH clause with multiple CTEs.
 ///

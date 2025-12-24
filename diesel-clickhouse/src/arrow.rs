@@ -242,6 +242,95 @@ use Buffer as ArrowBuffer;
 use Bytes as BytesChunk;
 
 // =============================================================================
+// ArrowValue Trait - Generic value extraction from Arrow arrays
+// =============================================================================
+
+/// Trait for types that can be extracted from Arrow arrays.
+///
+/// This trait enables generic value extraction from Arrow RecordBatches,
+/// reducing code duplication in `ArrowRow` methods.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Get any supported type generically
+/// let id: u64 = row.get("id")?;
+/// let name: &str = row.get("name")?;
+/// ```
+pub trait ArrowValue<'a>: Sized {
+    /// The Arrow array type that holds this value type.
+    type ArrayType: 'static;
+
+    /// Extract a value from the array at the given index.
+    fn from_array(array: &'a Self::ArrayType, idx: usize) -> Self;
+
+    /// The type name for error messages.
+    fn type_name() -> &'static str;
+}
+
+/// Macro to implement ArrowValue for primitive numeric types.
+macro_rules! impl_arrow_value_primitive {
+    ($rust_ty:ty, $array_ty:ty, $name:literal) => {
+        impl<'a> ArrowValue<'a> for $rust_ty {
+            type ArrayType = $array_ty;
+
+            #[inline]
+            fn from_array(array: &'a Self::ArrayType, idx: usize) -> Self {
+                array.value(idx)
+            }
+
+            #[inline]
+            fn type_name() -> &'static str {
+                $name
+            }
+        }
+    };
+}
+
+// Implement ArrowValue for all primitive types
+impl_arrow_value_primitive!(i8, Int8Array, "Int8");
+impl_arrow_value_primitive!(i16, Int16Array, "Int16");
+impl_arrow_value_primitive!(i32, Int32Array, "Int32");
+impl_arrow_value_primitive!(i64, Int64Array, "Int64");
+impl_arrow_value_primitive!(u8, UInt8Array, "UInt8");
+impl_arrow_value_primitive!(u16, UInt16Array, "UInt16");
+impl_arrow_value_primitive!(u32, UInt32Array, "UInt32");
+impl_arrow_value_primitive!(u64, UInt64Array, "UInt64");
+impl_arrow_value_primitive!(f32, Float32Array, "Float32");
+impl_arrow_value_primitive!(f64, Float64Array, "Float64");
+impl_arrow_value_primitive!(bool, BooleanArray, "boolean");
+
+// Implement ArrowValue for string (zero-copy borrow)
+impl<'a> ArrowValue<'a> for &'a str {
+    type ArrayType = StringArray;
+
+    #[inline]
+    fn from_array(array: &'a Self::ArrayType, idx: usize) -> Self {
+        array.value(idx)
+    }
+
+    #[inline]
+    fn type_name() -> &'static str {
+        "string"
+    }
+}
+
+// Implement ArrowValue for binary (zero-copy borrow)
+impl<'a> ArrowValue<'a> for &'a [u8] {
+    type ArrayType = BinaryArray;
+
+    #[inline]
+    fn from_array(array: &'a Self::ArrayType, idx: usize) -> Self {
+        array.value(idx)
+    }
+
+    #[inline]
+    fn type_name() -> &'static str {
+        "binary"
+    }
+}
+
+// =============================================================================
 // ArrowRow - Row-by-row access to Arrow data
 // =============================================================================
 
@@ -255,8 +344,14 @@ use Bytes as BytesChunk;
 ///
 /// ```rust,ignore
 /// conn.load_zero_copy("SELECT id, name FROM users", |row| {
+///     // Generic get method
+///     let id: u64 = row.get("id")?;
+///     let name: &str = row.get("name")?;
+///
+///     // Or use convenience methods
 ///     let id = row.get_u64("id")?;
-///     let name = row.get_str("name")?;  // Zero-copy borrow
+///     let name = row.get_str("name")?;
+///
 ///     println!("{}: {}", id, name);
 ///     Ok(())
 /// }).await?;
@@ -298,201 +393,143 @@ impl<'a> ArrowRow<'a> {
             .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' not found", name))))
     }
 
+    /// Get a typed value from a column by name.
+    ///
+    /// This is the generic method that powers all type-specific getters.
+    /// Use this when you want to specify the type explicitly or in generic code.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let id: u64 = row.get("id")?;
+    /// let name: &str = row.get("name")?;
+    /// let score: f64 = row.get("score")?;
+    /// ```
+    #[inline]
+    pub fn get<T: ArrowValue<'a>>(&self, name: &str) -> QueryResult<T> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<T::ArrayType>()
+            .ok_or_else(|| Error::DeserializationError(
+                Cow::Owned(format!("Column '{}' is not {}", name, T::type_name()))))?;
+
+        if col.is_null(self.row_index) {
+            return Err(Error::DeserializationError(
+                Cow::Owned(format!("Column '{}' is null", name))));
+        }
+        Ok(T::from_array(array, self.row_index))
+    }
+
+    /// Get an optional typed value from a column by name.
+    ///
+    /// Returns `None` if the value is null, `Some(value)` otherwise.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let email: Option<&str> = row.get_opt("email")?;
+    /// ```
+    #[inline]
+    pub fn get_opt<T: ArrowValue<'a>>(&self, name: &str) -> QueryResult<Option<T>> {
+        let index = self.column_index(name)?;
+        let col = self.batch.column(index);
+        let array = col.as_any().downcast_ref::<T::ArrayType>()
+            .ok_or_else(|| Error::DeserializationError(
+                Cow::Owned(format!("Column '{}' is not {}", name, T::type_name()))))?;
+
+        if col.is_null(self.row_index) {
+            Ok(None)
+        } else {
+            Ok(Some(T::from_array(array, self.row_index)))
+        }
+    }
+
+    // =========================================================================
+    // Convenience methods (delegating to generic get/get_opt)
+    // =========================================================================
+
     /// Get a string value (zero-copy borrow).
     #[inline]
     pub fn get_str(&self, name: &str) -> QueryResult<&'a str> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not a string", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get an optional string value (zero-copy borrow).
     #[inline]
     pub fn get_str_opt(&self, name: &str) -> QueryResult<Option<&'a str>> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<StringArray>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not a string", name))))?;
-
-        if array.is_null(self.row_index) {
-            Ok(None)
-        } else {
-            Ok(Some(array.value(self.row_index)))
-        }
+        self.get_opt(name)
     }
 
     /// Get binary data (zero-copy borrow).
     #[inline]
     pub fn get_bytes(&self, name: &str) -> QueryResult<&'a [u8]> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<BinaryArray>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not binary", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get a boolean value.
     #[inline]
     pub fn get_bool(&self, name: &str) -> QueryResult<bool> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<BooleanArray>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not boolean", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get an i8 value.
     #[inline]
     pub fn get_i8(&self, name: &str) -> QueryResult<i8> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<Int8Array>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Int8", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get an i16 value.
     #[inline]
     pub fn get_i16(&self, name: &str) -> QueryResult<i16> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<Int16Array>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Int16", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get an i32 value.
     #[inline]
     pub fn get_i32(&self, name: &str) -> QueryResult<i32> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<Int32Array>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Int32", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get an i64 value.
     #[inline]
     pub fn get_i64(&self, name: &str) -> QueryResult<i64> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<Int64Array>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Int64", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get a u8 value.
     #[inline]
     pub fn get_u8(&self, name: &str) -> QueryResult<u8> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<UInt8Array>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not UInt8", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get a u16 value.
     #[inline]
     pub fn get_u16(&self, name: &str) -> QueryResult<u16> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<UInt16Array>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not UInt16", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get a u32 value.
     #[inline]
     pub fn get_u32(&self, name: &str) -> QueryResult<u32> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<UInt32Array>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not UInt32", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get a u64 value.
     #[inline]
     pub fn get_u64(&self, name: &str) -> QueryResult<u64> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<UInt64Array>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not UInt64", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get an f32 value.
     #[inline]
     pub fn get_f32(&self, name: &str) -> QueryResult<f32> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<Float32Array>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Float32", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Get an f64 value.
     #[inline]
     pub fn get_f64(&self, name: &str) -> QueryResult<f64> {
-        let index = self.column_index(name)?;
-        let col = self.batch.column(index);
-        let array = col.as_any().downcast_ref::<Float64Array>()
-            .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' is not Float64", name))))?;
-
-        if array.is_null(self.row_index) {
-            return Err(Error::DeserializationError(Cow::Owned(format!("Column '{}' is null", name))));
-        }
-        Ok(array.value(self.row_index))
+        self.get(name)
     }
 
     /// Check if a column is null.
