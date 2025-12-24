@@ -4,6 +4,7 @@
 //! Prerequisites: docker-compose up -d
 
 use diesel_clickhouse::Connection;
+use diesel_clickhouse::ConnectionBuilder;
 use diesel_clickhouse::migrations::{
     Migration, MigrationHarness, MigrationSource,
     InMemoryMigrations, EmbeddedMigrations,

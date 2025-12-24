@@ -11,6 +11,7 @@
 
 use diesel_clickhouse::pool::{Pool, PoolConfig};
 use diesel_clickhouse::Connection;
+use diesel_clickhouse::ConnectionBuilder;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

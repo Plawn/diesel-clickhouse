@@ -18,6 +18,7 @@ use diesel_clickhouse::async_insert::{
 // Note: AsyncInsertExt provides conn.async_inserter() and conn.execute_async_insert()
 use diesel_clickhouse::prelude::*;
 use diesel_clickhouse::Connection;
+use diesel_clickhouse::ConnectionBuilder;
 
 /// Helper to create a connection from a URL string.
 async fn establish_from_url(url_str: &str) -> anyhow::Result<Connection> {

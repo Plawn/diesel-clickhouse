@@ -273,6 +273,125 @@ fn push_escaped_identifier(sql: &mut String, identifier: &str) {
     sql.push('`');
 }
 
+// =============================================================================
+// Generic QueryBuilder with Strategy Pattern
+// =============================================================================
+
+/// Strategy trait for formatting bind parameters.
+///
+/// Different backends use different formats for parameter placeholders:
+/// - HTTP: `{p0:String}`, `{p1:String}`, ...
+/// - Native: `$1`, `$2`, ...
+/// - Generic: `?`
+pub trait BindParamFormat: Default + std::fmt::Debug {
+    /// Format and push a bind parameter marker to the SQL string.
+    fn push_bind_param(sql: &mut String, param_index: usize);
+}
+
+/// HTTP bind parameter format: `{p0:String}`, `{p1:String}`, etc.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HttpBindFormat;
+
+impl BindParamFormat for HttpBindFormat {
+    #[inline]
+    fn push_bind_param(sql: &mut String, param_index: usize) {
+        sql.push_str("{p");
+        let mut buf = itoa::Buffer::new();
+        sql.push_str(buf.format(param_index));
+        sql.push_str(":String}");
+    }
+}
+
+/// Native bind parameter format: `$1`, `$2`, etc. (1-based indexing)
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NativeBindFormat;
+
+impl BindParamFormat for NativeBindFormat {
+    #[inline]
+    fn push_bind_param(sql: &mut String, param_index: usize) {
+        sql.push('$');
+        let mut buf = itoa::Buffer::new();
+        // Native uses 1-based indexing
+        sql.push_str(buf.format(param_index + 1));
+    }
+}
+
+/// Generic bind parameter format: `?`
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GenericBindFormat;
+
+impl BindParamFormat for GenericBindFormat {
+    #[inline]
+    fn push_bind_param(sql: &mut String, _param_index: usize) {
+        sql.push('?');
+    }
+}
+
+/// Common query builder implementation parameterized by bind format.
+///
+/// This struct contains the shared logic for all query builders.
+/// The only varying behavior (bind parameter format) is provided by
+/// the `BindParamFormat` trait implementation.
+#[derive(Debug)]
+pub struct QueryBuilderImpl<F: BindParamFormat> {
+    sql: String,
+    param_count: usize,
+    _marker: std::marker::PhantomData<F>,
+}
+
+impl<F: BindParamFormat> Default for QueryBuilderImpl<F> {
+    fn default() -> Self {
+        Self {
+            sql: String::with_capacity(DEFAULT_SQL_CAPACITY),
+            param_count: 0,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<F: BindParamFormat> QueryBuilder for QueryBuilderImpl<F> {
+    #[inline]
+    fn push_sql(&mut self, sql: &str) {
+        self.sql.push_str(sql);
+    }
+
+    #[inline]
+    fn push_identifier(&mut self, identifier: &str) {
+        push_escaped_identifier(&mut self.sql, identifier);
+    }
+
+    #[inline]
+    fn push_bind_param(&mut self) {
+        F::push_bind_param(&mut self.sql, self.param_count);
+        self.param_count += 1;
+    }
+
+    #[inline]
+    fn finish(self) -> String {
+        self.sql
+    }
+
+    #[inline]
+    fn sql(&self) -> &str {
+        &self.sql
+    }
+}
+
+/// Query builder for HTTP backend.
+///
+/// Uses `{p0:String}` format for bind parameters.
+pub type HttpQueryBuilder = QueryBuilderImpl<HttpBindFormat>;
+
+/// Query builder for Native backend.
+///
+/// Uses `$1` format for bind parameters (1-based indexing).
+pub type NativeQueryBuilder = QueryBuilderImpl<NativeBindFormat>;
+
+/// Generic query builder.
+///
+/// Uses `?` for bind parameters.
+pub type GenericQueryBuilder = QueryBuilderImpl<GenericBindFormat>;
+
 /// Common bind collector implementation.
 ///
 /// This struct provides the shared implementation for all backend-specific
@@ -348,52 +467,6 @@ impl<'a> BindCollector<'a, HttpBackend> for HttpBindCollector {
     }
 }
 
-/// Query builder for HTTP backend.
-#[derive(Debug)]
-pub struct HttpQueryBuilder {
-    sql: String,
-    param_count: usize,
-}
-
-impl Default for HttpQueryBuilder {
-    fn default() -> Self {
-        Self {
-            sql: String::with_capacity(DEFAULT_SQL_CAPACITY),
-            param_count: 0,
-        }
-    }
-}
-
-impl QueryBuilder for HttpQueryBuilder {
-    #[inline]
-    fn push_sql(&mut self, sql: &str) {
-        self.sql.push_str(sql);
-    }
-
-    #[inline]
-    fn push_identifier(&mut self, identifier: &str) {
-        push_escaped_identifier(&mut self.sql, identifier);
-    }
-
-    fn push_bind_param(&mut self) {
-        // ClickHouse HTTP uses {name:Type} format for parameters
-        self.sql.push_str("{p");
-        let mut buf = itoa::Buffer::new();
-        self.sql.push_str(buf.format(self.param_count));
-        self.sql.push_str(":String}");
-        self.param_count += 1;
-    }
-
-    fn finish(self) -> String {
-        self.sql
-    }
-
-    #[inline]
-    fn sql(&self) -> &str {
-        &self.sql
-    }
-}
-
 // =============================================================================
 // Native Backend
 // =============================================================================
@@ -445,51 +518,6 @@ impl<'a> BindCollector<'a, NativeBackend> for NativeBindCollector {
     }
 }
 
-/// Query builder for Native backend.
-#[derive(Debug)]
-pub struct NativeQueryBuilder {
-    sql: String,
-    param_count: usize,
-}
-
-impl Default for NativeQueryBuilder {
-    fn default() -> Self {
-        Self {
-            sql: String::with_capacity(DEFAULT_SQL_CAPACITY),
-            param_count: 0,
-        }
-    }
-}
-
-impl QueryBuilder for NativeQueryBuilder {
-    #[inline]
-    fn push_sql(&mut self, sql: &str) {
-        self.sql.push_str(sql);
-    }
-
-    #[inline]
-    fn push_identifier(&mut self, identifier: &str) {
-        push_escaped_identifier(&mut self.sql, identifier);
-    }
-
-    fn push_bind_param(&mut self) {
-        // Native protocol uses $1, $2, etc.
-        self.param_count += 1;
-        self.sql.push('$');
-        let mut buf = itoa::Buffer::new();
-        self.sql.push_str(buf.format(self.param_count));
-    }
-
-    fn finish(self) -> String {
-        self.sql
-    }
-
-    #[inline]
-    fn sql(&self) -> &str {
-        &self.sql
-    }
-}
-
 // =============================================================================
 // Generic ClickHouse backend (for backend-agnostic code)
 // =============================================================================
@@ -532,46 +560,6 @@ impl<'a> BindCollector<'a, ClickHouse> for GenericBindCollector {
     #[inline]
     fn bindable_values(&self) -> &[BindableValue] {
         self.0.bindable_values()
-    }
-}
-
-/// Generic query builder.
-#[derive(Debug)]
-pub struct GenericQueryBuilder {
-    sql: String,
-}
-
-impl Default for GenericQueryBuilder {
-    fn default() -> Self {
-        Self {
-            sql: String::with_capacity(DEFAULT_SQL_CAPACITY),
-        }
-    }
-}
-
-impl QueryBuilder for GenericQueryBuilder {
-    #[inline]
-    fn push_sql(&mut self, sql: &str) {
-        self.sql.push_str(sql);
-    }
-
-    #[inline]
-    fn push_identifier(&mut self, identifier: &str) {
-        push_escaped_identifier(&mut self.sql, identifier);
-    }
-
-    #[inline]
-    fn push_bind_param(&mut self) {
-        self.sql.push('?');
-    }
-
-    fn finish(self) -> String {
-        self.sql
-    }
-
-    #[inline]
-    fn sql(&self) -> &str {
-        &self.sql
     }
 }
 

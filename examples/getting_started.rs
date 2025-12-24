@@ -11,6 +11,7 @@
 use diesel_clickhouse::migrations::{EmbeddedMigrations, MigrationHarness};
 use diesel_clickhouse::prelude::*;
 use diesel_clickhouse::Connection;
+use diesel_clickhouse::ConnectionBuilder;
 use diesel_clickhouse::{insert_into, update};
 use include_dir::include_dir;
 
