@@ -392,29 +392,52 @@ pub type NativeQueryBuilder = QueryBuilderImpl<NativeBindFormat>;
 /// Uses `?` for bind parameters.
 pub type GenericQueryBuilder = QueryBuilderImpl<GenericBindFormat>;
 
-/// Common bind collector implementation.
+// =============================================================================
+// Generic BindCollector Implementation
+// =============================================================================
+
+/// Generic bind collector implementation that works with any backend.
 ///
 /// This struct provides the shared implementation for all backend-specific
-/// bind collectors, avoiding code duplication.
-#[derive(Debug, Default)]
-pub struct CommonBindCollector {
+/// bind collectors, avoiding code duplication. The `DB` type parameter is
+/// used only for type safety to ensure the correct collector is used with
+/// each backend.
+#[derive(Debug)]
+pub struct BindCollectorImpl<DB: Backend> {
     bindable_values: SmallVec<[BindableValue; 8]>,
+    _marker: std::marker::PhantomData<DB>,
 }
 
-impl CommonBindCollector {
-    /// Push a bindable value for native parameter binding.
+impl<DB: Backend> Default for BindCollectorImpl<DB> {
+    fn default() -> Self {
+        Self {
+            bindable_values: SmallVec::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a, DB: Backend> BindCollector<'a, DB> for BindCollectorImpl<DB> {
     #[inline]
-    pub fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
+    fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
         self.bindable_values.push(value);
         Ok(())
     }
 
-    /// Get the collected bindable values for native binding.
     #[inline]
-    pub fn bindable_values(&self) -> &[BindableValue] {
+    fn bindable_values(&self) -> &[BindableValue] {
         &self.bindable_values
     }
 }
+
+/// Bind collector for HTTP backend.
+pub type HttpBindCollector = BindCollectorImpl<HttpBackend>;
+
+/// Bind collector for Native backend.
+pub type NativeBindCollector = BindCollectorImpl<NativeBackend>;
+
+/// Bind collector for generic ClickHouse backend.
+pub type GenericBindCollector = BindCollectorImpl<ClickHouse>;
 
 // =============================================================================
 // HTTP Backend
@@ -447,24 +470,6 @@ pub struct HttpRawValue<'a> {
     pub bytes: &'a [u8],
     /// The column type.
     pub type_name: &'a str,
-}
-
-/// Bind collector for HTTP backend.
-///
-/// Wraps CommonBindCollector to provide HTTP-specific BindCollector implementation.
-#[derive(Debug, Default)]
-pub struct HttpBindCollector(CommonBindCollector);
-
-impl<'a> BindCollector<'a, HttpBackend> for HttpBindCollector {
-    #[inline]
-    fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
-        self.0.push_bindable_value(value)
-    }
-
-    #[inline]
-    fn bindable_values(&self) -> &[BindableValue] {
-        self.0.bindable_values()
-    }
 }
 
 // =============================================================================
@@ -500,24 +505,6 @@ pub struct NativeRawValue<'a> {
     pub column_index: usize,
 }
 
-/// Bind collector for Native backend.
-///
-/// Wraps CommonBindCollector to provide Native-specific BindCollector implementation.
-#[derive(Debug, Default)]
-pub struct NativeBindCollector(CommonBindCollector);
-
-impl<'a> BindCollector<'a, NativeBackend> for NativeBindCollector {
-    #[inline]
-    fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
-        self.0.push_bindable_value(value)
-    }
-
-    #[inline]
-    fn bindable_values(&self) -> &[BindableValue] {
-        self.0.bindable_values()
-    }
-}
-
 // =============================================================================
 // Generic ClickHouse backend (for backend-agnostic code)
 // =============================================================================
@@ -543,24 +530,6 @@ impl Backend for ClickHouse {
 #[derive(Debug)]
 pub struct GenericRawValue<'a> {
     pub bytes: &'a [u8],
-}
-
-/// Generic bind collector.
-///
-/// Wraps CommonBindCollector to provide generic BindCollector implementation.
-#[derive(Debug, Default)]
-pub struct GenericBindCollector(CommonBindCollector);
-
-impl<'a> BindCollector<'a, ClickHouse> for GenericBindCollector {
-    #[inline]
-    fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error> {
-        self.0.push_bindable_value(value)
-    }
-
-    #[inline]
-    fn bindable_values(&self) -> &[BindableValue] {
-        self.0.bindable_values()
-    }
 }
 
 #[cfg(test)]
