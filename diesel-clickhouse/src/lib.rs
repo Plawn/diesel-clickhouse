@@ -182,6 +182,10 @@ pub mod prelude {
     // RunQueryDsl for idiomatic query execution
     #[cfg(any(feature = "http", feature = "native"))]
     pub use crate::RunQueryDsl;
+
+    // Unified row traits
+    #[cfg(any(feature = "http", feature = "native"))]
+    pub use crate::{UnifiedRow, StreamableRow, CallbackStreamableRow};
 }
 
 /// DSL helpers and functions.
@@ -297,6 +301,15 @@ pub use native::{NativeClientBuilder, NativeCompression};
 /// conn.execute("CREATE TABLE test (id UInt64) ENGINE = Memory").await?;
 /// conn.insert_values("test", "(1), (2), (3)").await?;
 /// ```
+/// Unified row traits for backend-agnostic query execution.
+///
+/// These traits abstract over the different requirements of HTTP and Native backends.
+#[cfg(any(feature = "http", feature = "native"))]
+mod unified_row;
+
+#[cfg(any(feature = "http", feature = "native"))]
+pub use unified_row::{UnifiedRow, StreamableRow, CallbackStreamableRow};
+
 #[cfg(any(feature = "http", feature = "native"))]
 mod unified;
 
