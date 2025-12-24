@@ -942,7 +942,7 @@ impl Connection {
         callback: F,
     ) -> QueryResult<usize>
     where
-        F: FnMut(::arrow::array::RecordBatch) -> QueryResult<()>,
+        F: FnMut(::arrow::array::RecordBatch) -> QueryResult<()> + Send + 'static,
     {
         match self {
             Connection::Http(conn) => conn.load_arrow_callback(sql, callback).await,

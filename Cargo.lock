@@ -781,6 +781,7 @@ dependencies = [
  "arrow",
  "async-stream",
  "async-trait",
+ "bytes",
  "chrono",
  "chrono-tz",
  "clickhouse",

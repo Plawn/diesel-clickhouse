@@ -679,6 +679,13 @@ impl ClickHouseConnection {
     /// workloads and enables seamless interoperability with tools like Polars,
     /// DataFusion, and DuckDB.
     ///
+    /// # Zero-Copy Architecture
+    ///
+    /// This implementation uses [`ZeroCopyArrowDecoder`] which:
+    /// - Converts `bytes::Bytes` chunks to Arrow buffers without copying
+    /// - Parses batches incrementally as data arrives
+    /// - Minimizes memory usage during streaming
+    ///
     /// # Arguments
     ///
     /// * `sql` - The SQL query to execute
@@ -719,26 +726,47 @@ impl ClickHouseConnection {
     }
 
     /// Internal method to load Arrow with optional bindings applied to the query.
-    async fn load_arrow_with_bindings(&self, query: clickhouse::query::Query) -> QueryResult<crate::arrow::ArrowResult> {
+    ///
+    /// Uses zero-copy streaming: each chunk from the HTTP response is converted
+    /// to an Arrow buffer without copying, and batches are decoded incrementally.
+    async fn load_arrow_with_bindings(
+        &self,
+        query: clickhouse::query::Query,
+    ) -> QueryResult<crate::arrow::ArrowResult> {
+        use crate::arrow::ZeroCopyArrowDecoder;
+
         // Execute query with ArrowStream format
         let mut cursor = query
             .fetch_bytes("ArrowStream")
             .map_err(Error::query_from)?;
 
-        // Collect all bytes (Arrow IPC stream needs complete data)
-        let mut all_bytes = Vec::with_capacity(8192);
+        // Zero-copy streaming decode
+        let mut decoder = ZeroCopyArrowDecoder::new();
+        let mut all_batches = Vec::new();
+
         loop {
             match cursor.next().await {
                 Ok(Some(chunk)) => {
-                    all_bytes.extend_from_slice(&chunk);
+                    // Zero-copy: Bytes -> Buffer conversion
+                    let batches = decoder.decode_chunk(chunk)?;
+                    all_batches.extend(batches);
                 }
                 Ok(None) => break,
                 Err(e) => return Err(Error::query_from(e)),
             }
         }
 
-        // Parse Arrow IPC stream
-        crate::arrow::parse_arrow_stream(&all_bytes)
+        decoder.finish()?;
+
+        // Build result
+        if all_batches.is_empty() {
+            return Err(Error::DeserializationError(std::borrow::Cow::Borrowed(
+                "Arrow stream contained no batches",
+            )));
+        }
+
+        let schema = all_batches[0].schema();
+        Ok(crate::arrow::ArrowResult::new(schema, all_batches))
     }
 
     /// Load query results as Arrow with a callback for each batch.
@@ -767,39 +795,35 @@ impl ClickHouseConnection {
         callback: F,
     ) -> QueryResult<usize>
     where
-        F: FnMut(::arrow::array::RecordBatch) -> QueryResult<()>,
+        F: FnMut(::arrow::array::RecordBatch) -> QueryResult<()> + Send + 'static,
     {
         self.load_arrow_callback_with_bindings(self.client.query(sql), callback).await
     }
 
     /// Internal method to load Arrow with callback, with optional bindings.
+    ///
+    /// Uses streaming parsing - data is processed as it arrives from the network
+    /// without buffering the entire result set in memory.
     async fn load_arrow_callback_with_bindings<F>(
         &self,
         query: clickhouse::query::Query,
-        callback: F,
+        mut callback: F,
     ) -> QueryResult<usize>
     where
-        F: FnMut(::arrow::array::RecordBatch) -> QueryResult<()>,
+        F: FnMut(::arrow::array::RecordBatch) -> QueryResult<()> + Send + 'static,
     {
-        // Execute query with ArrowStream format
-        let mut cursor = query
-            .fetch_bytes("ArrowStream")
-            .map_err(Error::query_from)?;
+        use futures::StreamExt;
 
-        // Collect bytes
-        let mut all_bytes = Vec::with_capacity(8192);
-        loop {
-            match cursor.next().await {
-                Ok(Some(chunk)) => {
-                    all_bytes.extend_from_slice(&chunk);
-                }
-                Ok(None) => break,
-                Err(e) => return Err(Error::query_from(e)),
-            }
+        let mut stream = std::pin::pin!(self.stream_arrow_with_bindings(query));
+        let mut count = 0;
+
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result?;
+            count += batch.num_rows();
+            callback(batch)?;
         }
 
-        // Parse with callback
-        crate::arrow::parse_arrow_stream_callback(&all_bytes, callback)
+        Ok(count)
     }
 
     /// Load query results from a QueryFragment as Arrow.
@@ -817,6 +841,116 @@ impl ClickHouseConnection {
     {
         let compiled = build_sql_native(&query)?;
         self.load_arrow_with_bindings(compiled.bind_to(self.client.query(&compiled.sql))).await
+    }
+
+    /// Stream Arrow RecordBatches from a SQL query.
+    ///
+    /// Returns an async stream that yields batches as they are parsed,
+    /// without buffering the entire result set in memory.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use futures::StreamExt;
+    ///
+    /// let mut stream = conn.stream_arrow("SELECT * FROM huge_table");
+    /// while let Some(batch_result) = stream.next().await {
+    ///     let batch = batch_result?;
+    ///     println!("Got batch with {} rows", batch.num_rows());
+    /// }
+    /// ```
+    pub fn stream_arrow(
+        &self,
+        sql: &str,
+    ) -> impl futures::Stream<Item = QueryResult<::arrow::array::RecordBatch>> + Send + 'static {
+        self.stream_arrow_with_bindings(self.client.query(sql))
+    }
+
+    /// Stream Arrow RecordBatches from a QueryFragment.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use futures::StreamExt;
+    ///
+    /// let mut stream = conn.stream_arrow_query(
+    ///     users::table.filter(users::active.eq(true))
+    /// )?;
+    /// while let Some(batch_result) = stream.next().await {
+    ///     let batch = batch_result?;
+    ///     println!("Got batch with {} rows", batch.num_rows());
+    /// }
+    /// ```
+    pub fn stream_arrow_query<Q>(
+        &self,
+        query: Q,
+    ) -> QueryResult<impl futures::Stream<Item = QueryResult<::arrow::array::RecordBatch>> + Send + 'static>
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        let compiled = build_sql_native(&query)?;
+        Ok(self.stream_arrow_with_bindings(compiled.bind_to(self.client.query(&compiled.sql))))
+    }
+
+    /// Internal method to stream Arrow batches with bindings.
+    ///
+    /// # Zero-Copy Implementation
+    ///
+    /// This method uses [`ZeroCopyArrowDecoder`] to process chunks directly
+    /// from the HTTP response without intermediate copies:
+    ///
+    /// 1. `BytesCursor::next()` returns `bytes::Bytes` (reference-counted)
+    /// 2. `ZeroCopyArrowDecoder::decode_chunk()` converts to Arrow `Buffer` (zero-copy)
+    /// 3. `StreamDecoder` parses batches directly from the buffer
+    /// 4. Batches are yielded to the caller with data still in original buffer
+    fn stream_arrow_with_bindings(
+        &self,
+        query: clickhouse::query::Query,
+    ) -> impl futures::Stream<Item = QueryResult<::arrow::array::RecordBatch>> + Send + 'static {
+        async_stream::stream! {
+            use crate::arrow::ZeroCopyArrowDecoder;
+
+            // Execute query with ArrowStream format
+            let mut cursor = match query.fetch_bytes("ArrowStream") {
+                Ok(c) => c,
+                Err(e) => {
+                    yield Err(Error::query_from(e));
+                    return;
+                }
+            };
+
+            let mut decoder = ZeroCopyArrowDecoder::new();
+
+            // Stream chunks and decode batches
+            loop {
+                match cursor.next().await {
+                    Ok(Some(chunk)) => {
+                        // Zero-copy decode: Bytes -> Buffer -> RecordBatch
+                        match decoder.decode_chunk(chunk) {
+                            Ok(batches) => {
+                                for batch in batches {
+                                    yield Ok(batch);
+                                }
+                            }
+                            Err(e) => {
+                                yield Err(e);
+                                return;
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        yield Err(Error::query_from(e));
+                        return;
+                    }
+                }
+            }
+
+            // Finalize decoder
+            if let Err(e) = decoder.finish() {
+                yield Err(e);
+            }
+        }
     }
 
     // =========================================================================

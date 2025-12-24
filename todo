@@ -46,3 +46,6 @@ Le PR #39906 a Ã©tendu le protocole natif pour supporter les query parameters â€
       let mut stream = http_conn
         .stream::<UserWithPosts, _>(users::table.filter(users::active.eq(true)))
         .await?;
+
+- verify doc aligned with real implem
+- verifier les perfos d'insert

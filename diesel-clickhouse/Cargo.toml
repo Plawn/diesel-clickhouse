@@ -42,7 +42,7 @@ native-tls-native = ["clickhouse-rs?/tls"]
 tracing = ["dep:tracing"]
 
 # Apache Arrow zero-copy columnar format
-arrow = ["dep:arrow"]
+arrow = ["dep:arrow", "dep:async-stream", "dep:bytes"]
 
 [dependencies]
 diesel-clickhouse-core.workspace = true
@@ -70,8 +70,10 @@ smallvec = "1.11"
 # Lock-free pool
 crossbeam-queue = "0.3"
 
-# Optional - Apache Arrow
+# Optional - Apache Arrow (zero-copy columnar format)
 arrow = { workspace = true, optional = true }
+# For zero-copy buffer handling with Arrow
+bytes = { version = "1", optional = true }
 
 # Optional - Other
 chrono = { workspace = true, optional = true }

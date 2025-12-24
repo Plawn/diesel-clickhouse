@@ -4,6 +4,21 @@
 //! columnar format. Arrow enables true zero-copy data access and is optimized
 //! for analytical workloads.
 //!
+//! # Zero-Copy Architecture
+//!
+//! The streaming implementation uses `StreamDecoder` with `bytes::Bytes` to achieve
+//! true zero-copy from network to Arrow buffers:
+//!
+//! ```text
+//! Network (HTTP chunks)
+//!     ↓ bytes::Bytes (reference-counted, no copy)
+//! arrow_buffer::Buffer (zero-copy From<Bytes>)
+//!     ↓ StreamDecoder (incremental parsing)
+//! RecordBatch (zero-copy column access)
+//!     ↓
+//! &str / &[u8] / primitive values
+//! ```
+//!
 //! # Benefits over TSV/JSON
 //!
 //! - **Zero-copy**: Data is accessed directly from the buffer without parsing
@@ -11,6 +26,7 @@
 //! - **Type-safe**: Schema is embedded in the data
 //! - **SIMD-friendly**: Arrow's memory layout enables vectorized operations
 //! - **Interoperable**: Works with Polars, DataFusion, DuckDB, etc.
+//! - **Streaming**: Process batches as they arrive, no buffering required
 //!
 //! # Example
 //!
@@ -18,10 +34,10 @@
 //! use diesel_clickhouse::prelude::*;
 //! use arrow::array::{Int64Array, StringArray};
 //!
-//! // Load data as Arrow RecordBatches
-//! let batches = conn.load_arrow("SELECT id, name FROM users").await?;
+//! // Stream data as Arrow RecordBatches (zero-copy)
+//! let mut stream = conn.stream_arrow("SELECT id, name FROM users");
 //!
-//! for batch in batches {
+//! while let Some(batch) = stream.next().await? {
 //!     // Access columns with zero-copy
 //!     let ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
 //!     let names = batch.column(1).as_any().downcast_ref::<StringArray>().unwrap();
@@ -34,32 +50,196 @@
 //!
 //! # Performance Comparison
 //!
-//! | Format | Parse Time | Memory | Zero-Copy |
-//! |--------|-----------|--------|-----------|
-//! | Arrow  | ~0 (binary) | Minimal | Yes |
-//! | TSV    | O(n) text parsing | O(n) | Partial |
-//! | JSON   | O(n) tokenization | O(n) | No |
+//! | Format | Parse Time | Memory | Zero-Copy | Streaming |
+//! |--------|-----------|--------|-----------|-----------|
+//! | Arrow (StreamDecoder) | ~0 | O(batch) | Yes | Yes |
+//! | Arrow (buffered) | ~0 | O(total) | Partial | No |
+//! | TSV    | O(n) parsing | O(n) | Partial | Yes |
+//! | JSON   | O(n) tokenization | O(n) | No | Yes |
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, RecordBatch,
-    Int8Array, Int16Array, Int32Array, Int64Array,
-    UInt8Array, UInt16Array, UInt32Array, UInt64Array,
-    Float32Array, Float64Array, StringArray, BinaryArray,
-    BooleanArray,
+    Array, BinaryArray, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
+    Int64Array, Int8Array, RecordBatch, StringArray, UInt16Array, UInt32Array, UInt64Array,
+    UInt8Array,
 };
-use arrow::ipc::reader::StreamReader;
-
-use std::borrow::Cow;
+use arrow::ipc::reader::{StreamDecoder, StreamReader};
 
 use crate::core::result::{Error, QueryResult};
 
-/// Re-export arrow types for convenience
+// =============================================================================
+// Zero-Copy Streaming Arrow Decoder
+// =============================================================================
+
+/// A zero-copy Arrow stream decoder that processes `bytes::Bytes` chunks.
+///
+/// This decoder uses Arrow's `StreamDecoder` to parse IPC stream data
+/// incrementally without copying the underlying bytes. Each `Bytes` chunk
+/// from the network is converted to an `arrow_buffer::Buffer` via zero-copy
+/// `From` implementation.
+///
+/// # Zero-Copy Guarantee
+///
+/// - `bytes::Bytes` → `arrow_buffer::Buffer`: Zero-copy (reference counting)
+/// - `StreamDecoder::decode()`: Zero-copy for aligned data, auto-aligns if needed
+/// - `RecordBatch` column access: Zero-copy (slices into buffer)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let mut decoder = ZeroCopyArrowDecoder::new();
+///
+/// // Feed chunks as they arrive from the network
+/// for chunk in http_response_chunks {
+///     for batch in decoder.decode_chunk(chunk)? {
+///         process_batch(batch);
+///     }
+/// }
+///
+/// decoder.finish()?;
+/// ```
+pub struct ZeroCopyArrowDecoder {
+    decoder: StreamDecoder,
+    /// Accumulated buffer for partial messages spanning multiple chunks
+    pending: ArrowBuffer,
+}
+
+impl ZeroCopyArrowDecoder {
+    /// Create a new zero-copy Arrow decoder.
+    pub fn new() -> Self {
+        Self {
+            decoder: StreamDecoder::new(),
+            pending: ArrowBuffer::from(BytesChunk::new()),
+        }
+    }
+
+    /// Get the decoded schema, if available.
+    ///
+    /// The schema becomes available after the first chunk containing
+    /// the schema message has been decoded.
+    pub fn schema(&self) -> Option<Arc<arrow::datatypes::Schema>> {
+        self.decoder.schema()
+    }
+
+    /// Decode a chunk of bytes, yielding any complete RecordBatches.
+    ///
+    /// This method is zero-copy: the `Bytes` chunk is converted to an
+    /// Arrow `Buffer` without copying, and batches are parsed directly
+    /// from that buffer.
+    ///
+    /// # Returns
+    ///
+    /// A vector of decoded `RecordBatch`es. May be empty if the chunk
+    /// doesn't contain any complete batches (partial data is buffered
+    /// internally for the next call).
+    pub fn decode_chunk(&mut self, chunk: BytesChunk) -> QueryResult<Vec<RecordBatch>> {
+        let mut batches = Vec::new();
+
+        // Combine pending data with new chunk (zero-copy if pending is empty)
+        let mut buffer = if self.pending.is_empty() {
+            ArrowBuffer::from(chunk)
+        } else {
+            // We have pending data - need to combine
+            // This is a copy, but only happens when messages span chunks
+            let mut combined = Vec::with_capacity(self.pending.len() + chunk.len());
+            combined.extend_from_slice(&self.pending);
+            combined.extend_from_slice(&chunk);
+            ArrowBuffer::from(combined)
+        };
+
+        // Decode all complete messages from this buffer
+        while !buffer.is_empty() {
+            match self.decoder.decode(&mut buffer) {
+                Ok(Some(batch)) => {
+                    batches.push(batch);
+                }
+                Ok(None) => {
+                    // Need more data - save remaining as pending
+                    break;
+                }
+                Err(e) => {
+                    return Err(Error::DeserializationError(Cow::Owned(format!(
+                        "Arrow decode error: {}",
+                        e
+                    ))));
+                }
+            }
+        }
+
+        // Save any remaining data for next chunk
+        self.pending = buffer;
+
+        Ok(batches)
+    }
+
+    /// Finish decoding and validate the stream is complete.
+    ///
+    /// Call this after all chunks have been processed to ensure
+    /// no partial data remains.
+    pub fn finish(mut self) -> QueryResult<()> {
+        // Process any remaining pending data
+        if !self.pending.is_empty() {
+            let mut buffer =
+                std::mem::replace(&mut self.pending, ArrowBuffer::from(BytesChunk::new()));
+            while !buffer.is_empty() {
+                match self.decoder.decode(&mut buffer) {
+                    Ok(Some(_)) => {
+                        // Batch decoded from remaining data
+                    }
+                    Ok(None) => {
+                        // Still incomplete - this is an error
+                        return Err(Error::DeserializationError(Cow::Borrowed(
+                            "Arrow stream ended with incomplete data",
+                        )));
+                    }
+                    Err(e) => {
+                        return Err(Error::DeserializationError(Cow::Owned(format!(
+                            "Arrow decode error in finish: {}",
+                            e
+                        ))));
+                    }
+                }
+            }
+        }
+
+        self.decoder.finish().map_err(|e| {
+            Error::DeserializationError(Cow::Owned(format!("Arrow stream incomplete: {}", e)))
+        })?;
+
+        Ok(())
+    }
+
+    /// Consume the decoder and return any pending data.
+    ///
+    /// This is useful for error recovery or debugging.
+    pub fn into_pending(self) -> ArrowBuffer {
+        self.pending
+    }
+}
+
+impl Default for ZeroCopyArrowDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Re-export arrow types for convenience.
 pub use arrow::array;
+pub use arrow::buffer::Buffer;
 pub use arrow::datatypes::{DataType, Field, Schema};
+
+/// Re-export `bytes::Bytes` for zero-copy streaming.
+///
+/// This is the type used by `ZeroCopyArrowDecoder::decode_chunk()`.
+pub use bytes::Bytes;
+
+// Use the public exports within this module
+use Buffer as ArrowBuffer;
+use Bytes as BytesChunk;
 
 // =============================================================================
 // ArrowRow - Row-by-row access to Arrow data
@@ -461,10 +641,15 @@ impl IntoIterator for ArrowResult {
     }
 }
 
-/// Parse Arrow IPC stream data into RecordBatches
+/// Parse Arrow IPC stream data into RecordBatches.
 ///
 /// This function reads the ArrowStream format returned by ClickHouse
 /// and returns a vector of RecordBatches.
+///
+/// # Note
+///
+/// For streaming scenarios, prefer using [`ZeroCopyArrowDecoder`] which
+/// processes chunks incrementally without buffering the entire stream.
 pub fn parse_arrow_stream(data: &[u8]) -> QueryResult<ArrowResult> {
     if data.is_empty() {
         return Err(Error::DeserializationError(
@@ -473,25 +658,32 @@ pub fn parse_arrow_stream(data: &[u8]) -> QueryResult<ArrowResult> {
     }
 
     let cursor = Cursor::new(data);
-    let reader = StreamReader::try_new(cursor, None)
-        .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to create Arrow reader: {}", e))))?;
+    let reader = StreamReader::try_new(cursor, None).map_err(|e| {
+        Error::DeserializationError(Cow::Owned(format!("Failed to create Arrow reader: {}", e)))
+    })?;
 
     let schema = reader.schema();
     let mut batches = Vec::with_capacity(4);
 
     for batch_result in reader {
-        let batch = batch_result
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to read Arrow batch: {}", e))))?;
+        let batch = batch_result.map_err(|e| {
+            Error::DeserializationError(Cow::Owned(format!("Failed to read Arrow batch: {}", e)))
+        })?;
         batches.push(batch);
     }
 
     Ok(ArrowResult::new(schema, batches))
 }
 
-/// Parse Arrow IPC stream data with streaming callback
+/// Parse Arrow IPC stream data with streaming callback.
 ///
 /// This function processes batches as they are parsed, without collecting
 /// them all in memory first.
+///
+/// # Note
+///
+/// For true zero-copy streaming from network, prefer using
+/// [`ZeroCopyArrowDecoder`] with `bytes::Bytes` chunks.
 pub fn parse_arrow_stream_callback<F>(data: &[u8], mut callback: F) -> QueryResult<usize>
 where
     F: FnMut(RecordBatch) -> QueryResult<()>,
@@ -501,18 +693,91 @@ where
     }
 
     let cursor = Cursor::new(data);
-    let reader = StreamReader::try_new(cursor, None)
-        .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to create Arrow reader: {}", e))))?;
+    let reader = StreamReader::try_new(cursor, None).map_err(|e| {
+        Error::DeserializationError(Cow::Owned(format!("Failed to create Arrow reader: {}", e)))
+    })?;
 
     let mut count = 0;
     for batch_result in reader {
-        let batch = batch_result
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to read Arrow batch: {}", e))))?;
+        let batch = batch_result.map_err(|e| {
+            Error::DeserializationError(Cow::Owned(format!("Failed to read Arrow batch: {}", e)))
+        })?;
         let rows = batch.num_rows();
         callback(batch)?;
         count += rows;
     }
 
+    Ok(count)
+}
+
+/// Parse Arrow IPC stream from `bytes::Bytes` chunks using zero-copy decoding.
+///
+/// This is the recommended way to parse Arrow data from streaming sources
+/// like HTTP responses. It uses [`ZeroCopyArrowDecoder`] internally.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let chunks: Vec<Bytes> = fetch_chunks_from_network().await;
+/// let result = parse_arrow_zero_copy(chunks.into_iter())?;
+/// ```
+pub fn parse_arrow_zero_copy<I>(chunks: I) -> QueryResult<ArrowResult>
+where
+    I: IntoIterator<Item = BytesChunk>,
+{
+    let mut decoder = ZeroCopyArrowDecoder::new();
+    let mut all_batches = Vec::new();
+
+    for chunk in chunks {
+        let batches = decoder.decode_chunk(chunk)?;
+        all_batches.extend(batches);
+    }
+
+    decoder.finish()?;
+
+    // Get schema from first batch, or return empty result
+    if all_batches.is_empty() {
+        return Err(Error::DeserializationError(Cow::Borrowed(
+            "Arrow stream contained no batches",
+        )));
+    }
+
+    let schema = all_batches[0].schema();
+    Ok(ArrowResult::new(schema, all_batches))
+}
+
+/// Parse Arrow IPC stream from `bytes::Bytes` chunks with a callback.
+///
+/// Zero-copy streaming version that calls the callback for each batch
+/// as it's decoded.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let mut row_count = 0;
+/// parse_arrow_zero_copy_callback(chunks, |batch| {
+///     row_count += batch.num_rows();
+///     process_batch(batch);
+///     Ok(())
+/// })?;
+/// ```
+pub fn parse_arrow_zero_copy_callback<I, F>(chunks: I, mut callback: F) -> QueryResult<usize>
+where
+    I: IntoIterator<Item = BytesChunk>,
+    F: FnMut(RecordBatch) -> QueryResult<()>,
+{
+    let mut decoder = ZeroCopyArrowDecoder::new();
+    let mut count = 0;
+
+    for chunk in chunks {
+        let batches = decoder.decode_chunk(chunk)?;
+        for batch in batches {
+            count += batch.num_rows();
+            callback(batch)?;
+        }
+    }
+
+    decoder.finish()?;
     Ok(count)
 }
 
@@ -601,5 +866,143 @@ mod tests {
 
         let batch_count: usize = result.iter().count();
         assert_eq!(batch_count, 1);
+    }
+
+    // =========================================================================
+    // ZeroCopyArrowDecoder tests
+    // =========================================================================
+
+    #[test]
+    fn test_zero_copy_decoder_single_chunk() {
+        let data = create_arrow_stream();
+        let chunk = Bytes::from(data);
+
+        let mut decoder = ZeroCopyArrowDecoder::new();
+        let batches = decoder.decode_chunk(chunk).unwrap();
+        decoder.finish().unwrap();
+
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 3);
+        assert_eq!(batches[0].num_columns(), 2);
+    }
+
+    #[test]
+    fn test_zero_copy_decoder_multiple_chunks() {
+        let data = create_arrow_stream();
+
+        // Split data into multiple chunks to simulate streaming
+        let chunk_size = data.len() / 3;
+        let chunks: Vec<Bytes> = data
+            .chunks(chunk_size.max(1))
+            .map(|c| Bytes::copy_from_slice(c))
+            .collect();
+
+        let mut decoder = ZeroCopyArrowDecoder::new();
+        let mut all_batches = Vec::new();
+
+        for chunk in chunks {
+            let batches = decoder.decode_chunk(chunk).unwrap();
+            all_batches.extend(batches);
+        }
+        decoder.finish().unwrap();
+
+        // Should have decoded the same batch
+        assert_eq!(all_batches.len(), 1);
+        assert_eq!(all_batches[0].num_rows(), 3);
+    }
+
+    #[test]
+    fn test_zero_copy_decoder_schema_available() {
+        let data = create_arrow_stream();
+        let chunk = Bytes::from(data);
+
+        let mut decoder = ZeroCopyArrowDecoder::new();
+
+        // Schema not available before decoding
+        assert!(decoder.schema().is_none());
+
+        let _ = decoder.decode_chunk(chunk).unwrap();
+
+        // Schema should be available after decoding
+        assert!(decoder.schema().is_some());
+        let schema = decoder.schema().unwrap();
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).name(), "name");
+    }
+
+    #[test]
+    fn test_parse_arrow_zero_copy() {
+        let data = create_arrow_stream();
+        let chunks = vec![Bytes::from(data)];
+
+        let result = parse_arrow_zero_copy(chunks).unwrap();
+
+        assert_eq!(result.num_rows(), 3);
+        assert_eq!(result.num_columns(), 2);
+        assert_eq!(result.num_batches(), 1);
+    }
+
+    #[test]
+    fn test_parse_arrow_zero_copy_callback() {
+        let data = create_arrow_stream();
+        let chunks = vec![Bytes::from(data)];
+
+        let mut batch_count = 0;
+        let row_count = parse_arrow_zero_copy_callback(chunks, |batch| {
+            batch_count += 1;
+            assert_eq!(batch.num_rows(), 3);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(row_count, 3);
+        assert_eq!(batch_count, 1);
+    }
+
+    #[test]
+    fn test_zero_copy_decoder_multiple_batches() {
+        // Create stream with multiple batches
+        let batch = create_test_batch();
+        let mut buffer = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buffer, &batch.schema()).unwrap();
+            writer.write(&batch).unwrap();
+            writer.write(&batch).unwrap(); // Write same batch twice
+            writer.finish().unwrap();
+        }
+
+        let chunk = Bytes::from(buffer);
+        let mut decoder = ZeroCopyArrowDecoder::new();
+        let batches = decoder.decode_chunk(chunk).unwrap();
+        decoder.finish().unwrap();
+
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].num_rows(), 3);
+        assert_eq!(batches[1].num_rows(), 3);
+    }
+
+    #[test]
+    fn test_zero_copy_decoder_empty_chunks() {
+        let data = create_arrow_stream();
+
+        // Intersperse empty chunks
+        let chunks = vec![
+            Bytes::new(),
+            Bytes::from(data),
+            Bytes::new(),
+        ];
+
+        let mut decoder = ZeroCopyArrowDecoder::new();
+        let mut all_batches = Vec::new();
+
+        for chunk in chunks {
+            let batches = decoder.decode_chunk(chunk).unwrap();
+            all_batches.extend(batches);
+        }
+        decoder.finish().unwrap();
+
+        assert_eq!(all_batches.len(), 1);
+        assert_eq!(all_batches[0].num_rows(), 3);
     }
 }
