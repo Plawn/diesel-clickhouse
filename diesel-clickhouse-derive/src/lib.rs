@@ -236,9 +236,10 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         // Re-emit the struct with clickhouse::Row derive for HTTP backend
+        // Serialize is needed for RowWrite (insert), Deserialize for RowRead (select)
         #(#attrs)*
         #[cfg_attr(feature = "http", derive(::diesel_clickhouse::clickhouse::Row))]
-        #[cfg_attr(feature = "http", derive(::serde::Deserialize))]
+        #[cfg_attr(feature = "http", derive(::serde::Serialize, ::serde::Deserialize))]
         #vis struct #name #generics #where_clause {
             #(
                 #(#field_attrs)*

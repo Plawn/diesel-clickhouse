@@ -181,7 +181,7 @@ pub mod prelude {
 
     // RunQueryDsl for idiomatic query execution
     #[cfg(any(feature = "http", feature = "native"))]
-    pub use crate::RunQueryDsl;
+    pub use crate::{RunQueryDsl, OptimizedInsertDsl};
 
     // Unified row traits
     #[cfg(any(feature = "http", feature = "native"))]
@@ -323,7 +323,7 @@ pub use unified::Connection;
 mod run_query_dsl;
 
 #[cfg(any(feature = "http", feature = "native"))]
-pub use run_query_dsl::RunQueryDsl;
+pub use run_query_dsl::{RunQueryDsl, OptimizedInsertDsl};
 
 /// Unified streaming interface for query results.
 ///

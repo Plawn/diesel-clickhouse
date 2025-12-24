@@ -140,11 +140,12 @@ async fn main() -> anyhow::Result<()> {
             active: false,
         },
     ];
+    // Use execute_optimized() for binary insert (RowBinary format)
     insert_into(users::table)
         .values(new_users.as_slice())
-        .execute(&http_conn)
+        .execute_optimized(&http_conn)
         .await?;
-    println!("Inserted {} users", new_users.len());
+    println!("Inserted {} users (optimized)", new_users.len());
 
     // INSERT posts
     let new_posts = vec![
@@ -169,9 +170,9 @@ async fn main() -> anyhow::Result<()> {
     ];
     insert_into(posts::table)
         .values(new_posts.as_slice())
-        .execute(&http_conn)
+        .execute_optimized(&http_conn)
         .await?;
-    println!("Inserted {} posts", new_posts.len());
+    println!("Inserted {} posts (optimized)", new_posts.len());
 
     // SELECT with filters
     let active_users: Vec<User> = users::table
@@ -265,34 +266,32 @@ async fn main() -> anyhow::Result<()> {
     println!("\n--- Zero-Copy with Arrow (HTTP) ---");
 
     // Re-insert some data for the demo
+    let zero_copy_users = vec![
+        NewUser {
+            id: 10,
+            name: "ZeroCopy1".into(),
+            email: "zc1@test.com".into(),
+            age: 20,
+            active: true,
+        },
+        NewUser {
+            id: 11,
+            name: "ZeroCopy2".into(),
+            email: "zc2@test.com".into(),
+            age: 30,
+            active: true,
+        },
+        NewUser {
+            id: 12,
+            name: "ZeroCopy3".into(),
+            email: "zc3@test.com".into(),
+            age: 40,
+            active: false,
+        },
+    ];
     insert_into(users::table)
-        .values(
-            vec![
-                NewUser {
-                    id: 10,
-                    name: "ZeroCopy1".into(),
-                    email: "zc1@test.com".into(),
-                    age: 20,
-                    active: true,
-                },
-                NewUser {
-                    id: 11,
-                    name: "ZeroCopy2".into(),
-                    email: "zc2@test.com".into(),
-                    age: 30,
-                    active: true,
-                },
-                NewUser {
-                    id: 12,
-                    name: "ZeroCopy3".into(),
-                    email: "zc3@test.com".into(),
-                    age: 40,
-                    active: false,
-                },
-            ]
-            .as_slice(),
-        )
-        .execute(&http_conn)
+        .values(zero_copy_users.as_slice())
+        .execute_optimized(&http_conn)
         .await?;
 
     // Process rows with zero-copy - no String allocations per row!
@@ -347,7 +346,10 @@ async fn main() -> anyhow::Result<()> {
         .load(&native_conn)
         .await?;
     println!("Loaded {} users via Native backend", users.len());
-
+    insert_into(users::table)
+        .values(zero_copy_users.as_slice())
+        .execute_optimized(&native_conn)
+        .await?;
     // =========================================================================
     // Streaming Demo - Memory-efficient processing for large datasets
     // =========================================================================

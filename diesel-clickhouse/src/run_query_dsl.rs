@@ -245,3 +245,69 @@ where
         conn.execute_query(self).await
     }
 }
+
+// =============================================================================
+// Optimized Insert DSL - Uses binary formats instead of SQL text
+// =============================================================================
+
+use crate::core::query_builder::{InsertStatement, Insertable};
+use crate::core::query_source::Table;
+
+/// Extension trait for optimized insert execution.
+///
+/// This trait provides `execute_optimized()` which uses binary formats
+/// instead of SQL text for maximum insert performance.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::prelude::*;
+///
+/// // Uses optimized binary insert (RowBinary for HTTP, Block for Native)
+/// insert_into(users::table)
+///     .values(new_users.as_slice())
+///     .execute_optimized(&conn)
+///     .await?;
+/// ```
+#[allow(async_fn_in_trait)]
+pub trait OptimizedInsertDsl: Sized {
+    /// Execute the insert using optimized binary format.
+    ///
+    /// - **HTTP**: Uses RowBinary format via inserter
+    /// - **Native**: Uses native Block format
+    async fn execute_optimized(self, conn: &Connection) -> QueryResult<()>;
+}
+
+// HTTP implementation for slice of rows
+#[cfg(feature = "http")]
+impl<T, R> OptimizedInsertDsl for InsertStatement<T, &[R]>
+where
+    T: Table,
+    R: Insertable<T> + clickhouse::RowOwned + clickhouse::RowWrite + Send + Sync,
+{
+    async fn execute_optimized(self, conn: &Connection) -> QueryResult<()> {
+        let rows: &[R] = self.values_ref();
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        conn.insert_rows(T::table_name(), rows).await
+    }
+}
+
+// Native-only implementation for slice of rows
+#[cfg(all(feature = "native", not(feature = "http")))]
+impl<T, R> OptimizedInsertDsl for InsertStatement<T, &[R]>
+where
+    T: Table,
+    R: Insertable<T> + crate::native::ToNativeBlock + Send + Sync,
+{
+    async fn execute_optimized(self, conn: &Connection) -> QueryResult<()> {
+        let rows: &[R] = self.values_ref();
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        conn.insert_native(T::table_name(), rows).await
+    }
+}
