@@ -460,6 +460,12 @@ impl<'a> ArrowRow<'a> {
         self.get_opt(name)
     }
 
+    /// Alias for `get_str_opt` for backwards compatibility.
+    #[inline]
+    pub fn get_optional_str(&self, name: &str) -> QueryResult<Option<&'a str>> {
+        self.get_str_opt(name)
+    }
+
     /// Get binary data (zero-copy borrow).
     #[inline]
     pub fn get_bytes(&self, name: &str) -> QueryResult<&'a [u8]> {

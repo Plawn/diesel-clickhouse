@@ -257,7 +257,20 @@ fn parse_type_inner(raw: &str) -> QueryResult<ClickHouseSqlType> {
         )?)));
     }
 
-    Ok(match raw {
+    // Try simple (non-parametric) types first
+    if let Some(simple) = parse_simple_type(raw) {
+        return Ok(simple);
+    }
+
+    // Try parametric types (types with parentheses)
+    parse_parametric_type(raw)
+}
+
+/// Parse simple (non-parametric) ClickHouse types.
+///
+/// Returns `None` if the type is not a recognized simple type.
+fn parse_simple_type(raw: &str) -> Option<ClickHouseSqlType> {
+    Some(match raw {
         // Integers
         "UInt8" => ClickHouseSqlType::UInt8,
         "UInt16" => ClickHouseSqlType::UInt16,
@@ -297,117 +310,144 @@ fn parse_type_inner(raw: &str) -> QueryResult<ClickHouseSqlType> {
         // JSON
         "JSON" => ClickHouseSqlType::JSON,
 
-        _ => {
-            // Nullable(type)
-            if let Some(inner) = extract_inner(raw, "Nullable") {
-                ClickHouseSqlType::Nullable(Box::new(parse_type_inner(inner)?))
-            }
-            // DateTime(tz)
-            else if let Some(inner) = extract_inner(raw, "DateTime") {
-                ClickHouseSqlType::DateTime(Some(inner.trim_matches('\'').into()))
-            }
-            // DateTime64(prec) or DateTime64(prec, tz)
-            else if let Some(inner) = extract_inner(raw, "DateTime64") {
-                let (prec, tz) = split_first_arg(inner);
-                let prec = prec
-                    .trim()
-                    .parse::<u8>()
-                    .map_err(|_| Error::TypeParseError(Cow::Owned(format!("invalid DateTime64 precision: {prec}"))))?;
-                ClickHouseSqlType::DateTime64(prec, tz.map(|s| s.trim().trim_matches('\'').into()))
-            }
-            // FixedString(n)
-            else if let Some(inner) = extract_inner(raw, "FixedString") {
-                let n = inner
-                    .trim()
-                    .parse::<u32>()
-                    .map_err(|_| Error::TypeParseError(Cow::Owned(format!("invalid FixedString size: {inner}"))))?;
-                ClickHouseSqlType::FixedString(n)
-            }
-            // Decimal(p, s)
-            else if let Some(inner) = extract_inner(raw, "Decimal") {
-                let (p, s) = split_two_args(inner).ok_or_else(|| {
-                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal format: {raw}")))
-                })?;
-                let p = p.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal precision: {p}")))
-                })?;
-                let s = s.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal scale: {s}")))
-                })?;
-                ClickHouseSqlType::Decimal(p, s)
-            }
-            // Decimal32(s)
-            else if let Some(inner) = extract_inner(raw, "Decimal32") {
-                let s = inner.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal32 scale: {inner}")))
-                })?;
-                ClickHouseSqlType::Decimal32(s)
-            }
-            // Decimal64(s)
-            else if let Some(inner) = extract_inner(raw, "Decimal64") {
-                let s = inner.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal64 scale: {inner}")))
-                })?;
-                ClickHouseSqlType::Decimal64(s)
-            }
-            // Decimal128(s)
-            else if let Some(inner) = extract_inner(raw, "Decimal128") {
-                let s = inner.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal128 scale: {inner}")))
-                })?;
-                ClickHouseSqlType::Decimal128(s)
-            }
-            // Decimal256(s)
-            else if let Some(inner) = extract_inner(raw, "Decimal256") {
-                let s = inner.trim().parse::<u8>().map_err(|_| {
-                    Error::TypeParseError(Cow::Owned(format!("invalid Decimal256 scale: {inner}")))
-                })?;
-                ClickHouseSqlType::Decimal256(s)
-            }
-            // Enum8('K' = v, ...)
-            else if let Some(inner) = extract_inner(raw, "Enum8") {
-                ClickHouseSqlType::Enum8(parse_enum_variants::<i8>(inner)?)
-            }
-            // Enum16('K' = v, ...)
-            else if let Some(inner) = extract_inner(raw, "Enum16") {
-                ClickHouseSqlType::Enum16(parse_enum_variants::<i16>(inner)?)
-            }
-            // Array(type)
-            else if let Some(inner) = extract_inner(raw, "Array") {
-                ClickHouseSqlType::Array(Box::new(parse_type_inner(inner)?))
-            }
-            // Tuple(a, b, ...)
-            else if let Some(inner) = extract_inner(raw, "Tuple") {
-                let types = split_toplevel_args(inner)
-                    .into_iter()
-                    .map(|s| parse_type_inner(s.trim()))
-                    .collect::<QueryResult<Vec<_>>>()?;
-                ClickHouseSqlType::Tuple(types)
-            }
-            // Map(key, value)
-            else if let Some(inner) = extract_inner(raw, "Map") {
-                let (key, value) = split_two_args(inner).ok_or_else(|| {
-                    Error::TypeParseError(Cow::Owned(format!("invalid Map format: {raw}")))
-                })?;
-                let key = parse_type_inner(key.trim())?;
-                let value = parse_type_inner(value.trim())?;
-                ClickHouseSqlType::Map(Box::new(key), Box::new(value))
-            }
-            // Nested(name Type, ...)
-            else if let Some(inner) = extract_inner(raw, "Nested") {
-                let fields = parse_nested_fields(inner)?;
-                ClickHouseSqlType::Nested(fields)
-            }
-            // Object('json')
-            else if let Some(inner) = extract_inner(raw, "Object") {
-                ClickHouseSqlType::Object(inner.trim_matches('\'').into())
-            }
-            // Unknown type - store raw string
-            else {
-                ClickHouseSqlType::Unknown(raw.into())
-            }
-        }
+        _ => return None,
     })
+}
+
+/// Parse parametric ClickHouse types (types with parentheses).
+fn parse_parametric_type(raw: &str) -> QueryResult<ClickHouseSqlType> {
+    // Wrapper types (contain a single inner type)
+    if let Some(inner) = extract_inner(raw, "Nullable") {
+        return Ok(ClickHouseSqlType::Nullable(Box::new(parse_type_inner(inner)?)));
+    }
+    if let Some(inner) = extract_inner(raw, "Array") {
+        return Ok(ClickHouseSqlType::Array(Box::new(parse_type_inner(inner)?)));
+    }
+
+    // DateTime types
+    if let Some(inner) = extract_inner(raw, "DateTime64") {
+        return parse_datetime64(inner);
+    }
+    if let Some(inner) = extract_inner(raw, "DateTime") {
+        return Ok(ClickHouseSqlType::DateTime(Some(inner.trim_matches('\'').into())));
+    }
+
+    // String types
+    if let Some(inner) = extract_inner(raw, "FixedString") {
+        return parse_fixed_string(inner);
+    }
+
+    // Decimal types
+    if let Some(inner) = extract_inner(raw, "Decimal256") {
+        return parse_decimal_scale(inner, ClickHouseSqlType::Decimal256);
+    }
+    if let Some(inner) = extract_inner(raw, "Decimal128") {
+        return parse_decimal_scale(inner, ClickHouseSqlType::Decimal128);
+    }
+    if let Some(inner) = extract_inner(raw, "Decimal64") {
+        return parse_decimal_scale(inner, ClickHouseSqlType::Decimal64);
+    }
+    if let Some(inner) = extract_inner(raw, "Decimal32") {
+        return parse_decimal_scale(inner, ClickHouseSqlType::Decimal32);
+    }
+    if let Some(inner) = extract_inner(raw, "Decimal") {
+        return parse_decimal(inner, raw);
+    }
+
+    // Enum types
+    if let Some(inner) = extract_inner(raw, "Enum8") {
+        return Ok(ClickHouseSqlType::Enum8(parse_enum_variants::<i8>(inner)?));
+    }
+    if let Some(inner) = extract_inner(raw, "Enum16") {
+        return Ok(ClickHouseSqlType::Enum16(parse_enum_variants::<i16>(inner)?));
+    }
+
+    // Collection types
+    if let Some(inner) = extract_inner(raw, "Tuple") {
+        return parse_tuple(inner);
+    }
+    if let Some(inner) = extract_inner(raw, "Map") {
+        return parse_map(inner, raw);
+    }
+    if let Some(inner) = extract_inner(raw, "Nested") {
+        return Ok(ClickHouseSqlType::Nested(parse_nested_fields(inner)?));
+    }
+
+    // Object type
+    if let Some(inner) = extract_inner(raw, "Object") {
+        return Ok(ClickHouseSqlType::Object(inner.trim_matches('\'').into()));
+    }
+
+    // Unknown type - store raw string
+    Ok(ClickHouseSqlType::Unknown(raw.into()))
+}
+
+// =============================================================================
+// Type-specific parsers
+// =============================================================================
+
+/// Parse DateTime64(precision[, timezone]).
+fn parse_datetime64(inner: &str) -> QueryResult<ClickHouseSqlType> {
+    let (prec_str, tz) = split_first_arg(inner);
+    let prec = prec_str.trim().parse::<u8>().map_err(|_| {
+        Error::TypeParseError(Cow::Owned(format!("invalid DateTime64 precision: {prec_str}")))
+    })?;
+    Ok(ClickHouseSqlType::DateTime64(
+        prec,
+        tz.map(|s| s.trim().trim_matches('\'').into()),
+    ))
+}
+
+/// Parse FixedString(size).
+fn parse_fixed_string(inner: &str) -> QueryResult<ClickHouseSqlType> {
+    let n = inner.trim().parse::<u32>().map_err(|_| {
+        Error::TypeParseError(Cow::Owned(format!("invalid FixedString size: {inner}")))
+    })?;
+    Ok(ClickHouseSqlType::FixedString(n))
+}
+
+/// Parse DecimalXX(scale) types.
+fn parse_decimal_scale<F>(inner: &str, constructor: F) -> QueryResult<ClickHouseSqlType>
+where
+    F: FnOnce(u8) -> ClickHouseSqlType,
+{
+    let scale = inner.trim().parse::<u8>().map_err(|_| {
+        Error::TypeParseError(Cow::Owned(format!("invalid Decimal scale: {inner}")))
+    })?;
+    Ok(constructor(scale))
+}
+
+/// Parse Decimal(precision, scale).
+fn parse_decimal(inner: &str, raw: &str) -> QueryResult<ClickHouseSqlType> {
+    let (p, s) = split_two_args(inner).ok_or_else(|| {
+        Error::TypeParseError(Cow::Owned(format!("invalid Decimal format: {raw}")))
+    })?;
+    let precision = p.trim().parse::<u8>().map_err(|_| {
+        Error::TypeParseError(Cow::Owned(format!("invalid Decimal precision: {p}")))
+    })?;
+    let scale = s.trim().parse::<u8>().map_err(|_| {
+        Error::TypeParseError(Cow::Owned(format!("invalid Decimal scale: {s}")))
+    })?;
+    Ok(ClickHouseSqlType::Decimal(precision, scale))
+}
+
+/// Parse Tuple(type1, type2, ...).
+fn parse_tuple(inner: &str) -> QueryResult<ClickHouseSqlType> {
+    let types = split_toplevel_args(inner)
+        .into_iter()
+        .map(|s| parse_type_inner(s.trim()))
+        .collect::<QueryResult<Vec<_>>>()?;
+    Ok(ClickHouseSqlType::Tuple(types))
+}
+
+/// Parse Map(key_type, value_type).
+fn parse_map(inner: &str, raw: &str) -> QueryResult<ClickHouseSqlType> {
+    let (key, value) = split_two_args(inner).ok_or_else(|| {
+        Error::TypeParseError(Cow::Owned(format!("invalid Map format: {raw}")))
+    })?;
+    let key_type = parse_type_inner(key.trim())?;
+    let value_type = parse_type_inner(value.trim())?;
+    Ok(ClickHouseSqlType::Map(Box::new(key_type), Box::new(value_type)))
 }
 
 /// Extract content between parentheses for a given wrapper type.

@@ -229,6 +229,11 @@ pub mod backend {
     pub use crate::core::backend::*;
 }
 
+/// Common utilities shared between backends.
+pub mod common;
+
+pub use common::{ConnectionParams, ValidatedConnectionParams, ConnectionBuilder};
+
 /// HTTP connection module.
 ///
 /// Uses ClickHouse's HTTP interface (port 8123).

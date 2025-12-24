@@ -29,7 +29,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 
 use diesel_clickhouse::clickhouse;
-use diesel_clickhouse::Connection;
+use diesel_clickhouse::{Connection, ConnectionBuilder};
 use diesel_clickhouse_migrations::{
     FileBasedMigrations, MigrationHarness, MigrationSource, MigrationVersion,
 };

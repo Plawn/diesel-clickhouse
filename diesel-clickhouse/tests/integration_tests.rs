@@ -399,20 +399,61 @@ mod migration_tests {
 #[cfg(feature = "integration")]
 mod clickhouse_integration {
     use std::env;
+    use diesel_clickhouse::{Connection, ConnectionBuilder};
 
-    /// Get the ClickHouse URL from environment or use default.
-    fn get_clickhouse_url() -> String {
-        env::var("CLICKHOUSE_URL").unwrap_or_else(|_| "http://default:default@localhost:8123/test_db".to_string())
+    /// Parse URL and create HTTP connection using builder.
+    async fn connect_http() -> Option<diesel_clickhouse::http::ClickHouseConnection> {
+        let url = env::var("CLICKHOUSE_URL")
+            .unwrap_or_else(|_| "http://default:default@localhost:8123/test_db".to_string());
+
+        let parsed = url::Url::parse(&url).ok()?;
+        let host = parsed.host_str()?;
+        let port = parsed.port().unwrap_or(8123);
+        let database = parsed.path().trim_start_matches('/');
+        let user = if parsed.username().is_empty() { "default" } else { parsed.username() };
+        let password = parsed.password().unwrap_or("");
+
+        let conn = Connection::http()
+            .host(host)
+            .port(port)
+            .database(database)
+            .user(user)
+            .password(password)
+            .build()
+            .await
+            .ok()?;
+
+        conn.as_http().cloned()
+    }
+
+    /// Parse URL and create unified connection using builder.
+    async fn connect_unified() -> Option<Connection> {
+        let url = env::var("CLICKHOUSE_URL")
+            .unwrap_or_else(|_| "http://default:default@localhost:8123/test_db".to_string());
+
+        let parsed = url::Url::parse(&url).ok()?;
+        let host = parsed.host_str()?;
+        let port = parsed.port().unwrap_or(8123);
+        let database = parsed.path().trim_start_matches('/');
+        let user = if parsed.username().is_empty() { "default" } else { parsed.username() };
+        let password = parsed.password().unwrap_or("");
+
+        Connection::http()
+            .host(host)
+            .port(port)
+            .database(database)
+            .user(user)
+            .password(password)
+            .build()
+            .await
+            .ok()
     }
 
     #[tokio::test]
     async fn test_zero_copy_load() {
-        use diesel_clickhouse::http::ClickHouseConnection;
-
-        let url = get_clickhouse_url();
-        let conn = match ClickHouseConnection::new(&url).await {
-            Ok(c) => c,
-            Err(_) => {
+        let conn = match connect_http().await {
+            Some(c) => c,
+            None => {
                 eprintln!("ClickHouse not available, skipping integration test");
                 return;
             }
@@ -459,12 +500,9 @@ mod clickhouse_integration {
 
     #[tokio::test]
     async fn test_zero_copy_streaming() {
-        use diesel_clickhouse::http::ClickHouseConnection;
-
-        let url = get_clickhouse_url();
-        let conn = match ClickHouseConnection::new(&url).await {
-            Ok(c) => c,
-            Err(_) => {
+        let conn = match connect_http().await {
+            Some(c) => c,
+            None => {
                 eprintln!("ClickHouse not available, skipping integration test");
                 return;
             }
@@ -507,12 +545,9 @@ mod clickhouse_integration {
 
     #[tokio::test]
     async fn test_zero_copy_with_nulls() {
-        use diesel_clickhouse::http::ClickHouseConnection;
-
-        let url = get_clickhouse_url();
-        let conn = match ClickHouseConnection::new(&url).await {
-            Ok(c) => c,
-            Err(_) => {
+        let conn = match connect_http().await {
+            Some(c) => c,
+            None => {
                 eprintln!("ClickHouse not available, skipping integration test");
                 return;
             }
@@ -557,12 +592,9 @@ mod clickhouse_integration {
 
     #[tokio::test]
     async fn test_unified_connection_load() {
-        use diesel_clickhouse::Connection;
-
-        let url = get_clickhouse_url();
-        let conn = match Connection::establish(&url).await {
-            Ok(c) => c,
-            Err(_) => {
+        let conn = match connect_unified().await {
+            Some(c) => c,
+            None => {
                 eprintln!("ClickHouse not available, skipping integration test");
                 return;
             }

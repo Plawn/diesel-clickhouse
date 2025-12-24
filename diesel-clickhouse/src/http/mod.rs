@@ -21,16 +21,21 @@
 //! let rows: Vec<MyRow> = conn.load(my_table::table).await?;
 //! ```
 
-use std::borrow::Cow;
+mod builder;
+mod sql;
 
 use async_trait::async_trait;
 use clickhouse::Client;
 use serde::Serialize;
 
-use crate::core::backend::{BindCollector, ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
+use crate::core::backend::ClickHouse;
 use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
-use crate::core::query_builder::{AstPass, QueryFragment};
+use crate::core::query_builder::QueryFragment;
 use crate::core::result::{Error, QueryResult};
+
+// Re-export submodule items
+pub use builder::HttpClientBuilder;
+pub use sql::{build_sql, build_sql_native, BindableValue, NativeCompiledQuery};
 
 // Re-export clickhouse Row for convenience (for users who need direct clickhouse crate access)
 pub use clickhouse::Row as NativeClickHouseRow;
@@ -46,155 +51,8 @@ pub enum Compression {
 }
 
 // =============================================================================
-// Client Builder
+// Connection
 // =============================================================================
-
-/// Builder for configuring a ClickHouse HTTP connection.
-///
-/// All connection parameters (host, port, database, user, password) are required.
-/// Optional settings include compression and ClickHouse query options.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use diesel_clickhouse::http::HttpClientBuilder;
-/// use diesel_clickhouse::http::Compression;
-///
-/// let conn = HttpClientBuilder::new()
-///     .host("localhost")
-///     .port(8123)
-///     .database("analytics")
-///     .user("default")
-///     .password("")
-///     .compression(Compression::Lz4)
-///     .option("max_execution_time", "60")
-///     .build()
-///     .await?;
-/// ```
-#[derive(Debug, Clone, Default)]
-pub struct HttpClientBuilder {
-    host: Option<String>,
-    port: Option<u16>,
-    https: bool,
-    database: Option<String>,
-    user: Option<String>,
-    password: Option<String>,
-    compression: Compression,
-    options: Vec<(String, String)>,
-}
-
-impl HttpClientBuilder {
-    /// Create a new HTTP client builder.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the host (required).
-    pub fn host(mut self, host: impl Into<String>) -> Self {
-        self.host = Some(host.into());
-        self
-    }
-
-    /// Set the port (required).
-    pub fn port(mut self, port: u16) -> Self {
-        self.port = Some(port);
-        self
-    }
-
-    /// Use HTTPS instead of HTTP (optional, default: false).
-    pub fn https(mut self, enabled: bool) -> Self {
-        self.https = enabled;
-        self
-    }
-
-    /// Set the database (required).
-    pub fn database(mut self, database: impl Into<String>) -> Self {
-        self.database = Some(database.into());
-        self
-    }
-
-    /// Set the user (required).
-    pub fn user(mut self, user: impl Into<String>) -> Self {
-        self.user = Some(user.into());
-        self
-    }
-
-    /// Set the password (required).
-    pub fn password(mut self, password: impl Into<String>) -> Self {
-        self.password = Some(password.into());
-        self
-    }
-
-    /// Set compression mode (optional, default: None).
-    pub fn compression(mut self, compression: Compression) -> Self {
-        self.compression = compression;
-        self
-    }
-
-    /// Set a ClickHouse query setting (optional).
-    ///
-    /// Common options:
-    /// - `wait_end_of_query` - Wait for query to complete before streaming
-    /// - `max_execution_time` - Maximum query execution time in seconds
-    /// - `max_query_size` - Maximum query size in bytes
-    /// - `max_result_rows` - Maximum number of result rows
-    /// - `max_result_bytes` - Maximum result size in bytes
-    pub fn option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.options.push((key.into(), value.into()));
-        self
-    }
-
-    /// Build and establish the connection.
-    ///
-    /// Returns a unified `Connection` that can be used with all interfaces.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Required fields (host, port, database, user, password) are not set
-    /// - Connection to the server fails
-    pub async fn build(self) -> QueryResult<crate::Connection> {
-        let host = self.host.ok_or_else(||
-            Error::ConnectionError(Cow::Borrowed("host is required")))?;
-        let port = self.port.ok_or_else(||
-            Error::ConnectionError(Cow::Borrowed("port is required")))?;
-        let database = self.database.ok_or_else(||
-            Error::ConnectionError(Cow::Borrowed("database is required")))?;
-        let user = self.user.ok_or_else(||
-            Error::ConnectionError(Cow::Borrowed("user is required")))?;
-        let password = self.password.ok_or_else(||
-            Error::ConnectionError(Cow::Borrowed("password is required")))?;
-
-        let scheme = if self.https { "https" } else { "http" };
-
-        let url = format!("{}://{}:{}", scheme, host, port);
-        let mut client = Client::default()
-            .with_url(&url)
-            .with_database(&database)
-            .with_user(&user)
-            .with_password(&password);
-
-        if self.compression == Compression::Lz4 {
-            client = client.with_compression(clickhouse::Compression::Lz4);
-        }
-
-        for (key, value) in &self.options {
-            client = client.with_option(key, value);
-        }
-
-        // Test connection
-        client.query("SELECT 1").execute().await
-            .map_err(Error::connection_from)?;
-
-        let http_conn = ClickHouseConnection {
-            client,
-            database,
-            compression: self.compression,
-        };
-
-        Ok(crate::Connection::Http(http_conn))
-    }
-}
 
 /// A connection to ClickHouse via HTTP.
 #[derive(Clone)]
@@ -211,6 +69,19 @@ impl ClickHouseConnection {
             client,
             database: database.into(),
             compression: Compression::None,
+        }
+    }
+
+    /// Create a connection from an existing Client with compression setting.
+    pub(crate) fn from_client_with_compression(
+        client: Client,
+        database: impl Into<String>,
+        compression: Compression,
+    ) -> Self {
+        Self {
+            client,
+            database: database.into(),
+            compression,
         }
     }
 
@@ -293,80 +164,6 @@ impl ClickHouseConnection {
     {
         build_sql(query)
     }
-}
-
-// =============================================================================
-// SQL Building
-// =============================================================================
-
-/// Build SQL from a QueryFragment.
-///
-/// Returns the SQL string with `?` placeholders for parameters.
-/// This is a lightweight function for display/debugging purposes.
-///
-/// For actual query execution, use the connection methods which apply
-/// native parameter binding via `build_sql_native()`.
-pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
-    let mut builder = GenericQueryBuilder::default();
-    let mut collector = GenericBindCollector::default();
-    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-    fragment.walk_ast(pass)?;
-    Ok(builder.finish())
-}
-
-// Re-export for convenience
-pub use crate::core::backend::BindableValue;
-
-/// A compiled query with SQL placeholders and typed bindable values.
-///
-/// This is the SOTA format for native parameter binding, enabling:
-/// - Query plan caching on the ClickHouse server
-/// - Proper type safety through the clickhouse crate's `.bind()` method
-/// - No manual string escaping
-#[derive(Debug, Clone)]
-pub struct NativeCompiledQuery {
-    /// The SQL string with `?` placeholders.
-    pub sql: String,
-    /// The collected bindable values for native binding.
-    pub bindings: Vec<BindableValue>,
-}
-
-impl NativeCompiledQuery {
-    /// Get the number of bind parameters.
-    pub fn param_count(&self) -> usize {
-        self.bindings.len()
-    }
-
-    /// Check if there are any bind parameters.
-    pub fn has_bindings(&self) -> bool {
-        !self.bindings.is_empty()
-    }
-
-    /// Apply all bindings to a clickhouse Query object.
-    pub fn bind_to(&self, mut query: clickhouse::query::Query) -> clickhouse::query::Query {
-        for binding in &self.bindings {
-            query = query.bind(binding);
-        }
-        query
-    }
-}
-
-/// Build SQL with native bindable values from a QueryFragment.
-///
-/// This is the SOTA way to build queries for execution:
-/// - Returns SQL with `?` placeholders
-/// - Returns typed BindableValue instances for native `.bind()` calls
-/// - Enables query plan caching on the ClickHouse server
-pub fn build_sql_native<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<NativeCompiledQuery> {
-    let mut builder = GenericQueryBuilder::default();
-    let mut collector = GenericBindCollector::default();
-    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-    fragment.walk_ast(pass)?;
-
-    Ok(NativeCompiledQuery {
-        sql: builder.finish(),
-        bindings: collector.bindable_values().to_vec(),
-    })
 }
 
 // =============================================================================
@@ -1165,7 +962,7 @@ mod tests {
         impl QueryFragment<ClickHouse> for TestTable {
             fn walk_ast<'b>(
                 &'b self,
-                mut pass: AstPass<'_, 'b, ClickHouse>,
+                mut pass: crate::core::query_builder::AstPass<'_, 'b, ClickHouse>,
             ) -> QueryResult<()> {
                 pass.push_sql("test_table");
                 Ok(())

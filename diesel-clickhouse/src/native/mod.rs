@@ -1,0 +1,730 @@
+//! Native protocol ClickHouse connection.
+//!
+//! This module provides a high-performance async connection to ClickHouse
+//! using the native binary protocol (TCP port 9000 or 9440 for TLS).
+//!
+//! The native protocol is faster than HTTP because it uses a binary format
+//! and maintains a persistent connection.
+//!
+//! # Features
+//!
+//! - `native` - Enable the native backend
+//! - `native-tls-native` - Enable TLS support for native backend
+//!
+//! # Connection URL Format
+//!
+//! ```text
+//! tcp://[user:password@]host[:port]/database[?options]
+//! ```
+//!
+//! ## Options
+//!
+//! - `secure=true` - Enable TLS (requires `native-tls-native` feature)
+//! - `skip_verify=true` - Skip TLS certificate verification (insecure)
+//! - `compression=lz4` - Enable LZ4 compression
+//! - `connection_timeout=500ms` - Connection timeout
+//! - `ping_timeout=500ms` - Ping timeout
+//! - `query_timeout=180s` - Query timeout
+//! - `pool_min=5` - Minimum pool connections
+//! - `pool_max=10` - Maximum pool connections
+//!
+//! # Usage
+//!
+//! ```rust,ignore
+//! use diesel_clickhouse::prelude::*;
+//! use diesel_clickhouse::native::NativeConnection;
+//!
+//! #[derive(Debug, Row)]
+//! struct User {
+//!     id: u64,
+//!     name: String,
+//! }
+//!
+//! // Plain TCP connection (port 9000)
+//! let conn = NativeConnection::establish("tcp://localhost:9000/default").await?;
+//!
+//! // Query using unified interface
+//! let users: Vec<User> = conn.load(users::table.filter(users::active.eq(true))).await?;
+//! ```
+
+mod block;
+mod builder;
+mod column;
+
+use std::borrow::Cow;
+
+use async_trait::async_trait;
+use clickhouse_rs::{Pool, ClientHandle, Block, types::Complex};
+use futures::StreamExt;
+
+use crate::core::backend::{BindableValue, BindCollector, ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
+use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
+use crate::core::query_builder::{AstPass, QueryFragment};
+use crate::core::result::{Error, QueryResult};
+
+// Re-export submodule items
+pub use block::{
+    ComplexBlock, SimpleBlock,
+    FromNativeBlock, FromAnyBlock, BlockValue,
+    block_to_vec_optimized,
+};
+pub use builder::NativeClientBuilder;
+pub use column::{ToNativeBlock, IntoBlockColumn, IntoBlockColumnOwned};
+
+// Re-export clickhouse-rs types for convenience
+pub use clickhouse_rs::{Block as NativeBlock, row, types};
+
+// =============================================================================
+// Compression Mode
+// =============================================================================
+
+/// Compression mode for native protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NativeCompression {
+    /// No compression (default).
+    #[default]
+    None,
+    /// LZ4 compression.
+    Lz4,
+}
+
+// =============================================================================
+// Native Connection
+// =============================================================================
+
+/// A connection to ClickHouse via native binary protocol.
+///
+/// This provides better performance than HTTP by using ClickHouse's
+/// native binary protocol over TCP.
+///
+/// # Creating a Connection
+///
+/// Use [`NativeClientBuilder`] to create a connection:
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::native::NativeClientBuilder;
+///
+/// let conn = NativeClientBuilder::new()
+///     .host("localhost")
+///     .port(9000)
+///     .database("default")
+///     .user("default")
+///     .password("")
+///     .build()
+///     .await?;
+/// ```
+///
+/// ## Ports
+///
+/// - **Port 9000**: Plain TCP (default)
+/// - **Port 9440**: TLS-encrypted TCP (use `.secure(true)`)
+#[derive(Clone)]
+pub struct NativeConnection {
+    pool: Pool,
+    database: String,
+    /// Server address (host:port) for Arrow connection
+    server_addr: String,
+}
+
+impl NativeConnection {
+    /// Create a connection from an existing pool.
+    pub fn from_pool(
+        pool: Pool,
+        database: impl Into<String>,
+        server_addr: impl Into<String>,
+    ) -> Self {
+        Self {
+            pool,
+            database: database.into(),
+            server_addr: server_addr.into(),
+        }
+    }
+
+    /// Get the server address (host:port).
+    pub fn server_addr(&self) -> &str {
+        &self.server_addr
+    }
+
+    /// Get the underlying pool for direct operations.
+    pub fn pool(&self) -> &Pool {
+        &self.pool
+    }
+
+    /// Get the database name.
+    pub fn database(&self) -> &str {
+        &self.database
+    }
+
+    /// Get a client handle from the pool.
+    pub async fn get_handle(&self) -> QueryResult<ClientHandle> {
+        self.pool
+            .get_handle()
+            .await
+            .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to get handle: {}", e))))
+    }
+
+    /// Execute a raw SQL query (no results).
+    pub async fn execute_raw(&self, sql: &str) -> QueryResult<()> {
+        let mut client = self.get_handle().await?;
+        client
+            .execute(sql)
+            .await
+            .map_err(Error::query_from)?;
+        Ok(())
+    }
+
+    /// Execute a query fragment (UPDATE, DELETE, etc).
+    pub async fn execute_statement<Q>(&self, query: &Q) -> QueryResult<()>
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        let sql = build_sql_interpolated(query)?;
+        self.execute_raw(&sql).await
+    }
+
+    /// Build SQL from a query fragment without executing.
+    pub fn build_query<Q>(&self, query: &Q) -> QueryResult<String>
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        build_sql(query)
+    }
+
+    /// Execute a query and return the result block.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let block = conn.query_raw("SELECT id, name FROM users").await?;
+    /// for row in block.rows() {
+    ///     let id: u64 = row.get("id")?;
+    ///     let name: String = row.get("name")?;
+    ///     println!("{}: {}", id, name);
+    /// }
+    /// ```
+    pub async fn query_raw(&self, sql: &str) -> QueryResult<Block<Complex>> {
+        let mut client = self.get_handle().await?;
+        client
+            .query(sql)
+            .fetch_all()
+            .await
+            .map_err(Error::query_from)
+    }
+
+    /// Execute a query fragment and return the result block.
+    pub async fn query<Q>(&self, query: Q) -> QueryResult<Block<Complex>>
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        let sql = build_sql_interpolated(&query)?;
+        self.query_raw(&sql).await
+    }
+
+    /// Insert a block of data into a table.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::native::NativeBlock;
+    ///
+    /// let block = NativeBlock::new()
+    ///     .column("id", vec![1u64, 2, 3])
+    ///     .column("name", vec!["Alice", "Bob", "Charlie"]);
+    ///
+    /// conn.insert("users", block).await?;
+    /// ```
+    pub async fn insert(&self, table: &str, block: Block) -> QueryResult<()> {
+        let mut client = self.get_handle().await?;
+        client
+            .insert(table, block)
+            .await
+            .map_err(|e| Error::QueryError(Cow::Owned(format!("Insert failed: {}", e))))?;
+        Ok(())
+    }
+
+    /// Insert rows using the optimized native Block API.
+    ///
+    /// This method provides the best performance for bulk inserts by using
+    /// ClickHouse's native binary Block format instead of generating SQL VALUES.
+    ///
+    /// The row type must implement `ToNativeBlock`, which is automatically
+    /// generated by the `#[row]` attribute for types that also derive `Insertable`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::prelude::*;
+    /// use diesel_clickhouse::native::ToNativeBlock;
+    ///
+    /// #[row]
+    /// #[derive(Debug, Clone, Insertable)]
+    /// #[diesel_clickhouse(table = users)]
+    /// struct NewUser {
+    ///     id: u64,
+    ///     name: String,
+    ///     active: bool,
+    /// }
+    ///
+    /// let users = vec![
+    ///     NewUser { id: 1, name: "Alice".into(), active: true },
+    ///     NewUser { id: 2, name: "Bob".into(), active: false },
+    /// ];
+    ///
+    /// // Optimized insert via Block API
+    /// conn.insert_native("users", &users).await?;
+    /// ```
+    pub async fn insert_native<T: ToNativeBlock>(&self, table: &str, rows: &[T]) -> QueryResult<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let block = T::rows_to_block(rows)?;
+        self.insert(table, block).await
+    }
+
+    /// Insert rows using optimized Block API, taking ownership to avoid clones.
+    ///
+    /// This is more efficient than `insert_native` for types containing `String`
+    /// or `Vec<T>` fields, as it moves the data instead of cloning.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let users = vec![
+    ///     NewUser { id: 1, name: "Alice".into(), active: true },
+    ///     NewUser { id: 2, name: "Bob".into(), active: false },
+    /// ];
+    ///
+    /// // Takes ownership, avoids cloning strings
+    /// conn.insert_native_owned("users", users).await?;
+    /// ```
+    pub async fn insert_native_owned<T: ToNativeBlock + Clone>(&self, table: &str, rows: Vec<T>) -> QueryResult<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let block = T::rows_into_block(rows)?;
+        self.insert(table, block).await
+    }
+}
+
+// =============================================================================
+// Loading Methods
+// =============================================================================
+
+impl NativeConnection {
+    /// Load rows using direct Block deserialization.
+    ///
+    /// This method deserializes rows directly from the native Block.
+    /// Types must implement `FromNativeBlock`, which is automatically generated
+    /// by `#[derive(Row)]`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[derive(Debug, Row)]
+    /// struct User {
+    ///     id: u64,
+    ///     name: String,
+    /// }
+    ///
+    /// let users: Vec<User> = conn.load(users::table.select_all()).await?;
+    /// ```
+    pub async fn load<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
+    where
+        T: FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        let sql = build_sql_interpolated(&query)?;
+        self.load_raw(&sql).await
+    }
+
+    /// Load rows from raw SQL.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let users: Vec<User> = conn.load_raw("SELECT id, name FROM users").await?;
+    /// ```
+    pub async fn load_raw<T: FromNativeBlock + Send>(&self, sql: &str) -> QueryResult<Vec<T>> {
+        let block = self.query_raw(sql).await?;
+        block_to_vec_optimized(&block)
+    }
+
+    /// Load a single row.
+    ///
+    /// Returns an error if no rows are returned.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user: User = conn.load_one(users::table.filter(users::id.eq(1))).await?;
+    /// ```
+    pub async fn load_one<T, Q>(&self, query: Q) -> QueryResult<T>
+    where
+        T: FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        let mut results = self.load(query).await?;
+        results.pop().ok_or(Error::NotFound)
+    }
+
+    /// Load an optional single row.
+    ///
+    /// Returns `None` if no rows are returned.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user: Option<User> = conn.load_optional(
+    ///     users::table.filter(users::id.eq(1))
+    /// ).await?;
+    /// ```
+    pub async fn load_optional<T, Q>(&self, query: Q) -> QueryResult<Option<T>>
+    where
+        T: FromNativeBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        let mut results = self.load(query).await?;
+        Ok(results.pop())
+    }
+}
+
+// =============================================================================
+// Streaming Methods
+// =============================================================================
+
+impl NativeConnection {
+    /// Stream rows from a query with a callback.
+    ///
+    /// This method uses true network streaming - blocks are fetched incrementally
+    /// from the server and processed one at a time. Memory usage is O(block_size)
+    /// instead of O(total_rows).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.stream_for_each(
+    ///     users::table.filter(users::active.eq(true)),
+    ///     |user: User| {
+    ///         println!("User: {}", user.name);
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    pub async fn stream_for_each<T, Q, F>(&self, query: Q, callback: F) -> QueryResult<()>
+    where
+        T: FromAnyBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+        F: FnMut(T) -> QueryResult<()>,
+    {
+        let sql = build_sql_interpolated(&query)?;
+        self.stream_for_each_raw(&sql, callback).await
+    }
+
+    /// Stream rows from raw SQL with a callback.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.stream_for_each_raw(
+    ///     "SELECT id, name FROM users",
+    ///     |user: User| {
+    ///         println!("User: {}", user.name);
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    pub async fn stream_for_each_raw<T, F>(&self, sql: &str, mut callback: F) -> QueryResult<()>
+    where
+        T: FromAnyBlock + Send,
+        F: FnMut(T) -> QueryResult<()>,
+    {
+        let mut client = self.get_handle().await?;
+        let mut block_stream = client.query(sql).stream_blocks();
+
+        while let Some(block_result) = block_stream.next().await {
+            let block = block_result.map_err(Error::query_from)?;
+            for row_idx in 0..block.row_count() {
+                let item = T::from_any_block(&block, row_idx)?;
+                callback(item)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stream rows from a query with an async callback.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// conn.stream_for_each_async(
+    ///     users::table.filter(users::active.eq(true)),
+    ///     |user: User| async move {
+    ///         process_user(user).await;
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// ```
+    pub async fn stream_for_each_async<T, Q, F, Fut>(&self, query: Q, callback: F) -> QueryResult<()>
+    where
+        T: FromAnyBlock + Send,
+        Q: QueryFragment<ClickHouse> + Send,
+        F: FnMut(T) -> Fut,
+        Fut: std::future::Future<Output = QueryResult<()>>,
+    {
+        let sql = build_sql_interpolated(&query)?;
+        self.stream_for_each_async_raw(&sql, callback).await
+    }
+
+    /// Stream rows from raw SQL with an async callback.
+    pub async fn stream_for_each_async_raw<T, F, Fut>(&self, sql: &str, mut callback: F) -> QueryResult<()>
+    where
+        T: FromAnyBlock + Send,
+        F: FnMut(T) -> Fut,
+        Fut: std::future::Future<Output = QueryResult<()>>,
+    {
+        let mut client = self.get_handle().await?;
+        let mut block_stream = client.query(sql).stream_blocks();
+
+        while let Some(block_result) = block_stream.next().await {
+            let block = block_result.map_err(Error::query_from)?;
+            for row_idx in 0..block.row_count() {
+                let item = T::from_any_block(&block, row_idx)?;
+                callback(item).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stream rows from a query, returning an async iterator.
+    ///
+    /// This method provides true network streaming - a background task reads blocks
+    /// from the server and sends rows through a channel. Memory usage is O(block_size)
+    /// instead of O(total_rows).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut stream = conn.stream::<User, _>(
+    ///     users::table.filter(users::active.eq(true))
+    /// ).await?;
+    ///
+    /// while let Some(user) = stream.next().await? {
+    ///     println!("User: {}", user.name);
+    /// }
+    /// ```
+    pub fn stream<T, Q>(&self, query: Q) -> QueryResult<crate::stream::NativeBlockStream<T>>
+    where
+        T: FromAnyBlock + Send + 'static,
+        Q: QueryFragment<ClickHouse> + Send,
+    {
+        let sql = build_sql_interpolated(&query)?;
+        Ok(self.stream_raw(&sql))
+    }
+
+    /// Stream rows from raw SQL, returning an async iterator.
+    ///
+    /// This method provides true lazy streaming with zero channel overhead.
+    /// Data is fetched on-demand when `next()` is called.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut stream = conn.stream_raw::<User>("SELECT id, name FROM users");
+    ///
+    /// while let Some(user) = stream.next().await? {
+    ///     println!("User: {}", user.name);
+    /// }
+    /// ```
+    pub fn stream_raw<T>(&self, sql: &str) -> crate::stream::NativeBlockStream<T>
+    where
+        T: FromAnyBlock + Send + 'static,
+    {
+        let pool = self.pool.clone();
+        let sql = sql.to_string();
+
+        let stream = async_stream::stream! {
+            // Get connection handle
+            let mut client = match pool.get_handle().await {
+                Ok(c) => c,
+                Err(e) => {
+                    yield Err(Error::ConnectionError(Cow::Owned(
+                        format!("Failed to get connection handle: {}", e)
+                    )));
+                    return;
+                }
+            };
+
+            // Stream blocks from server
+            let mut block_stream = client.query(&sql).stream_blocks();
+
+            while let Some(block_result) = block_stream.next().await {
+                match block_result {
+                    Ok(block) => {
+                        // Yield each row from the block
+                        for row_idx in 0..block.row_count() {
+                            yield T::from_any_block(&block, row_idx);
+                        }
+                    }
+                    Err(e) => {
+                        yield Err(Error::query_from(e));
+                        return;
+                    }
+                }
+            }
+        };
+
+        crate::stream::NativeBlockStream::new(stream)
+    }
+}
+
+// =============================================================================
+// ClickHouseConnection Trait Implementation
+// =============================================================================
+
+#[async_trait]
+impl ClickHouseConnectionTrait for NativeConnection {
+    async fn execute_raw(&self, sql: &str) -> QueryResult<()> {
+        NativeConnection::execute_raw(self, sql).await
+    }
+
+    async fn execute_statement<Q>(&self, query: &Q) -> QueryResult<()>
+    where
+        Q: QueryFragment<ClickHouse> + Send + Sync,
+    {
+        let sql = build_sql_interpolated(query)?;
+        self.execute_raw(&sql).await
+    }
+
+    fn build_sql<Q>(&self, query: &Q) -> QueryResult<String>
+    where
+        Q: QueryFragment<ClickHouse>,
+    {
+        build_sql_interpolated(query)
+    }
+
+    fn database(&self) -> &str {
+        &self.database
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Build SQL from a QueryFragment.
+///
+/// Returns an error if the query fragment fails to produce valid SQL.
+pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
+    let mut builder = GenericQueryBuilder::default();
+    let mut collector = GenericBindCollector::default();
+    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
+    fragment.walk_ast(pass)?;
+    Ok(builder.finish())
+}
+
+/// Build SQL from a QueryFragment with bind values interpolated inline.
+///
+/// This is required for the native backend since clickhouse-rs doesn't support
+/// bind parameters like the HTTP backend does. All `?` placeholders are replaced
+/// with their actual SQL literal values.
+pub fn build_sql_interpolated<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
+    let mut builder = GenericQueryBuilder::default();
+    let mut collector = GenericBindCollector::default();
+    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
+    fragment.walk_ast(pass)?;
+
+    let sql = builder.finish();
+    let bindings = collector.bindable_values();
+
+    interpolate_bindings(&sql, bindings)
+}
+
+/// Replace `?` placeholders in SQL with actual bind values.
+///
+/// Optimized to avoid per-binding allocations by writing directly to the output buffer.
+fn interpolate_bindings(sql: &str, bindings: &[BindableValue]) -> QueryResult<String> {
+    // Estimate capacity: original SQL + ~12 bytes per binding (average literal size)
+    let mut result = String::with_capacity(sql.len() + bindings.len() * 12);
+    let mut bindings_iter = bindings.iter();
+
+    // Split by '?' and interleave with binding literals
+    let mut segments = sql.split('?');
+
+    // First segment (before any '?')
+    if let Some(first) = segments.next() {
+        result.push_str(first);
+    }
+
+    // Remaining segments - each is preceded by a '?' that needs a binding
+    for segment in segments {
+        match bindings_iter.next() {
+            Some(binding) => binding.write_sql_literal(&mut result),
+            None => {
+                return Err(Error::QueryError(Cow::Borrowed(
+                    "Not enough bind values for query placeholders"
+                )));
+            }
+        }
+        result.push_str(segment);
+    }
+
+    // Check for unused bindings
+    if bindings_iter.next().is_some() {
+        return Err(Error::QueryError(Cow::Borrowed(
+            "Too many bind values for query placeholders"
+        )));
+    }
+
+    Ok(result)
+}
+
+// =============================================================================
+// Query Execution Extensions
+// =============================================================================
+
+/// Extension trait for query fragments to get SQL.
+pub trait ToSql: QueryFragment<ClickHouse> {
+    /// Convert to SQL string.
+    ///
+    /// Returns an error if the query fragment fails to produce valid SQL.
+    fn to_sql_string(&self) -> QueryResult<String> {
+        build_sql(self)
+    }
+}
+
+impl<T: QueryFragment<ClickHouse>> ToSql for T {}
+
+/// Extension trait for executing mutations.
+#[async_trait]
+pub trait ExecuteMut: QueryFragment<ClickHouse> + Send + Sync + Sized {
+    /// Execute the query on a native connection.
+    async fn execute_native(self, conn: &NativeConnection) -> QueryResult<()> {
+        conn.execute_statement(&self).await
+    }
+}
+
+impl<T: QueryFragment<ClickHouse> + Send + Sync> ExecuteMut for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::query_builder::SelectStatement;
+
+    #[test]
+    fn test_build_sql() {
+        struct TestTable;
+        impl QueryFragment<ClickHouse> for TestTable {
+            fn walk_ast<'b>(
+                &'b self,
+                mut pass: AstPass<'_, 'b, ClickHouse>,
+            ) -> QueryResult<()> {
+                pass.push_sql("test_table");
+                Ok(())
+            }
+        }
+
+        let query = SelectStatement::new(TestTable);
+        let result = build_sql(&query).expect("failed to build SQL");
+        assert_eq!(result, "SELECT * FROM test_table");
+    }
+}
