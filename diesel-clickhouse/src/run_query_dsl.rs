@@ -255,8 +255,8 @@ use crate::core::query_source::Table;
 
 /// Extension trait for optimized insert execution.
 ///
-/// This trait provides `execute_optimized()` which uses binary formats
-/// instead of SQL text for maximum insert performance.
+/// This trait is automatically implemented for `InsertStatement` and provides
+/// an `insert()` method that uses binary formats instead of SQL text.
 ///
 /// # Example
 ///
@@ -266,48 +266,104 @@ use crate::core::query_source::Table;
 /// // Uses optimized binary insert (RowBinary for HTTP, Block for Native)
 /// insert_into(users::table)
 ///     .values(new_users.as_slice())
-///     .execute_optimized(&conn)
+///     .insert(&conn)
 ///     .await?;
 /// ```
 #[allow(async_fn_in_trait)]
-pub trait OptimizedInsertDsl: Sized {
+pub trait InsertDsl: Sized {
     /// Execute the insert using optimized binary format.
     ///
     /// - **HTTP**: Uses RowBinary format via inserter
     /// - **Native**: Uses native Block format
-    async fn execute_optimized(self, conn: &Connection) -> QueryResult<()>;
+    ///
+    /// This method automatically selects the optimal insert mechanism
+    /// based on the connection type. Always prefer this over `.execute()`
+    /// for INSERT statements.
+    async fn insert(self, conn: &Connection) -> QueryResult<()>;
 }
 
-// HTTP implementation for slice of rows
-#[cfg(feature = "http")]
-impl<T, R> OptimizedInsertDsl for InsertStatement<T, &[R]>
+// HTTP-only implementation for slice of rows
+#[cfg(all(feature = "http", not(feature = "native")))]
+impl<T, R> InsertDsl for InsertStatement<T, &[R]>
 where
     T: Table,
     R: Insertable<T> + clickhouse::RowOwned + clickhouse::RowWrite + Send + Sync,
 {
-    async fn execute_optimized(self, conn: &Connection) -> QueryResult<()> {
+    async fn insert(self, conn: &Connection) -> QueryResult<()> {
         let rows: &[R] = self.values_ref();
         if rows.is_empty() {
             return Ok(());
         }
 
-        conn.insert_rows(T::table_name(), rows).await
+        match conn {
+            Connection::Http(http_conn) => {
+                let mut inserter = http_conn.client()
+                    .insert::<R>(T::table_name())
+                    .await
+                    .map_err(Error::query_from)?;
+
+                for row in rows {
+                    inserter.write(row).await.map_err(Error::query_from)?;
+                }
+
+                inserter.end().await.map_err(Error::query_from)?;
+                Ok(())
+            }
+        }
     }
 }
 
 // Native-only implementation for slice of rows
 #[cfg(all(feature = "native", not(feature = "http")))]
-impl<T, R> OptimizedInsertDsl for InsertStatement<T, &[R]>
+impl<T, R> InsertDsl for InsertStatement<T, &[R]>
 where
     T: Table,
     R: Insertable<T> + crate::native::ToNativeBlock + Send + Sync,
 {
-    async fn execute_optimized(self, conn: &Connection) -> QueryResult<()> {
+    async fn insert(self, conn: &Connection) -> QueryResult<()> {
         let rows: &[R] = self.values_ref();
         if rows.is_empty() {
             return Ok(());
         }
 
-        conn.insert_native(T::table_name(), rows).await
+        match conn {
+            Connection::Native(native_conn) => {
+                native_conn.insert_native(T::table_name(), rows).await
+            }
+        }
+    }
+}
+
+// Both HTTP and Native implementation for slice of rows
+#[cfg(all(feature = "http", feature = "native"))]
+impl<T, R> InsertDsl for InsertStatement<T, &[R]>
+where
+    T: Table,
+    R: Insertable<T> + clickhouse::RowOwned + clickhouse::RowWrite + crate::native::ToNativeBlock + Send + Sync,
+{
+    async fn insert(self, conn: &Connection) -> QueryResult<()> {
+        let rows: &[R] = self.values_ref();
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        match conn {
+            Connection::Http(http_conn) => {
+                let mut inserter = http_conn.client()
+                    .insert::<R>(T::table_name())
+                    .await
+                    .map_err(Error::query_from)?;
+
+                for row in rows {
+                    inserter.write(row).await.map_err(Error::query_from)?;
+                }
+
+                inserter.end().await.map_err(Error::query_from)?;
+                Ok(())
+            }
+            Connection::Native(native_conn) => {
+                native_conn.insert_native(T::table_name(), rows).await
+            }
+        }
     }
 }

@@ -627,50 +627,8 @@ macro_rules! impl_into_block_column_primitive {
     };
 }
 
-impl_into_block_column_primitive!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
-
-// Bool is special: stored as u8 in ClickHouse
-impl IntoBlockColumn for bool {
-    type ColumnData = Vec<u8>;
-    type ColumnValue = u8;
-
-    #[inline]
-    fn to_column_value(&self) -> Self::ColumnValue {
-        if *self { 1 } else { 0 }
-    }
-
-    #[inline]
-    fn into_column_value(self) -> Self::ColumnValue {
-        if self { 1 } else { 0 }
-    }
-
-    #[inline]
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(if *value { 1 } else { 0 });
-    }
-
-    #[inline]
-    fn new_column() -> Self::ColumnData {
-        Vec::new()
-    }
-
-    #[inline]
-    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
-        Vec::with_capacity(capacity)
-    }
-
-    #[inline]
-    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
-        block.column(name, data)
-    }
-}
-
-impl IntoBlockColumnOwned for bool {
-    #[inline]
-    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
-        column.push(if value { 1 } else { 0 });
-    }
-}
+// Bool is natively supported by clickhouse-rs as Vec<bool>
+impl_into_block_column_primitive!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64, bool);
 
 impl IntoBlockColumn for String {
     type ColumnData = Vec<String>;

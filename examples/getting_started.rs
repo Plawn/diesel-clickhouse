@@ -140,12 +140,11 @@ async fn main() -> anyhow::Result<()> {
             active: false,
         },
     ];
-    // Use execute_optimized() for binary insert (RowBinary format)
     insert_into(users::table)
         .values(new_users.as_slice())
-        .execute_optimized(&http_conn)
+        .insert(&http_conn)
         .await?;
-    println!("Inserted {} users (optimized)", new_users.len());
+    println!("Inserted {} users", new_users.len());
 
     // INSERT posts
     let new_posts = vec![
@@ -170,9 +169,9 @@ async fn main() -> anyhow::Result<()> {
     ];
     insert_into(posts::table)
         .values(new_posts.as_slice())
-        .execute_optimized(&http_conn)
+        .insert(&http_conn)
         .await?;
-    println!("Inserted {} posts (optimized)", new_posts.len());
+    println!("Inserted {} posts", new_posts.len());
 
     // SELECT with filters
     let active_users: Vec<User> = users::table
@@ -291,7 +290,7 @@ async fn main() -> anyhow::Result<()> {
     ];
     insert_into(users::table)
         .values(zero_copy_users.as_slice())
-        .execute_optimized(&http_conn)
+        .insert(&http_conn)
         .await?;
 
     // Process rows with zero-copy - no String allocations per row!
@@ -348,7 +347,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Loaded {} users via Native backend", users.len());
     insert_into(users::table)
         .values(zero_copy_users.as_slice())
-        .execute_optimized(&native_conn)
+        .insert(&native_conn)
         .await?;
     // =========================================================================
     // Streaming Demo - Memory-efficient processing for large datasets
