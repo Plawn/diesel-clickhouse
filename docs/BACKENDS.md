@@ -83,9 +83,6 @@ let mut inserter = conn.inserter::<NewUser, _>(users::table).await?;
 inserter.write(&NewUser { id: 1, name: "Alice".into() }).await?;
 inserter.write(&NewUser { id: 2, name: "Bob".into() }).await?;
 inserter.end().await?;
-
-// Via SQL brut
-conn.insert_raw("users", "(1, 'Alice'), (2, 'Bob')").await?;
 ```
 
 ---
@@ -174,8 +171,20 @@ let block = NativeBlock::new()
 
 conn.insert("users", block).await?;
 
-// Via SQL brut
-conn.insert_values("users", "(1, 'Alice'), (2, 'Bob')").await?;
+// Via ToNativeBlock (typé, recommandé)
+#[row]
+#[derive(Clone, Insertable)]
+#[diesel_clickhouse(table = users)]
+struct NewUser {
+    id: u64,
+    name: String,
+}
+
+let users = vec![
+    NewUser { id: 1, name: "Alice".into() },
+    NewUser { id: 2, name: "Bob".into() },
+];
+conn.insert_native("users", &users).await?;
 ```
 
 ---

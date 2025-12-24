@@ -56,7 +56,6 @@ use futures::StreamExt;
 
 use crate::core::backend::{BindableValue, BindCollector, ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
 use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
-use crate::core::escape::escape_identifier;
 use crate::core::query_builder::{AstPass, QueryFragment};
 use crate::core::result::{Error, QueryResult};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
@@ -498,7 +497,25 @@ pub trait ToNativeBlock: Sized {
     fn column_names() -> &'static [&'static str];
 
     /// Convert a slice of rows to a native Block for efficient INSERT.
+    ///
+    /// This method borrows the rows, which may require cloning for types
+    /// like `String` and `Vec<T>`. For better performance when you have
+    /// owned data, use [`rows_into_block`](Self::rows_into_block) instead.
     fn rows_to_block(rows: &[Self]) -> QueryResult<Block>;
+
+    /// Convert owned rows to a native Block, avoiding clones where possible.
+    ///
+    /// This is more efficient than `rows_to_block` for types containing
+    /// `String` or `Vec<T>` fields, as it moves the data instead of cloning.
+    ///
+    /// The default implementation clones each row and calls `rows_to_block`.
+    /// The derive macro generates an optimized version that avoids cloning.
+    fn rows_into_block(rows: Vec<Self>) -> QueryResult<Block>
+    where
+        Self: Clone,
+    {
+        Self::rows_to_block(&rows)
+    }
 }
 
 /// Trait for types that can be added as a column to a Block.
@@ -508,11 +525,33 @@ pub trait IntoBlockColumn {
     /// The type of the column data vector.
     type ColumnData;
 
+    /// The type of individual values in the column.
+    type ColumnValue;
+
+    /// Convert a value to its column representation.
+    ///
+    /// This enables efficient column construction via `map().collect()`:
+    /// ```ignore
+    /// let col: Vec<_> = rows.iter().map(|r| r.field.to_column_value()).collect();
+    /// ```
+    fn to_column_value(&self) -> Self::ColumnValue;
+
+    /// Convert an owned value to its column representation (avoids cloning).
+    fn into_column_value(self) -> Self::ColumnValue
+    where
+        Self: Sized;
+
     /// Add this value to a column data vector.
     fn push_to_column(value: &Self, column: &mut Self::ColumnData);
 
     /// Create an empty column data vector.
     fn new_column() -> Self::ColumnData;
+
+    /// Create a column data vector with pre-allocated capacity.
+    ///
+    /// This is more efficient when the number of rows is known upfront,
+    /// as it avoids reallocations during insertion.
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData;
 
     /// Add the column to a block.
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block;
@@ -539,194 +578,130 @@ pub trait IntoBlockColumnOwned: IntoBlockColumn + Sized {
     fn push_to_column_owned(value: Self, column: &mut Self::ColumnData);
 }
 
-// Implement IntoBlockColumn for primitive types
-impl IntoBlockColumn for u8 {
-    type ColumnData = Vec<u8>;
+// Macro to implement IntoBlockColumn and IntoBlockColumnOwned for primitive Copy types
+macro_rules! impl_into_block_column_primitive {
+    ($($ty:ty),*) => {
+        $(
+            impl IntoBlockColumn for $ty {
+                type ColumnData = Vec<$ty>;
+                type ColumnValue = $ty;
 
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(*value);
-    }
+                #[inline]
+                fn to_column_value(&self) -> Self::ColumnValue {
+                    *self
+                }
 
-    fn new_column() -> Self::ColumnData {
-        Vec::new()
-    }
+                #[inline]
+                fn into_column_value(self) -> Self::ColumnValue {
+                    self
+                }
 
-    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
-        block.column(name, data)
-    }
+                #[inline]
+                fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+                    column.push(*value);
+                }
+
+                #[inline]
+                fn new_column() -> Self::ColumnData {
+                    Vec::new()
+                }
+
+                #[inline]
+                fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+                    Vec::with_capacity(capacity)
+                }
+
+                #[inline]
+                fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+                    block.column(name, data)
+                }
+            }
+
+            impl IntoBlockColumnOwned for $ty {
+                #[inline]
+                fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
+                    column.push(value);
+                }
+            }
+        )*
+    };
 }
 
-impl IntoBlockColumn for u16 {
-    type ColumnData = Vec<u16>;
+impl_into_block_column_primitive!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(*value);
-    }
-
-    fn new_column() -> Self::ColumnData {
-        Vec::new()
-    }
-
-    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
-        block.column(name, data)
-    }
-}
-
-impl IntoBlockColumn for u32 {
-    type ColumnData = Vec<u32>;
-
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(*value);
-    }
-
-    fn new_column() -> Self::ColumnData {
-        Vec::new()
-    }
-
-    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
-        block.column(name, data)
-    }
-}
-
-impl IntoBlockColumn for u64 {
-    type ColumnData = Vec<u64>;
-
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(*value);
-    }
-
-    fn new_column() -> Self::ColumnData {
-        Vec::new()
-    }
-
-    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
-        block.column(name, data)
-    }
-}
-
-impl IntoBlockColumn for i8 {
-    type ColumnData = Vec<i8>;
-
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(*value);
-    }
-
-    fn new_column() -> Self::ColumnData {
-        Vec::new()
-    }
-
-    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
-        block.column(name, data)
-    }
-}
-
-impl IntoBlockColumn for i16 {
-    type ColumnData = Vec<i16>;
-
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(*value);
-    }
-
-    fn new_column() -> Self::ColumnData {
-        Vec::new()
-    }
-
-    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
-        block.column(name, data)
-    }
-}
-
-impl IntoBlockColumn for i32 {
-    type ColumnData = Vec<i32>;
-
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(*value);
-    }
-
-    fn new_column() -> Self::ColumnData {
-        Vec::new()
-    }
-
-    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
-        block.column(name, data)
-    }
-}
-
-impl IntoBlockColumn for i64 {
-    type ColumnData = Vec<i64>;
-
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(*value);
-    }
-
-    fn new_column() -> Self::ColumnData {
-        Vec::new()
-    }
-
-    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
-        block.column(name, data)
-    }
-}
-
-impl IntoBlockColumn for f32 {
-    type ColumnData = Vec<f32>;
-
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(*value);
-    }
-
-    fn new_column() -> Self::ColumnData {
-        Vec::new()
-    }
-
-    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
-        block.column(name, data)
-    }
-}
-
-impl IntoBlockColumn for f64 {
-    type ColumnData = Vec<f64>;
-
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(*value);
-    }
-
-    fn new_column() -> Self::ColumnData {
-        Vec::new()
-    }
-
-    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
-        block.column(name, data)
-    }
-}
-
+// Bool is special: stored as u8 in ClickHouse
 impl IntoBlockColumn for bool {
     type ColumnData = Vec<u8>;
+    type ColumnValue = u8;
 
+    #[inline]
+    fn to_column_value(&self) -> Self::ColumnValue {
+        if *self { 1 } else { 0 }
+    }
+
+    #[inline]
+    fn into_column_value(self) -> Self::ColumnValue {
+        if self { 1 } else { 0 }
+    }
+
+    #[inline]
     fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
         column.push(if *value { 1 } else { 0 });
     }
 
+    #[inline]
     fn new_column() -> Self::ColumnData {
         Vec::new()
     }
 
+    #[inline]
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+        Vec::with_capacity(capacity)
+    }
+
+    #[inline]
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
         block.column(name, data)
+    }
+}
+
+impl IntoBlockColumnOwned for bool {
+    #[inline]
+    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
+        column.push(if value { 1 } else { 0 });
     }
 }
 
 impl IntoBlockColumn for String {
     type ColumnData = Vec<String>;
+    type ColumnValue = String;
 
+    #[inline]
+    fn to_column_value(&self) -> Self::ColumnValue {
+        self.clone()
+    }
+
+    #[inline]
+    fn into_column_value(self) -> Self::ColumnValue {
+        self
+    }
+
+    #[inline]
     fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
         column.push(value.clone());
     }
 
+    #[inline]
     fn new_column() -> Self::ColumnData {
         Vec::new()
     }
 
+    #[inline]
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+        Vec::with_capacity(capacity)
+    }
+
+    #[inline]
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
         block.column(name, data)
     }
@@ -740,15 +715,34 @@ impl IntoBlockColumnOwned for String {
 
 impl IntoBlockColumn for &str {
     type ColumnData = Vec<String>;
+    type ColumnValue = String;
 
+    #[inline]
+    fn to_column_value(&self) -> Self::ColumnValue {
+        (*self).to_string()
+    }
+
+    #[inline]
+    fn into_column_value(self) -> Self::ColumnValue {
+        self.to_string()
+    }
+
+    #[inline]
     fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
         column.push((*value).to_string());
     }
 
+    #[inline]
     fn new_column() -> Self::ColumnData {
         Vec::new()
     }
 
+    #[inline]
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+        Vec::with_capacity(capacity)
+    }
+
+    #[inline]
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
         block.column(name, data)
     }
@@ -760,15 +754,34 @@ where
     Vec<Vec<T>>: clickhouse_rs::types::column::ColumnFrom,
 {
     type ColumnData = Vec<Vec<T>>;
+    type ColumnValue = Vec<T>;
 
+    #[inline]
+    fn to_column_value(&self) -> Self::ColumnValue {
+        self.clone()
+    }
+
+    #[inline]
+    fn into_column_value(self) -> Self::ColumnValue {
+        self
+    }
+
+    #[inline]
     fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
         column.push(value.clone());
     }
 
+    #[inline]
     fn new_column() -> Self::ColumnData {
         Vec::new()
     }
 
+    #[inline]
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+        Vec::with_capacity(capacity)
+    }
+
+    #[inline]
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
         block.column(name, data)
     }
@@ -787,17 +800,44 @@ where
 #[cfg(feature = "chrono")]
 impl IntoBlockColumn for chrono::DateTime<chrono_tz::Tz> {
     type ColumnData = Vec<chrono::DateTime<chrono_tz::Tz>>;
+    type ColumnValue = chrono::DateTime<chrono_tz::Tz>;
 
+    #[inline]
+    fn to_column_value(&self) -> Self::ColumnValue {
+        *self
+    }
+
+    #[inline]
+    fn into_column_value(self) -> Self::ColumnValue {
+        self
+    }
+
+    #[inline]
     fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
         column.push(*value);
     }
 
+    #[inline]
     fn new_column() -> Self::ColumnData {
         Vec::new()
     }
 
+    #[inline]
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+        Vec::with_capacity(capacity)
+    }
+
+    #[inline]
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
         block.column(name, data)
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoBlockColumnOwned for chrono::DateTime<chrono_tz::Tz> {
+    #[inline]
+    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
+        column.push(value);
     }
 }
 
@@ -805,59 +845,147 @@ impl IntoBlockColumn for chrono::DateTime<chrono_tz::Tz> {
 impl IntoBlockColumn for chrono::DateTime<chrono::FixedOffset> {
     // clickhouse-rs expects DateTime<Tz>, so we convert
     type ColumnData = Vec<chrono::DateTime<chrono_tz::Tz>>;
+    type ColumnValue = chrono::DateTime<chrono_tz::Tz>;
 
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        // Convert FixedOffset to UTC then to Tz
+    #[inline]
+    fn to_column_value(&self) -> Self::ColumnValue {
         use chrono::TimeZone;
-        let utc = value.with_timezone(&chrono::Utc);
-        let tz_dt = chrono_tz::UTC.from_utc_datetime(&utc.naive_utc());
-        column.push(tz_dt);
+        let utc = self.with_timezone(&chrono::Utc);
+        chrono_tz::UTC.from_utc_datetime(&utc.naive_utc())
     }
 
+    #[inline]
+    fn into_column_value(self) -> Self::ColumnValue {
+        use chrono::TimeZone;
+        let utc = self.with_timezone(&chrono::Utc);
+        chrono_tz::UTC.from_utc_datetime(&utc.naive_utc())
+    }
+
+    #[inline]
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(value.to_column_value());
+    }
+
+    #[inline]
     fn new_column() -> Self::ColumnData {
         Vec::new()
     }
 
+    #[inline]
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+        Vec::with_capacity(capacity)
+    }
+
+    #[inline]
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
         block.column(name, data)
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoBlockColumnOwned for chrono::DateTime<chrono::FixedOffset> {
+    #[inline]
+    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
+        use chrono::TimeZone;
+        let utc = value.with_timezone(&chrono::Utc);
+        let tz_dt = chrono_tz::UTC.from_utc_datetime(&utc.naive_utc());
+        column.push(tz_dt);
     }
 }
 
 #[cfg(feature = "chrono")]
 impl IntoBlockColumn for chrono::DateTime<chrono::Utc> {
     type ColumnData = Vec<chrono::DateTime<chrono_tz::Tz>>;
+    type ColumnValue = chrono::DateTime<chrono_tz::Tz>;
 
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+    #[inline]
+    fn to_column_value(&self) -> Self::ColumnValue {
         use chrono::TimeZone;
-        let tz_dt = chrono_tz::UTC.from_utc_datetime(&value.naive_utc());
-        column.push(tz_dt);
+        chrono_tz::UTC.from_utc_datetime(&self.naive_utc())
     }
 
+    #[inline]
+    fn into_column_value(self) -> Self::ColumnValue {
+        use chrono::TimeZone;
+        chrono_tz::UTC.from_utc_datetime(&self.naive_utc())
+    }
+
+    #[inline]
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(value.to_column_value());
+    }
+
+    #[inline]
     fn new_column() -> Self::ColumnData {
         Vec::new()
     }
 
+    #[inline]
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+        Vec::with_capacity(capacity)
+    }
+
+    #[inline]
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
         block.column(name, data)
     }
 }
 
 #[cfg(feature = "chrono")]
-impl IntoBlockColumn for chrono::NaiveDateTime {
-    type ColumnData = Vec<chrono::DateTime<chrono_tz::Tz>>;
-
-    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+impl IntoBlockColumnOwned for chrono::DateTime<chrono::Utc> {
+    #[inline]
+    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
         use chrono::TimeZone;
-        let tz_dt = chrono_tz::UTC.from_utc_datetime(value);
+        let tz_dt = chrono_tz::UTC.from_utc_datetime(&value.naive_utc());
         column.push(tz_dt);
     }
+}
 
+#[cfg(feature = "chrono")]
+impl IntoBlockColumn for chrono::NaiveDateTime {
+    type ColumnData = Vec<chrono::DateTime<chrono_tz::Tz>>;
+    type ColumnValue = chrono::DateTime<chrono_tz::Tz>;
+
+    #[inline]
+    fn to_column_value(&self) -> Self::ColumnValue {
+        use chrono::TimeZone;
+        chrono_tz::UTC.from_utc_datetime(self)
+    }
+
+    #[inline]
+    fn into_column_value(self) -> Self::ColumnValue {
+        use chrono::TimeZone;
+        chrono_tz::UTC.from_utc_datetime(&self)
+    }
+
+    #[inline]
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(value.to_column_value());
+    }
+
+    #[inline]
     fn new_column() -> Self::ColumnData {
         Vec::new()
     }
 
+    #[inline]
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+        Vec::with_capacity(capacity)
+    }
+
+    #[inline]
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
         block.column(name, data)
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoBlockColumnOwned for chrono::NaiveDateTime {
+    #[inline]
+    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
+        use chrono::TimeZone;
+        let tz_dt = chrono_tz::UTC.from_utc_datetime(&value);
+        column.push(tz_dt);
     }
 }
 
@@ -1015,25 +1143,6 @@ impl NativeConnection {
         Ok(())
     }
 
-    /// Insert data using raw SQL VALUES.
-    ///
-    /// # Safety
-    ///
-    /// The `values_sql` parameter is inserted directly into the SQL query.
-    /// The caller is responsible for properly escaping any user-provided data
-    /// within `values_sql` to prevent SQL injection.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// conn.insert_values("users", "(1, 'Alice'), (2, 'Bob')").await?;
-    /// ```
-    pub async fn insert_values(&self, table: &str, values_sql: &str) -> QueryResult<()> {
-        let escaped_table = escape_identifier(table);
-        let sql = format!("INSERT INTO {} VALUES {}", escaped_table, values_sql);
-        self.execute_raw(&sql).await
-    }
-
     /// Insert rows using the optimized native Block API.
     ///
     /// This method provides the best performance for bulk inserts by using
@@ -1070,6 +1179,30 @@ impl NativeConnection {
             return Ok(());
         }
         let block = T::rows_to_block(rows)?;
+        self.insert(table, block).await
+    }
+
+    /// Insert rows using optimized Block API, taking ownership to avoid clones.
+    ///
+    /// This is more efficient than `insert_native` for types containing `String`
+    /// or `Vec<T>` fields, as it moves the data instead of cloning.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let users = vec![
+    ///     NewUser { id: 1, name: "Alice".into(), active: true },
+    ///     NewUser { id: 2, name: "Bob".into(), active: false },
+    /// ];
+    ///
+    /// // Takes ownership, avoids cloning strings
+    /// conn.insert_native_owned("users", users).await?;
+    /// ```
+    pub async fn insert_native_owned<T: ToNativeBlock + Clone>(&self, table: &str, rows: Vec<T>) -> QueryResult<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let block = T::rows_into_block(rows)?;
         self.insert(table, block).await
     }
 }

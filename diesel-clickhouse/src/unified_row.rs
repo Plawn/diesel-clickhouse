@@ -144,3 +144,4 @@ impl<T> CallbackStreamableRow for T where
         + Send
 {
 }
+

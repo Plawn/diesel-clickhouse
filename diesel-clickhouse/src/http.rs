@@ -29,7 +29,6 @@ use serde::Serialize;
 
 use crate::core::backend::{BindCollector, ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
 use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
-use crate::core::escape::escape_identifier;
 use crate::core::query_builder::{AstPass, QueryFragment};
 use crate::core::result::{Error, QueryResult};
 
@@ -526,25 +525,6 @@ impl ClickHouseConnection {
         Tab: crate::Table,
     {
         self.client.insert(Tab::table_name()).await
-    }
-
-    /// Insert rows into a table using raw SQL values.
-    ///
-    /// # Safety
-    ///
-    /// The `sql_values` parameter is inserted directly into the SQL query.
-    /// The caller is responsible for properly escaping any user-provided data
-    /// within `sql_values` to prevent SQL injection.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// conn.insert_raw("users", "(1, 'alice'), (2, 'bob')").await?;
-    /// ```
-    pub async fn insert_raw(&self, table_name: &str, sql_values: &str) -> QueryResult<()> {
-        let escaped_table = escape_identifier(table_name);
-        let sql = format!("INSERT INTO {} VALUES {}", escaped_table, sql_values);
-        self.execute_raw(&sql).await
     }
 
     // =========================================================================

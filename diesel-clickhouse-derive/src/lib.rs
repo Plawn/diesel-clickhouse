@@ -285,16 +285,36 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             fn rows_to_block(rows: &[Self]) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
-                // Create column vectors
+                // Build columns using map().collect() pattern for better vectorization
+                // collect() pre-allocates with exact capacity since slice iterators are ExactSizeIterator
                 #(
-                    let mut #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
-                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::new_column();
+                    let #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
+                        rows.iter()
+                            .map(|row| <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::to_column_value(&row.#field_names))
+                            .collect();
                 )*
 
-                // Populate column vectors
+                // Build block
+                let block = ::diesel_clickhouse::native::NativeBlock::new();
+                #(
+                    let block = <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::add_column_to_block(block, #column_names, #col_var_names);
+                )*
+
+                Ok(block)
+            }
+
+            fn rows_into_block(rows: Vec<Self>) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
+                // Pre-allocate column vectors with known capacity for better performance
+                let capacity = rows.len();
+                #(
+                    let mut #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
+                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::new_column_with_capacity(capacity);
+                )*
+
+                // Populate column vectors (takes ownership, avoids cloning String/Vec fields)
                 for row in rows {
                     #(
-                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::push_to_column(&row.#field_names, &mut #col_var_names);
+                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumnOwned>::push_to_column_owned(row.#field_names, &mut #col_var_names);
                     )*
                 }
 

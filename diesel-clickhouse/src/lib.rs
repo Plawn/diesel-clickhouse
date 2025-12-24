@@ -299,7 +299,7 @@ pub use native::{NativeClientBuilder, NativeCompression};
 ///
 /// // Same API for both
 /// conn.execute("CREATE TABLE test (id UInt64) ENGINE = Memory").await?;
-/// conn.insert_values("test", "(1), (2), (3)").await?;
+/// conn.insert(insert_into(test::table).values(&new_row)).await?;
 /// ```
 /// Unified row traits for backend-agnostic query execution.
 ///
@@ -364,15 +364,6 @@ pub mod arrow;
 #[cfg(feature = "arrow")]
 pub use arrow::{ArrowResult, ArrowRow, parse_arrow_stream, build_column_index, for_each_row};
 
-/// Batch insertion utilities.
-///
-/// Provides `BatchInserter` for efficient bulk inserts.
-#[cfg(any(feature = "http", feature = "native"))]
-pub mod batch;
-
-#[cfg(any(feature = "http", feature = "native"))]
-pub use batch::{BatchInserter, RawBatchInserter, BatchInsertExt};
-
 /// Connection pooling.
 ///
 /// Provides `Pool` for efficient connection reuse.
@@ -381,16 +372,6 @@ pub mod pool;
 
 #[cfg(any(feature = "http", feature = "native"))]
 pub use pool::{Pool, PoolConfig, PooledConnection};
-
-/// Async insert mode support.
-///
-/// Provides `AsyncInserter` for high-throughput inserts using ClickHouse's
-/// async_insert mode.
-#[cfg(any(feature = "http", feature = "native"))]
-pub mod async_insert;
-
-#[cfg(any(feature = "http", feature = "native"))]
-pub use async_insert::{AsyncInsertConfig, AsyncInserter, BufferedAsyncInserter, AsyncInsertExt};
 
 /// Migrations module.
 ///
