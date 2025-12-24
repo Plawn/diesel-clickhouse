@@ -130,6 +130,17 @@ impl ConnectionFactory for crate::native::NativeClientBuilder {
 // Pool Configuration
 // =============================================================================
 
+/// Default maximum number of connections in the pool.
+pub const DEFAULT_POOL_MAX_SIZE: usize = 10;
+/// Default minimum number of idle connections.
+pub const DEFAULT_POOL_MIN_IDLE: usize = 1;
+/// Default connection timeout (30 seconds).
+pub const DEFAULT_CONNECTION_TIMEOUT_MS: u64 = 30_000;
+/// Default idle timeout (10 minutes).
+pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 600_000;
+/// Default maximum connection lifetime (30 minutes).
+pub const DEFAULT_MAX_LIFETIME_MS: u64 = 1_800_000;
+
 /// Configuration for the connection pool.
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
@@ -148,11 +159,11 @@ pub struct PoolConfig {
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
-            max_size: 10,
-            min_idle: Some(1),
-            connection_timeout_ms: 30_000,
-            idle_timeout_ms: Some(600_000), // 10 minutes
-            max_lifetime_ms: Some(1_800_000), // 30 minutes
+            max_size: DEFAULT_POOL_MAX_SIZE,
+            min_idle: Some(DEFAULT_POOL_MIN_IDLE),
+            connection_timeout_ms: DEFAULT_CONNECTION_TIMEOUT_MS,
+            idle_timeout_ms: Some(DEFAULT_IDLE_TIMEOUT_MS),
+            max_lifetime_ms: Some(DEFAULT_MAX_LIFETIME_MS),
         }
     }
 }

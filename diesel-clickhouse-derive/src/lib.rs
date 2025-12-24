@@ -1,8 +1,6 @@
 // Proc-macro crates: panics occur at compile-time, not runtime, so they're acceptable.
-// We still deny unwrap/expect but allow specific cases with documented invariants.
-#![deny(clippy::unwrap_used)]
-#![deny(clippy::expect_used)]
-// Allow in proc-macro code where panics produce compile errors (acceptable)
+// Panics in proc-macros produce compile errors, which is the intended behavior.
+#![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 
 //! Procedural macros for diesel-clickhouse.
@@ -588,8 +586,6 @@ pub fn derive_insertable(input: TokenStream) -> TokenStream {
         .collect();
 
     let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
-    let _field_count = field_names.len();
-
     let column_count = column_names.len();
     let column_names_array = &column_names;
 

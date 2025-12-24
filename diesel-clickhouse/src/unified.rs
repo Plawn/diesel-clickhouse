@@ -158,6 +158,48 @@ use crate::core::backend::ClickHouse;
 use crate::core::query_builder::QueryFragment;
 use crate::core::result::{Error, QueryResult};
 
+// =============================================================================
+// Helper Macro for Connection Delegation
+// =============================================================================
+
+/// Macro to delegate method calls to the underlying connection variant.
+///
+/// This eliminates repetitive match statements when both HTTP and Native
+/// backends use the same method signature.
+///
+/// # Usage
+///
+/// ```ignore
+/// // Sync method delegation
+/// with_connection!(self, |conn| conn.method())
+///
+/// // Async method delegation
+/// with_connection!(self, |conn| conn.method().await)
+/// ```
+macro_rules! with_connection {
+    ($self:expr, |$conn:ident| $expr:expr) => {
+        match $self {
+            #[cfg(feature = "http")]
+            Connection::Http($conn) => $expr,
+            #[cfg(feature = "native")]
+            Connection::Native($conn) => $expr,
+        }
+    };
+}
+
+/// Macro for HTTP-only methods that return an error for Native backend.
+#[cfg(feature = "arrow")]
+macro_rules! http_only {
+    ($self:expr, |$conn:ident| $expr:expr, $error_msg:expr) => {
+        match $self {
+            #[cfg(feature = "http")]
+            Connection::Http($conn) => $expr,
+            #[cfg(feature = "native")]
+            Connection::Native(_) => Err(Error::QueryError(Cow::Borrowed($error_msg))),
+        }
+    };
+}
+
 /// A unified connection that works with both HTTP and Native backends.
 ///
 /// The connection type is determined by the URL scheme:
@@ -216,12 +258,7 @@ impl Connection {
 
     /// Get the database name.
     pub fn database(&self) -> &str {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(conn) => conn.database(),
-            #[cfg(feature = "native")]
-            Connection::Native(conn) => conn.database(),
-        }
+        with_connection!(self, |conn| conn.database())
     }
 
     /// Check if this is an HTTP connection.
@@ -250,12 +287,7 @@ impl Connection {
     /// conn.execute("ALTER TABLE users ADD COLUMN name String").await?;
     /// ```
     pub async fn execute(&self, sql: &str) -> QueryResult<()> {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(conn) => conn.execute_raw(sql).await,
-            #[cfg(feature = "native")]
-            Connection::Native(conn) => conn.execute_raw(sql).await,
-        }
+        with_connection!(self, |conn| conn.execute_raw(sql).await)
     }
 
     /// Execute a query fragment.
@@ -273,12 +305,7 @@ impl Connection {
     where
         Q: QueryFragment<ClickHouse>,
     {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(conn) => conn.execute_statement(&query).await,
-            #[cfg(feature = "native")]
-            Connection::Native(conn) => conn.execute_statement(&query).await,
-        }
+        with_connection!(self, |conn| conn.execute_statement(&query).await)
     }
 
     /// Build SQL from a query fragment without executing.
@@ -295,12 +322,7 @@ impl Connection {
     where
         Q: QueryFragment<ClickHouse>,
     {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(conn) => conn.build_query(&query),
-            #[cfg(feature = "native")]
-            Connection::Native(conn) => conn.build_query(&query),
-        }
+        with_connection!(self, |conn| conn.build_query(&query))
     }
 
     // =========================================================================
@@ -338,12 +360,7 @@ impl Connection {
         T: crate::UnifiedRow,
         Q: QueryFragment<ClickHouse> + Send,
     {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(conn) => conn.load(query).await,
-            #[cfg(feature = "native")]
-            Connection::Native(conn) => conn.load(query).await,
-        }
+        with_connection!(self, |conn| conn.load(query).await)
     }
 
     /// Load a single row from a query.
@@ -537,12 +554,7 @@ impl Connection {
     where
         T: crate::UnifiedRow,
     {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(conn) => conn.load_raw(sql).await,
-            #[cfg(feature = "native")]
-            Connection::Native(conn) => conn.load_raw(sql).await,
-        }
+        with_connection!(self, |conn| conn.load_raw(sql).await)
     }
 
     // =========================================================================
@@ -590,14 +602,11 @@ impl Connection {
     where
         F: for<'a> FnMut(crate::arrow::ArrowRow<'a>) -> QueryResult<()>,
     {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(conn) => conn.load_zero_copy(sql, callback).await,
-            #[cfg(feature = "native")]
-            Connection::Native(_) => Err(Error::QueryError(
-                Cow::Borrowed("Zero-copy parsing is not supported for Native backend. Use HTTP backend instead.")
-            )),
-        }
+        http_only!(
+            self,
+            |conn| conn.load_zero_copy(sql, callback).await,
+            "Zero-copy parsing is not supported for Native backend. Use HTTP backend instead."
+        )
     }
 
     /// Load rows from a query fragment using zero-copy parsing.
@@ -621,14 +630,11 @@ impl Connection {
         Q: QueryFragment<ClickHouse>,
         F: for<'a> FnMut(crate::arrow::ArrowRow<'a>) -> QueryResult<()>,
     {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(conn) => conn.load_zero_copy_query(query, callback).await,
-            #[cfg(feature = "native")]
-            Connection::Native(_) => Err(Error::QueryError(
-                Cow::Borrowed("Zero-copy parsing is not supported for Native backend. Use HTTP backend instead.")
-            )),
-        }
+        http_only!(
+            self,
+            |conn| conn.load_zero_copy_query(query, callback).await,
+            "Zero-copy parsing is not supported for Native backend. Use HTTP backend instead."
+        )
     }
 
     // =========================================================================
@@ -664,13 +670,11 @@ impl Connection {
     /// - **Native**: Not supported (returns error)
     #[cfg(feature = "arrow")]
     pub async fn load_arrow(&self, sql: &str) -> QueryResult<crate::arrow::ArrowResult> {
-        match self {
-            Connection::Http(conn) => conn.load_arrow(sql).await,
-            #[cfg(feature = "native")]
-            Connection::Native(_) => Err(Error::QueryError(
-                Cow::Borrowed("Arrow format is only supported on HTTP backend.")
-            )),
-        }
+        http_only!(
+            self,
+            |conn| conn.load_arrow(sql).await,
+            "Arrow format is only supported on HTTP backend."
+        )
     }
 
     /// Load query results as Arrow with a callback for each batch (HTTP backend only).
@@ -695,13 +699,11 @@ impl Connection {
     where
         F: FnMut(::arrow::array::RecordBatch) -> QueryResult<()> + Send + 'static,
     {
-        match self {
-            Connection::Http(conn) => conn.load_arrow_callback(sql, callback).await,
-            #[cfg(feature = "native")]
-            Connection::Native(_) => Err(Error::QueryError(
-                Cow::Borrowed("Arrow format is only supported on HTTP backend.")
-            )),
-        }
+        http_only!(
+            self,
+            |conn| conn.load_arrow_callback(sql, callback).await,
+            "Arrow format is only supported on HTTP backend."
+        )
     }
 
     /// Load query results from a QueryFragment as Arrow (HTTP backend only).
@@ -718,14 +720,11 @@ impl Connection {
     where
         Q: QueryFragment<ClickHouse>,
     {
-        match self {
-            #[cfg(feature = "http")]
-            Connection::Http(conn) => conn.load_arrow_query(query).await,
-            #[cfg(feature = "native")]
-            Connection::Native(_) => Err(Error::QueryError(
-                Cow::Borrowed("Arrow format is only supported on HTTP backend. Use load_zero_copy() for native backend.")
-            )),
-        }
+        http_only!(
+            self,
+            |conn| conn.load_arrow_query(query).await,
+            "Arrow format is only supported on HTTP backend."
+        )
     }
 }
 
@@ -739,32 +738,42 @@ mod migration_impl {
     use async_trait::async_trait;
     use diesel_clickhouse_migrations::{MigrationConnection, MigrationError, Result as MigrationResult};
 
+    /// Convert any error to a MigrationError::SqlError.
+    #[inline]
+    fn to_migration_err<E: std::fmt::Display>(e: E) -> MigrationError {
+        MigrationError::SqlError {
+            migration: String::new(),
+            message: e.to_string(),
+        }
+    }
+
+    /// Convert any error to a MigrationError::SqlError with a custom message prefix.
+    #[inline]
+    fn to_migration_err_with_context<E: std::fmt::Display>(context: &str, e: E) -> MigrationError {
+        MigrationError::SqlError {
+            migration: String::new(),
+            message: format!("{}: {}", context, e),
+        }
+    }
+
     #[async_trait]
     impl MigrationConnection for Connection {
         async fn execute(&mut self, sql: &str) -> MigrationResult<()> {
-            Connection::execute(self, sql).await.map_err(|e| MigrationError::SqlError {
-                migration: "".to_string(),
-                message: e.to_string(),
-            })
+            Connection::execute(self, sql).await.map_err(to_migration_err)
         }
 
         async fn query_exists(&mut self, sql: &str) -> MigrationResult<bool> {
             match self {
                 #[cfg(feature = "http")]
                 Connection::Http(conn) => {
-                    let result: Option<u8> = conn.client().query(sql).fetch_optional().await
-                        .map_err(|e| MigrationError::SqlError {
-                            migration: "".to_string(),
-                            message: e.to_string(),
-                        })?;
+                    let result: Option<u8> = conn.client().query(sql)
+                        .fetch_optional().await
+                        .map_err(to_migration_err)?;
                     Ok(result.is_some())
                 }
                 #[cfg(feature = "native")]
                 Connection::Native(conn) => {
-                    let block = conn.query_raw(sql).await.map_err(|e| MigrationError::SqlError {
-                        migration: "".to_string(),
-                        message: e.to_string(),
-                    })?;
+                    let block = conn.query_raw(sql).await.map_err(to_migration_err)?;
                     Ok(block.row_count() > 0)
                 }
             }
@@ -774,29 +783,20 @@ mod migration_impl {
             match self {
                 #[cfg(feature = "http")]
                 Connection::Http(conn) => {
-                    let result: Option<String> = conn.client().query(sql).fetch_optional().await
-                        .map_err(|e| MigrationError::SqlError {
-                            migration: "".to_string(),
-                            message: e.to_string(),
-                        })?;
-                    Ok(result)
+                    conn.client().query(sql)
+                        .fetch_optional().await
+                        .map_err(to_migration_err)
                 }
                 #[cfg(feature = "native")]
                 Connection::Native(conn) => {
-                    let block = conn.query_raw(sql).await.map_err(|e| MigrationError::SqlError {
-                        migration: "".to_string(),
-                        message: e.to_string(),
-                    })?;
+                    let block = conn.query_raw(sql).await.map_err(to_migration_err)?;
 
                     if block.row_count() == 0 {
                         return Ok(None);
                     }
 
-                    let value: String = block.get(0, 0).map_err(|e| MigrationError::SqlError {
-                        migration: "".to_string(),
-                        message: format!("Failed to get scalar string: {}", e),
-                    })?;
-
+                    let value: String = block.get(0, 0)
+                        .map_err(|e| to_migration_err_with_context("Failed to get scalar string", e))?;
                     Ok(Some(value))
                 }
             }
@@ -806,29 +806,22 @@ mod migration_impl {
             match self {
                 #[cfg(feature = "http")]
                 Connection::Http(conn) => {
-                    let versions: Vec<String> = conn.client().query(sql).fetch_all().await
-                        .map_err(|e| MigrationError::SqlError {
-                            migration: "".to_string(),
-                            message: e.to_string(),
-                        })?;
-                    Ok(versions)
+                    conn.client().query(sql)
+                        .fetch_all().await
+                        .map_err(to_migration_err)
                 }
                 #[cfg(feature = "native")]
                 Connection::Native(conn) => {
-                    let block = conn.query_raw(sql).await.map_err(|e| MigrationError::SqlError {
-                        migration: "".to_string(),
-                        message: e.to_string(),
-                    })?;
+                    let block = conn.query_raw(sql).await.map_err(to_migration_err)?;
 
                     let mut versions = Vec::with_capacity(block.row_count());
                     for row_idx in 0..block.row_count() {
-                        let version: String = block.get(row_idx, 0).map_err(|e| MigrationError::SqlError {
-                            migration: "".to_string(),
-                            message: format!("Failed to get version at row {}: {}", row_idx, e),
-                        })?;
+                        let version: String = block.get(row_idx, 0)
+                            .map_err(|e| to_migration_err_with_context(
+                                &format!("Failed to get version at row {}", row_idx), e
+                            ))?;
                         versions.push(version);
                     }
-
                     Ok(versions)
                 }
             }

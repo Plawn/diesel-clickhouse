@@ -78,63 +78,57 @@ impl BindableValue {
     #[inline]
     pub fn write_sql_literal(&self, buf: &mut String) {
         match self {
-            BindableValue::U8(v) => {
-                let mut tmp = itoa::Buffer::new();
-                buf.push_str(tmp.format(*v));
-            }
-            BindableValue::U16(v) => {
-                let mut tmp = itoa::Buffer::new();
-                buf.push_str(tmp.format(*v));
-            }
-            BindableValue::U32(v) => {
-                let mut tmp = itoa::Buffer::new();
-                buf.push_str(tmp.format(*v));
-            }
-            BindableValue::U64(v) => {
-                let mut tmp = itoa::Buffer::new();
-                buf.push_str(tmp.format(*v));
-            }
-            BindableValue::I8(v) => {
-                let mut tmp = itoa::Buffer::new();
-                buf.push_str(tmp.format(*v));
-            }
-            BindableValue::I16(v) => {
-                let mut tmp = itoa::Buffer::new();
-                buf.push_str(tmp.format(*v));
-            }
-            BindableValue::I32(v) => {
-                let mut tmp = itoa::Buffer::new();
-                buf.push_str(tmp.format(*v));
-            }
-            BindableValue::I64(v) => {
-                let mut tmp = itoa::Buffer::new();
-                buf.push_str(tmp.format(*v));
-            }
-            BindableValue::F32(v) => {
-                let mut tmp = ryu::Buffer::new();
-                buf.push_str(tmp.format(*v));
-            }
-            BindableValue::F64(v) => {
-                let mut tmp = ryu::Buffer::new();
-                buf.push_str(tmp.format(*v));
-            }
-            BindableValue::Bool(v) => {
-                buf.push_str(if *v { "true" } else { "false" });
-            }
-            BindableValue::String(v) => {
-                buf.push('\'');
-                // Escape single quotes by doubling them
-                for ch in v.chars() {
-                    if ch == '\'' {
-                        buf.push_str("''");
-                    } else {
-                        buf.push(ch);
-                    }
-                }
-                buf.push('\'');
-            }
+            // Integers use itoa for fast formatting
+            BindableValue::U8(v) => write_int(buf, *v),
+            BindableValue::U16(v) => write_int(buf, *v),
+            BindableValue::U32(v) => write_int(buf, *v),
+            BindableValue::U64(v) => write_int(buf, *v),
+            BindableValue::I8(v) => write_int(buf, *v),
+            BindableValue::I16(v) => write_int(buf, *v),
+            BindableValue::I32(v) => write_int(buf, *v),
+            BindableValue::I64(v) => write_int(buf, *v),
+            // Floats use ryu for fast formatting
+            BindableValue::F32(v) => write_float(buf, *v),
+            BindableValue::F64(v) => write_float(buf, *v),
+            // Bool
+            BindableValue::Bool(v) => buf.push_str(if *v { "true" } else { "false" }),
+            // String with escaping
+            BindableValue::String(v) => write_escaped_string(buf, v),
         }
     }
+}
+
+/// Write an integer to a buffer using itoa.
+#[inline]
+fn write_int<I: itoa::Integer>(buf: &mut String, value: I) {
+    let mut tmp = itoa::Buffer::new();
+    buf.push_str(tmp.format(value));
+}
+
+/// Write a float to a buffer using ryu.
+#[inline]
+fn write_float<F: ryu::Float>(buf: &mut String, value: F) {
+    let mut tmp = ryu::Buffer::new();
+    buf.push_str(tmp.format(value));
+}
+
+/// Write a SQL-escaped string literal to a buffer.
+#[inline]
+fn write_escaped_string(buf: &mut String, value: &str) {
+    buf.push('\'');
+    // Escape single quotes by doubling them
+    if value.contains('\'') {
+        for ch in value.chars() {
+            if ch == '\'' {
+                buf.push_str("''");
+            } else {
+                buf.push(ch);
+            }
+        }
+    } else {
+        buf.push_str(value);
+    }
+    buf.push('\'');
 }
 
 // Implement Serialize for BindableValue so it can be used with clickhouse's .bind()
