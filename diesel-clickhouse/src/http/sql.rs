@@ -1,26 +1,11 @@
 //! SQL building utilities for HTTP backend.
 
-use crate::core::backend::{BindCollector, ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
-use crate::core::query_builder::{AstPass, QueryFragment};
+use crate::core::backend::ClickHouse;
+use crate::core::query_builder::QueryFragment;
 use crate::core::result::QueryResult;
 
-// Re-export for convenience
-pub use crate::core::backend::BindableValue;
-
-/// Build SQL from a QueryFragment.
-///
-/// Returns the SQL string with `?` placeholders for parameters.
-/// This is a lightweight function for display/debugging purposes.
-///
-/// For actual query execution, use the connection methods which apply
-/// native parameter binding via `build_sql_native()`.
-pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
-    let mut builder = GenericQueryBuilder::default();
-    let mut collector = GenericBindCollector::default();
-    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-    fragment.walk_ast(pass)?;
-    Ok(builder.finish())
-}
+// Re-export from core for backward compatibility
+pub use crate::core::sql_builder::{build_sql, BindableValue};
 
 /// A compiled query with SQL placeholders and typed bindable values.
 ///
@@ -63,13 +48,6 @@ impl NativeCompiledQuery {
 /// - Returns typed BindableValue instances for native `.bind()` calls
 /// - Enables query plan caching on the ClickHouse server
 pub fn build_sql_native<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<NativeCompiledQuery> {
-    let mut builder = GenericQueryBuilder::default();
-    let mut collector = GenericBindCollector::default();
-    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-    fragment.walk_ast(pass)?;
-
-    Ok(NativeCompiledQuery {
-        sql: builder.finish(),
-        bindings: collector.bindable_values().to_vec(),
-    })
+    let (sql, bindings) = crate::core::sql_builder::build_sql_with_bindings(fragment)?;
+    Ok(NativeCompiledQuery { sql, bindings })
 }

@@ -167,13 +167,8 @@ pub mod prelude {
         OrderExpressionMethods,
     };
 
-    // HTTP execution traits
-    #[cfg(feature = "http")]
-    pub use crate::http::ToSql;
-
-    // Native execution traits
-    #[cfg(all(feature = "native", not(feature = "http")))]
-    pub use crate::native::ToSql;
+    // SQL building trait (unified across backends)
+    pub use crate::core::sql_builder::ToSqlString;
 
     // Unified connection
     #[cfg(any(feature = "http", feature = "native"))]

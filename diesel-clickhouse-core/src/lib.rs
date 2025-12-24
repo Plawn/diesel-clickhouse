@@ -40,6 +40,9 @@ pub mod interner;
 /// ClickHouse type string parser (for schema introspection).
 pub mod type_parser;
 
+/// SQL building utilities (shared across backends).
+pub mod sql_builder;
+
 // Re-export types crate
 pub use diesel_clickhouse_types as types;
 
@@ -56,6 +59,7 @@ pub use deserialize::FromRow;
 pub use serialize::ToRow;
 pub use row::{ClickHouseRow, InsertableRow, QueryableRow};
 pub use type_parser::{parse_type, ClickHouseSqlType, ColumnInfo, TableInfo};
+pub use sql_builder::{build_sql, build_sql_with_bindings, ToSqlString, BindableValue};
 
 /// Prelude for common imports.
 pub mod prelude {

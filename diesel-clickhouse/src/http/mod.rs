@@ -170,17 +170,8 @@ impl ClickHouseConnection {
 // Query Execution Extensions
 // =============================================================================
 
-/// Extension trait for query fragments to get SQL.
-pub trait ToSql: QueryFragment<ClickHouse> {
-    /// Convert to SQL string.
-    ///
-    /// Returns an error if the query fragment fails to produce valid SQL.
-    fn to_sql_string(&self) -> QueryResult<String> {
-        build_sql(self)
-    }
-}
-
-impl<T: QueryFragment<ClickHouse>> ToSql for T {}
+// Re-export ToSqlString from core
+pub use crate::core::sql_builder::ToSqlString;
 
 /// Extension trait for executing mutations.
 #[async_trait]

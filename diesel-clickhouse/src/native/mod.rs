@@ -57,9 +57,13 @@ use async_trait::async_trait;
 use clickhouse_rs::{Pool, ClientHandle, Block, types::Complex};
 use futures::StreamExt;
 
-use crate::core::backend::{BindableValue, BindCollector, ClickHouse, GenericBindCollector, GenericQueryBuilder, QueryBuilder};
+use crate::core::backend::ClickHouse;
 use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
-use crate::core::query_builder::{AstPass, QueryFragment};
+use crate::core::query_builder::QueryFragment;
+
+// AstPass is only needed for tests (implementing QueryFragment for test structs)
+#[cfg(test)]
+use crate::core::query_builder::AstPass;
 use crate::core::result::{Error, QueryResult};
 
 // Re-export submodule items
@@ -611,16 +615,10 @@ impl ClickHouseConnectionTrait for NativeConnection {
 // Helper Functions
 // =============================================================================
 
-/// Build SQL from a QueryFragment.
-///
-/// Returns an error if the query fragment fails to produce valid SQL.
-pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
-    let mut builder = GenericQueryBuilder::default();
-    let mut collector = GenericBindCollector::default();
-    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-    fragment.walk_ast(pass)?;
-    Ok(builder.finish())
-}
+// Re-export build_sql from core
+pub use crate::core::sql_builder::build_sql;
+
+use crate::core::sql_builder::BindableValue;
 
 /// Build SQL from a QueryFragment with bind values interpolated inline.
 ///
@@ -628,15 +626,8 @@ pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryRe
 /// bind parameters like the HTTP backend does. All `?` placeholders are replaced
 /// with their actual SQL literal values.
 pub fn build_sql_interpolated<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
-    let mut builder = GenericQueryBuilder::default();
-    let mut collector = GenericBindCollector::default();
-    let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-    fragment.walk_ast(pass)?;
-
-    let sql = builder.finish();
-    let bindings = collector.bindable_values();
-
-    interpolate_bindings(&sql, bindings)
+    let (sql, bindings) = crate::core::sql_builder::build_sql_with_bindings(fragment)?;
+    interpolate_bindings(&sql, &bindings)
 }
 
 /// Replace `?` placeholders in SQL with actual bind values.
@@ -682,17 +673,8 @@ fn interpolate_bindings(sql: &str, bindings: &[BindableValue]) -> QueryResult<St
 // Query Execution Extensions
 // =============================================================================
 
-/// Extension trait for query fragments to get SQL.
-pub trait ToSql: QueryFragment<ClickHouse> {
-    /// Convert to SQL string.
-    ///
-    /// Returns an error if the query fragment fails to produce valid SQL.
-    fn to_sql_string(&self) -> QueryResult<String> {
-        build_sql(self)
-    }
-}
-
-impl<T: QueryFragment<ClickHouse>> ToSql for T {}
+// Re-export ToSqlString from core
+pub use crate::core::sql_builder::ToSqlString;
 
 /// Extension trait for executing mutations.
 #[async_trait]
