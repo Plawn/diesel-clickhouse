@@ -117,6 +117,36 @@ impl<T: WriteSqlValue> WriteSqlValue for &T {
     }
 }
 
+// =============================================================================
+// JSON type support (ClickHouse 24.10+)
+// =============================================================================
+
+/// WriteSqlValue implementation for serde_json::Value.
+/// JSON values are serialized to string for SQL generation.
+#[cfg(feature = "json")]
+impl WriteSqlValue for serde_json::Value {
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
+        let json_str = serde_json::to_string(self)
+            .map_err(|e| crate::result::Error::SerializationError(
+                std::borrow::Cow::Owned(format!("Failed to serialize JSON: {}", e))
+            ))?;
+        pass.push_bindable(&json_str)
+    }
+}
+
+/// WriteSqlValue implementation for JsonTyped<T>.
+/// JSON values are serialized to string for SQL generation.
+#[cfg(feature = "json")]
+impl<T: serde::Serialize> WriteSqlValue for diesel_clickhouse_types::JsonTyped<T> {
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
+        let json_str = serde_json::to_string(&self.0)
+            .map_err(|e| crate::result::Error::SerializationError(
+                std::borrow::Cow::Owned(format!("Failed to serialize JSON: {}", e))
+            ))?;
+        pass.push_bindable(&json_str)
+    }
+}
+
 /// A collection of values for a single row.
 #[derive(Debug, Default)]
 pub struct RowValues {

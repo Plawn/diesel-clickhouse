@@ -912,6 +912,7 @@ dependencies = [
  "parking_lot",
  "ryu",
  "serde",
+ "serde_json",
  "smallvec",
  "string-interner",
  "thiserror 1.0.69",

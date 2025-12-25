@@ -204,8 +204,7 @@ impl NativeClientBuilder {
         #[cfg(feature = "json")]
         {
             client
-                .query("SET output_format_native_write_json_as_string = 1")
-                .fetch_all()
+                .execute("SET output_format_native_write_json_as_string = 1")
                 .await
                 .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to enable JSON support: {}", e))))?;
         }

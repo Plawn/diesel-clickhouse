@@ -15,6 +15,12 @@ use diesel_clickhouse::ConnectionBuilder;
 use diesel_clickhouse::{insert_into, update};
 use include_dir::include_dir;
 
+// JSON support (ClickHouse 25.11+)
+#[cfg(feature = "json")]
+use diesel_clickhouse::types::JsonTyped;
+#[cfg(feature = "json")]
+use serde::{Deserialize, Serialize};
+
 // =============================================================================
 // Embed migrations from the migrations folder at compile time
 // =============================================================================
@@ -43,6 +49,17 @@ diesel_clickhouse::table! {
         user_id -> UInt64,
         title -> CHString,
         content -> CHString,
+        created_at -> DateTime,
+    }
+}
+
+// Table with JSON column (ClickHouse 25.11+)
+#[cfg(feature = "json")]
+diesel_clickhouse::table! {
+    events (id, created_at) {
+        id -> UInt64,
+        event_type -> CHString,
+        metadata -> Json,
         created_at -> DateTime,
     }
 }
@@ -88,6 +105,41 @@ pub struct User {
     pub active: bool,
     #[cfg_attr(feature = "http", serde(with = "clickhouse::serde::chrono::datetime"))]
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+// =============================================================================
+// JSON types (ClickHouse 25.11+)
+// =============================================================================
+
+/// Define your JSON schema as a Rust struct
+#[cfg(feature = "json")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventMetadata {
+    pub action: String,
+    pub user_agent: String,
+    pub tags: Vec<String>,
+}
+
+/// For inserting events with typed JSON metadata
+#[cfg(feature = "json")]
+#[row]
+#[derive(Debug, Clone, diesel_clickhouse::Insertable)]
+#[diesel_clickhouse(table = events)]
+pub struct NewEvent {
+    pub id: u64,
+    pub event_type: String,
+    pub metadata: JsonTyped<EventMetadata>,
+}
+
+/// For querying events - JsonTyped<T> implements Deref for direct field access.
+/// The table! macro automatically handles CAST for JSON columns.
+#[cfg(feature = "json")]
+#[row]
+#[derive(Debug, Clone, diesel_clickhouse::Queryable)]
+pub struct Event {
+    pub id: u64,
+    pub event_type: String,
+    pub metadata: JsonTyped<EventMetadata>,
 }
 
 // =============================================================================
@@ -432,6 +484,128 @@ async fn main() -> anyhow::Result<()> {
             },
         )
         .await?;
+
+    // =========================================================================
+    // JSON Column Support (ClickHouse 25.11+)
+    // =========================================================================
+    #[cfg(feature = "json")]
+    {
+        println!("\n\n=== JSON Column Demo (ClickHouse 25.11+) ===\n");
+
+        // Drop and recreate the events table with a JSON column
+        // (ensures clean schema for the demo)
+        native_conn.execute("DROP TABLE IF EXISTS events").await?;
+        native_conn
+            .execute(
+                "CREATE TABLE events (
+                    id UInt64,
+                    event_type String,
+                    metadata JSON,
+                    created_at DateTime DEFAULT now()
+                ) ENGINE = MergeTree()
+                ORDER BY (id, created_at)",
+            )
+            .await?;
+
+        // Insert events with typed JSON metadata using the API
+        let new_events = vec![
+            NewEvent {
+                id: 1,
+                event_type: "page_view".into(),
+                metadata: JsonTyped::new(EventMetadata {
+                    action: "view".into(),
+                    user_agent: "Mozilla/5.0".into(),
+                    tags: vec!["homepage".into(), "organic".into()],
+                }),
+            },
+            NewEvent {
+                id: 2,
+                event_type: "button_click".into(),
+                metadata: JsonTyped::new(EventMetadata {
+                    action: "click".into(),
+                    user_agent: "Chrome/120".into(),
+                    tags: vec!["cta".into(), "signup".into()],
+                }),
+            },
+            NewEvent {
+                id: 3,
+                event_type: "form_submit".into(),
+                metadata: JsonTyped::new(EventMetadata {
+                    action: "submit".into(),
+                    user_agent: "Safari/17".into(),
+                    tags: vec!["contact".into(), "lead".into()],
+                }),
+            },
+        ];
+
+        // Use SQL-based insert for JSON columns (Block API doesn't support JSON)
+        native_conn
+            .insert_sql(events::table, new_events.as_slice())
+            .await?;
+        println!("Inserted {} events with JSON metadata", new_events.len());
+
+        // Query events with typed JSON - JsonTyped<T> implements Deref for direct field access!
+        // The table! macro automatically adds CAST(metadata AS String) for JSON columns
+        let loaded_events: Vec<Event> = events::table
+            .select((events::id, events::event_type, events::metadata))
+            .load(&native_conn)
+            .await?;
+
+        println!("\nLoaded events with typed JSON:");
+        for event in &loaded_events {
+            // Direct field access via Deref - no need for .0 or .into_inner()!
+            println!(
+                "  Event {}: {} - action='{}', user_agent='{}', tags={:?}",
+                event.id,
+                event.event_type,
+                event.metadata.action,      // Direct access!
+                event.metadata.user_agent,  // Direct access!
+                event.metadata.tags         // Direct access!
+            );
+        }
+
+        // Filter by event type
+        let click_events: Vec<Event> = events::table
+            .select((events::id, events::event_type, events::metadata))
+            .filter(events::event_type.eq("button_click"))
+            .load(&native_conn)
+            .await?;
+        println!(
+            "\nButton click events: {} (tags: {:?})",
+            click_events.len(),
+            click_events.first().map(|e| &e.metadata.tags)
+        );
+
+        // You can also use serde_json::Value for dynamic JSON
+        // (useful when the JSON structure varies)
+        #[row]
+        #[derive(Debug, Clone, diesel_clickhouse::Queryable)]
+        struct EventDynamic {
+            id: u64,
+            event_type: String,
+            metadata: serde_json::Value,
+        }
+
+        let dynamic_events: Vec<EventDynamic> = events::table
+            .select((events::id, events::event_type, events::metadata))
+            .load(&native_conn)
+            .await?;
+        println!("\nDynamic JSON access:");
+        for event in &dynamic_events {
+            if let Some(action) = event.metadata.get("action") {
+                println!("  Event {}: action = {}", event.id, action);
+            }
+        }
+
+        // Cleanup events table
+        native_conn.execute("DROP TABLE IF EXISTS events").await?;
+        println!("\nJSON demo complete!");
+    }
+
+    #[cfg(not(feature = "json"))]
+    {
+        println!("\n(JSON demo skipped - enable with: --features json)");
+    }
 
     // Cleanup
     http_conn.execute("TRUNCATE TABLE posts").await?;

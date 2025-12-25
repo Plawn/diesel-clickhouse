@@ -88,7 +88,7 @@ pub mod prelude {
         // Temporal
         Date, Date32, DateTime, DateTime64,
         // Complex
-        Array, Map, Tuple, Nested, LowCardinality, Enum8, Enum16,
+        Array, Map, Tuple, Nested, LowCardinality, Enum8, Enum16, Json,
         // Nullable
         Nullable,
     };

@@ -160,11 +160,26 @@ impl NativeConnection {
     }
 
     /// Get a client handle from the pool.
+    ///
+    /// When the `json` feature is enabled, this automatically applies the
+    /// `output_format_native_write_json_as_string` setting to ensure JSON
+    /// columns are serialized as strings.
     pub async fn get_handle(&self) -> QueryResult<ClientHandle> {
-        self.pool
+        let mut handle = self.pool
             .get_handle()
             .await
-            .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to get handle: {}", e))))
+            .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to get handle: {}", e))))?;
+
+        // Apply JSON-as-string setting for each new handle
+        #[cfg(feature = "json")]
+        {
+            handle
+                .execute("SET output_format_native_write_json_as_string = 1")
+                .await
+                .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to enable JSON support: {}", e))))?;
+        }
+
+        Ok(handle)
     }
 
     /// Enable JSON-as-string mode for ClickHouse 24.10+ JSON type support.
@@ -329,6 +344,47 @@ impl NativeConnection {
         }
         let block = T::rows_into_block(rows)?;
         self.insert(table, block).await
+    }
+
+    /// Insert rows using SQL-based INSERT statement.
+    ///
+    /// This method is useful for tables with JSON columns, as the Block-based
+    /// insert doesn't work with JSON columns in clickhouse-rs.
+    ///
+    /// The row type must implement `Insertable` which provides column names
+    /// and SQL value serialization.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[row]
+    /// #[derive(Insertable)]
+    /// #[diesel_clickhouse(table = events)]
+    /// struct NewEvent {
+    ///     id: u64,
+    ///     event_type: String,
+    ///     metadata: JsonTyped<EventMetadata>,
+    /// }
+    ///
+    /// conn.insert_sql("events", &events).await?;
+    /// ```
+    pub async fn insert_sql<T, Tab>(&self, _table: Tab, rows: &[T]) -> QueryResult<()>
+    where
+        Tab: crate::core::query_source::Table + Default,
+        T: crate::core::query_builder::Insertable<Tab> + Send + Sync,
+    {
+        use crate::core::query_builder::insert_into;
+
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        // Build INSERT statement with interpolated values
+        let insert = insert_into(Tab::default()).values(rows);
+        let compiled = crate::core::sql_builder::compile_query(&insert)?;
+        let sql = compiled.to_interpolated_sql()?;
+
+        self.execute_raw(&sql).await
     }
 }
 

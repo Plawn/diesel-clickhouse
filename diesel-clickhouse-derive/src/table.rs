@@ -29,6 +29,23 @@ struct ColumnDefinition {
     sql_type: Type,
 }
 
+/// Check if a type is the Json SQL type.
+/// This is used to automatically CAST JSON columns to String in queries
+/// because clickhouse-rs and clickhouse crates don't support JSON type directly.
+fn is_json_type(ty: &Type) -> bool {
+    match ty {
+        Type::Path(type_path) => {
+            // Check if the last segment is "Json"
+            if let Some(segment) = type_path.path.segments.last() {
+                segment.ident == "Json"
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
 impl Parse for TableDefinition {
     fn parse(input: ParseStream) -> Result<Self> {
         // Parse optional attributes like #[engine = MergeTree]
@@ -103,6 +120,35 @@ pub fn table_impl(input: TokenStream) -> TokenStream {
         let col_name_str = col_name.to_string();
         let sql_type = &col.sql_type;
 
+        // Check if this is a JSON column - if so, we need to CAST to String in queries
+        // because clickhouse-rs and clickhouse crates don't support JSON type directly
+        let is_json = is_json_type(sql_type);
+
+        let query_fragment_impl = if is_json {
+            // For JSON columns, emit CAST(column AS String) AS column to work around client limitations
+            // The alias ensures the column name is preserved for deserialization
+            quote! {
+                impl<DB: diesel_clickhouse_core::backend::Backend> diesel_clickhouse_core::query_builder::QueryFragment<DB> for #col_name {
+                    fn walk_ast<'b>(&'b self, mut pass: diesel_clickhouse_core::query_builder::AstPass<'_, 'b, DB>) -> diesel_clickhouse_core::result::QueryResult<()> {
+                        pass.push_sql("CAST(");
+                        pass.push_identifier(#col_name_str);
+                        pass.push_sql(" AS String) AS ");
+                        pass.push_identifier(#col_name_str);
+                        Ok(())
+                    }
+                }
+            }
+        } else {
+            quote! {
+                impl<DB: diesel_clickhouse_core::backend::Backend> diesel_clickhouse_core::query_builder::QueryFragment<DB> for #col_name {
+                    fn walk_ast<'b>(&'b self, mut pass: diesel_clickhouse_core::query_builder::AstPass<'_, 'b, DB>) -> diesel_clickhouse_core::result::QueryResult<()> {
+                        pass.push_identifier(#col_name_str);
+                        Ok(())
+                    }
+                }
+            }
+        };
+
         quote! {
             /// Column `#col_name_str`.
             #[allow(non_camel_case_types)]
@@ -124,12 +170,7 @@ pub fn table_impl(input: TokenStream) -> TokenStream {
             impl diesel_clickhouse_core::expression::SelectableExpression<table> for #col_name {}
             impl diesel_clickhouse_core::expression::AppearsOnTable<table> for #col_name {}
 
-            impl<DB: diesel_clickhouse_core::backend::Backend> diesel_clickhouse_core::query_builder::QueryFragment<DB> for #col_name {
-                fn walk_ast<'b>(&'b self, mut pass: diesel_clickhouse_core::query_builder::AstPass<'_, 'b, DB>) -> diesel_clickhouse_core::result::QueryResult<()> {
-                    pass.push_identifier(#col_name_str);
-                    Ok(())
-                }
-            }
+            #query_fragment_impl
 
             // Note: ExpressionMethods is implemented via blanket impl in diesel_clickhouse_core
         }

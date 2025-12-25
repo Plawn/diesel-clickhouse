@@ -54,6 +54,7 @@ http = ["diesel-clickhouse/http"]
 native = ["diesel-clickhouse/native", "diesel-clickhouse/chrono", "dep:clickhouse-rs"]
 migrations = ["diesel-clickhouse/migrations"]
 arrow = ["diesel-clickhouse/arrow"]
+json = ["diesel-clickhouse/json"]
 
 [dependencies]
 diesel-clickhouse = { path = "diesel-clickhouse", default-features = false, features = ["migrations"] }
