@@ -74,9 +74,11 @@ pub struct NewPost {
     pub content: String,
 }
 
-/// For querying users - #[row] generates optimized binary deserialization
+
+/// For querying users - #[typed_row] generates optimized binary deserialization
+/// AND compile-time type verification against the table schema.
 /// Note: For DateTime, we use Utc with the clickhouse serde helper for HTTP compatibility.
-#[row]
+#[typed_row(table = users)]
 #[derive(Debug, Clone)]
 pub struct User {
     pub id: u64,
@@ -202,8 +204,10 @@ async fn main() -> anyhow::Result<()> {
     println!("Unknown user: {:?}", maybe_user);
 
     // JOIN - users with their posts (one row per post)
+    // For custom SELECT projections, use #[derive(Queryable)] with select attribute
     #[row]
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, diesel_clickhouse::Queryable)]
+    #[diesel_clickhouse(select = (CHString, CHString))]
     struct UserWithPost {
         name: String,
         title: String,
@@ -224,7 +228,8 @@ async fn main() -> anyhow::Result<()> {
     // Use .alias() to give explicit names to aggregate columns.
     // This ensures column names are consistent across both HTTP and Native backends.
     #[row]
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, diesel_clickhouse::Queryable)]
+    #[diesel_clickhouse(select = (UInt64, CHString, Array<CHString>, UInt64))]
     struct UserWithPosts {
         id: u64,
         name: String,

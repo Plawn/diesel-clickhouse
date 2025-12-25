@@ -725,17 +725,44 @@ pub fn derive_row(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Derive `Queryable` for deserializing query results.
+/// Derive `Queryable` for deserializing query results with compile-time type verification.
 ///
-/// # Example
+/// # For full table queries
+///
+/// Use `#[diesel_clickhouse(table = table_name)]` when your struct matches all columns:
 ///
 /// ```rust,ignore
 /// #[derive(Queryable)]
+/// #[diesel_clickhouse(table = users)]
 /// struct User {
 ///     id: u64,
 ///     name: String,
 ///     email: Option<String>,
 /// }
+///
+/// // Compile-time verified!
+/// let users: Vec<User> = users::table.load(&conn).await?;
+/// ```
+///
+/// # For custom SELECT projections
+///
+/// Use `#[diesel_clickhouse(select = (Type1, Type2, ...))]` for custom column selections:
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::types::*;
+///
+/// #[derive(Queryable)]
+/// #[diesel_clickhouse(select = (CHString, CHString))]
+/// struct UserSummary {
+///     name: String,
+///     email: String,
+/// }
+///
+/// // Compile-time verified!
+/// let summaries: Vec<UserSummary> = users::table
+///     .select((users::name, users::email))
+///     .load(&conn)
+///     .await?;
 /// ```
 #[proc_macro_derive(Queryable, attributes(diesel_clickhouse, column_name))]
 pub fn derive_queryable(input: TokenStream) -> TokenStream {
@@ -750,6 +777,7 @@ pub fn derive_queryable(input: TokenStream) -> TokenStream {
     };
 
     let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
+    let field_types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
     let field_names_str: Vec<_> = fields.iter()
         .map(|f| get_column_name(f).unwrap_or_else(|| {
             f.ident.as_ref()
@@ -758,18 +786,119 @@ pub fn derive_queryable(input: TokenStream) -> TokenStream {
         }))
         .collect();
 
-    let expanded = quote! {
-        impl #impl_generics diesel_clickhouse::deserialize::FromRow for #name #ty_generics #where_clause {
-            fn from_row(row: &dyn diesel_clickhouse::result::Row) -> diesel_clickhouse::result::QueryResult<Self> {
-                let fields = diesel_clickhouse::deserialize::RowFields::new(row);
-                Ok(Self {
-                    #(#field_names: fields.get(#field_names_str)?,)*
-                })
+    // Check for table or select attribute
+    let queryable_impl = get_queryable_attribute(&input.attrs);
+    let has_queryable_attr = queryable_impl.is_some();
+
+    // Generate field indices for Queryable::build
+    let field_indices: Vec<syn::Index> = (0..field_names.len())
+        .map(syn::Index::from)
+        .collect();
+
+    let queryable_impl_tokens = match queryable_impl {
+        Some(QueryableAttr::Table(table_path)) => {
+            quote! {
+                impl ::diesel_clickhouse::core::deserialize::Queryable<
+                    <#table_path::table as ::diesel_clickhouse::core::query_source::Table>::AllColumnsSqlType
+                > for #name {
+                    type Row = (#(#field_types,)*);
+
+                    fn build(row: Self::Row) -> ::diesel_clickhouse::core::result::QueryResult<Self> {
+                        Ok(Self {
+                            #(#field_names: row.#field_indices,)*
+                        })
+                    }
+                }
             }
+        }
+        Some(QueryableAttr::Select(select_types)) => {
+            quote! {
+                impl ::diesel_clickhouse::core::deserialize::Queryable<#select_types> for #name {
+                    type Row = (#(#field_types,)*);
+
+                    fn build(row: Self::Row) -> ::diesel_clickhouse::core::result::QueryResult<Self> {
+                        Ok(Self {
+                            #(#field_names: row.#field_indices,)*
+                        })
+                    }
+                }
+            }
+        }
+        None => {
+            // No table or select attribute - just generate FromRow (backward compatible)
+            quote! {}
         }
     };
 
+    // Only generate FromRow if no select/table attribute (backward compatible mode)
+    let from_row_impl = if !has_queryable_attr {
+        quote! {
+            impl #impl_generics diesel_clickhouse::deserialize::FromRow for #name #ty_generics #where_clause {
+                fn from_row(row: &dyn diesel_clickhouse::result::Row) -> diesel_clickhouse::result::QueryResult<Self> {
+                    let fields = diesel_clickhouse::deserialize::RowFields::new(row);
+                    Ok(Self {
+                        #(#field_names: fields.get(#field_names_str)?,)*
+                    })
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let expanded = quote! {
+        #from_row_impl
+        #queryable_impl_tokens
+    };
+
     TokenStream::from(expanded)
+}
+
+/// Parsed attribute for Queryable derive
+enum QueryableAttr {
+    Table(syn::Path),
+    Select(syn::Type),
+}
+
+/// Custom parser for select = (Type1, Type2<Generic>, ...)
+struct SelectAttr {
+    types: syn::Type,
+}
+
+impl Parse for SelectAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let ident: Ident = input.parse()?;
+        if ident != "select" {
+            return Err(syn::Error::new(ident.span(), "expected `select`"));
+        }
+        input.parse::<Token![=]>()?;
+        let types: syn::Type = input.parse()?;
+        Ok(SelectAttr { types })
+    }
+}
+
+/// Parse #[diesel_clickhouse(table = ...)] or #[diesel_clickhouse(select = (...))]
+fn get_queryable_attribute(attrs: &[Attribute]) -> Option<QueryableAttr> {
+    for attr in attrs {
+        if attr.path().is_ident("diesel_clickhouse") {
+            // First try to parse as select = (types)
+            if let Ok(select_attr) = attr.parse_args::<SelectAttr>() {
+                return Some(QueryableAttr::Select(select_attr.types));
+            }
+
+            // Then try to parse as table = path
+            if let Ok(nested) = attr.parse_args::<syn::Meta>() {
+                if let syn::Meta::NameValue(nv) = &nested {
+                    if nv.path.is_ident("table") {
+                        if let syn::Expr::Path(expr_path) = &nv.value {
+                            return Some(QueryableAttr::Table(expr_path.path.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Derive `Insertable` for serializing rows for insertion.

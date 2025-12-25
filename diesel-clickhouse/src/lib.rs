@@ -174,10 +174,11 @@ pub mod prelude {
     #[cfg(any(feature = "http", feature = "native"))]
     pub use crate::Connection;
 
-    // RunQueryDsl for idiomatic query execution (.load(), .first(), .execute() for UPDATE/DELETE)
+    // RunQueryDsl for idiomatic query execution (.load(), .first(), .get_result())
+    // ExecuteDsl for mutation statements (.execute() for UPDATE/DELETE)
     // InsertDsl for optimized INSERT execution (.insert() uses binary formats)
     #[cfg(any(feature = "http", feature = "native"))]
-    pub use crate::{RunQueryDsl, InsertDsl};
+    pub use crate::{RunQueryDsl, ExecuteDsl, InsertDsl};
 
     // Unified row traits
     #[cfg(any(feature = "http", feature = "native"))]
@@ -324,7 +325,7 @@ pub use unified::Connection;
 mod run_query_dsl;
 
 #[cfg(any(feature = "http", feature = "native"))]
-pub use run_query_dsl::{RunQueryDsl, InsertDsl};
+pub use run_query_dsl::{RunQueryDsl, InsertDsl, ExecuteDsl};
 
 /// Unified streaming interface for query results.
 ///

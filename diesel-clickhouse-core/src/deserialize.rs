@@ -12,11 +12,21 @@ pub trait FromRow: Sized {
 }
 
 /// Trait for types that can be queried with a specific SQL type.
+///
+/// This trait is used for compile-time verification that a struct type
+/// matches a query's output columns. The actual deserialization is done
+/// by backend-specific mechanisms (`clickhouse::Row` for HTTP, `FromNativeBlock`
+/// for Native), not by `FromRow`.
 pub trait Queryable<ST: SqlType>: Sized {
     /// The intermediate row type.
-    type Row: FromRow;
+    ///
+    /// For structs marked with `#[typed_row(table = xxx)]`, this is a tuple
+    /// of the field types. This is only used for compile-time type verification.
+    type Row;
 
     /// Build self from the row type.
+    ///
+    /// This method is used to construct the struct from its row representation.
     fn build(row: Self::Row) -> QueryResult<Self>;
 }
 
