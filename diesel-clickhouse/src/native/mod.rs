@@ -615,58 +615,23 @@ impl ClickHouseConnectionTrait for NativeConnection {
 // Helper Functions
 // =============================================================================
 
-// Re-export build_sql from core
-pub use crate::core::sql_builder::build_sql;
-
-use crate::core::sql_builder::BindableValue;
+// Re-export from core
+pub use crate::core::sql_builder::{build_sql, CompiledQuery, compile_query};
 
 /// Build SQL from a QueryFragment with bind values interpolated inline.
 ///
 /// This is required for the native backend since clickhouse-rs doesn't support
 /// bind parameters like the HTTP backend does. All `?` placeholders are replaced
 /// with their actual SQL literal values.
-pub fn build_sql_interpolated<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
-    let (sql, bindings) = crate::core::sql_builder::build_sql_with_bindings(fragment)?;
-    interpolate_bindings(&sql, &bindings)
-}
-
-/// Replace `?` placeholders in SQL with actual bind values.
 ///
-/// Optimized to avoid per-binding allocations by writing directly to the output buffer.
-fn interpolate_bindings(sql: &str, bindings: &[BindableValue]) -> QueryResult<String> {
-    // Estimate capacity: original SQL + ~12 bytes per binding (average literal size)
-    let mut result = String::with_capacity(sql.len() + bindings.len() * 12);
-    let mut bindings_iter = bindings.iter();
-
-    // Split by '?' and interleave with binding literals
-    let mut segments = sql.split('?');
-
-    // First segment (before any '?')
-    if let Some(first) = segments.next() {
-        result.push_str(first);
-    }
-
-    // Remaining segments - each is preceded by a '?' that needs a binding
-    for segment in segments {
-        match bindings_iter.next() {
-            Some(binding) => binding.write_sql_literal(&mut result),
-            None => {
-                return Err(Error::QueryError(Cow::Borrowed(
-                    "Not enough bind values for query placeholders"
-                )));
-            }
-        }
-        result.push_str(segment);
-    }
-
-    // Check for unused bindings
-    if bindings_iter.next().is_some() {
-        return Err(Error::QueryError(Cow::Borrowed(
-            "Too many bind values for query placeholders"
-        )));
-    }
-
-    Ok(result)
+/// # Example
+///
+/// ```rust,ignore
+/// let sql = build_sql_interpolated(&users::table.filter(users::id.eq(42)))?;
+/// // sql: "SELECT * FROM `users` WHERE `id` = 42"
+/// ```
+pub fn build_sql_interpolated<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
+    compile_query(fragment)?.to_interpolated_sql()
 }
 
 // =============================================================================

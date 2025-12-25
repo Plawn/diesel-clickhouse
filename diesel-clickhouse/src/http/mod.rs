@@ -35,7 +35,7 @@ use crate::core::result::{Error, QueryResult};
 
 // Re-export submodule items
 pub use builder::HttpClientBuilder;
-pub use sql::{build_sql, build_sql_native, BindableValue, NativeCompiledQuery};
+pub use sql::{build_sql, build_sql_native, BindableValue, NativeCompiledQuery, CompiledQuery, CompiledQueryExt, compile_query};
 
 // Re-export clickhouse Row for convenience (for users who need direct clickhouse crate access)
 pub use clickhouse::Row as NativeClickHouseRow;
