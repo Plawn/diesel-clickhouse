@@ -926,6 +926,30 @@ fn get_queryable_attribute(attrs: &[Attribute]) -> Option<QueryableAttr> {
 /// let query = insert_into(events::table).values(&new_event);
 /// // Generates: INSERT INTO events (id, user_id, event_type) VALUES (1, 42, 'hello')
 /// ```
+/// Check if a type looks like a JSON type (JsonTyped<T> or serde_json::Value).
+fn is_json_type(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(type_path) => {
+            let path = &type_path.path;
+            // Check last segment name
+            if let Some(segment) = path.segments.last() {
+                let name = segment.ident.to_string();
+                // Match JsonTyped or Value (from serde_json)
+                if name == "JsonTyped" || name == "Value" {
+                    return true;
+                }
+            }
+            // Check for full path like serde_json::Value
+            let full_path: String = path.segments.iter()
+                .map(|s| s.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::");
+            full_path.contains("serde_json") && full_path.contains("Value")
+        }
+        _ => false,
+    }
+}
+
 #[proc_macro_derive(Insertable, attributes(diesel_clickhouse, column_name))]
 pub fn derive_insertable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -943,6 +967,9 @@ pub fn derive_insertable(input: TokenStream) -> TokenStream {
         Ok(fields) => fields,
         Err(err) => return err,
     };
+
+    // Check if any field is a JSON type
+    let has_json_fields = fields.iter().any(|f| is_json_type(&f.ty));
 
     let column_names: Vec<String> = fields.iter()
         .map(|f| get_column_name(f).unwrap_or_else(|| {
@@ -986,6 +1013,8 @@ pub fn derive_insertable(input: TokenStream) -> TokenStream {
         }
 
         impl #impl_generics diesel_clickhouse::query_builder::Insertable<#table_path::table> for #name #ty_generics #where_clause {
+            const REQUIRES_SQL_INSERT: bool = #has_json_fields;
+
             fn column_names() -> &'static [&'static str] {
                 static COLUMNS: [&str; #column_count] = [#(#column_names_array),*];
                 &COLUMNS

@@ -309,48 +309,6 @@ impl Connection {
         with_connection!(self, |conn| conn.execute_statement(&query).await)
     }
 
-    /// Insert rows using SQL-based INSERT statement.
-    ///
-    /// This method generates an INSERT INTO ... VALUES ... statement and
-    /// executes it. It's useful for tables with JSON columns, as the Block-based
-    /// insert doesn't work with JSON columns in clickhouse-rs.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use diesel_clickhouse::prelude::*;
-    ///
-    /// #[row]
-    /// #[derive(Insertable)]
-    /// #[diesel_clickhouse(table = events)]
-    /// struct NewEvent {
-    ///     id: u64,
-    ///     event_type: String,
-    ///     metadata: JsonTyped<EventMetadata>,
-    /// }
-    ///
-    /// let events = vec![...];
-    /// conn.insert_sql(events::table, &events).await?;
-    /// ```
-    pub async fn insert_sql<T, Tab>(&self, table: Tab, rows: &[T]) -> QueryResult<()>
-    where
-        Tab: crate::Table + Default,
-        T: crate::core::query_builder::Insertable<Tab> + Send + Sync,
-    {
-        use crate::core::query_builder::insert_into;
-
-        if rows.is_empty() {
-            return Ok(());
-        }
-
-        // Build INSERT statement with interpolated values
-        let insert = insert_into(table).values(rows);
-        let compiled = crate::core::sql_builder::compile_query(&insert)?;
-        let sql = compiled.to_interpolated_sql()?;
-
-        self.execute(&sql).await
-    }
-
     /// Build SQL from a query fragment without executing.
     ///
     /// Useful for debugging or logging queries.

@@ -29,6 +29,15 @@ impl<T: Table, V> InsertStatement<T, V> {
     }
 }
 
+impl<T: Table, V: InsertValues<T>> InsertStatement<T, V> {
+    /// Whether this insert requires SQL-based insert instead of binary protocols.
+    ///
+    /// Returns `true` for types containing JSON fields.
+    pub const fn requires_sql_insert(&self) -> bool {
+        V::REQUIRES_SQL_INSERT
+    }
+}
+
 /// Start building an INSERT statement.
 pub fn insert_into<T: Table>(_table: T) -> InsertInto<T> {
     InsertInto {
@@ -64,6 +73,16 @@ impl<T: Table> InsertInto<T> {
 
 /// Trait for a single insertable row.
 pub trait Insertable<T: Table>: Sized {
+    /// Whether this type requires SQL-based insert instead of binary protocols.
+    ///
+    /// This is `true` for types containing JSON fields, as the Native backend's
+    /// Block API doesn't support JSON columns. When `true`, the insert will use
+    /// SQL-based insert with value interpolation instead of binary formats.
+    ///
+    /// Default is `false`. The derive macro sets this to `true` when JSON fields
+    /// are detected.
+    const REQUIRES_SQL_INSERT: bool = false;
+
     /// Get the column names for this insert.
     fn column_names() -> &'static [&'static str];
 
@@ -78,6 +97,9 @@ pub trait Insertable<T: Table>: Sized {
 /// - `&[R]` where `R: Insertable<T>` (multiple rows)
 /// - `&Vec<R>` where `R: Insertable<T>` (multiple rows)
 pub trait InsertValues<T: Table> {
+    /// Whether this type requires SQL-based insert instead of binary protocols.
+    const REQUIRES_SQL_INSERT: bool = false;
+
     /// Get the column names for this insert.
     fn column_names(&self) -> &'static [&'static str];
 
@@ -87,6 +109,8 @@ pub trait InsertValues<T: Table> {
 
 // Single row insertion (reference to Insertable)
 impl<T: Table, R: Insertable<T>> InsertValues<T> for &R {
+    const REQUIRES_SQL_INSERT: bool = R::REQUIRES_SQL_INSERT;
+
     fn column_names(&self) -> &'static [&'static str] {
         R::column_names()
     }
@@ -101,6 +125,8 @@ impl<T: Table, R: Insertable<T>> InsertValues<T> for &R {
 
 // Slice of rows insertion
 impl<T: Table, R: Insertable<T>> InsertValues<T> for &[R] {
+    const REQUIRES_SQL_INSERT: bool = R::REQUIRES_SQL_INSERT;
+
     fn column_names(&self) -> &'static [&'static str] {
         R::column_names()
     }

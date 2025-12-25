@@ -332,7 +332,7 @@ where
 #[cfg(all(feature = "native", not(feature = "http")))]
 impl<T, R> InsertDsl for InsertStatement<T, &[R]>
 where
-    T: Table,
+    T: Table + Default,
     R: Insertable<T> + crate::native::ToNativeBlock + Send + Sync,
 {
     async fn insert(self, conn: &Connection) -> QueryResult<()> {
@@ -343,7 +343,16 @@ where
 
         match conn {
             Connection::Native(native_conn) => {
-                native_conn.insert_native(T::table_name(), rows).await
+                // Use SQL insert for types with JSON fields (Block API doesn't support JSON)
+                if R::REQUIRES_SQL_INSERT {
+                    use crate::core::query_builder::insert_into;
+                    let insert = insert_into(T::default()).values(rows);
+                    let compiled = crate::core::sql_builder::compile_query(&insert)?;
+                    let sql = compiled.to_interpolated_sql()?;
+                    native_conn.execute_raw(&sql).await
+                } else {
+                    native_conn.insert_native(T::table_name(), rows).await
+                }
             }
         }
     }
@@ -353,7 +362,7 @@ where
 #[cfg(all(feature = "http", feature = "native"))]
 impl<T, R> InsertDsl for InsertStatement<T, &[R]>
 where
-    T: Table,
+    T: Table + Default,
     R: Insertable<T> + clickhouse::RowOwned + clickhouse::RowWrite + crate::native::ToNativeBlock + Send + Sync,
 {
     async fn insert(self, conn: &Connection) -> QueryResult<()> {
@@ -377,7 +386,16 @@ where
                 Ok(())
             }
             Connection::Native(native_conn) => {
-                native_conn.insert_native(T::table_name(), rows).await
+                // Use SQL insert for types with JSON fields (Block API doesn't support JSON)
+                if R::REQUIRES_SQL_INSERT {
+                    use crate::core::query_builder::insert_into;
+                    let insert = insert_into(T::default()).values(rows);
+                    let compiled = crate::core::sql_builder::compile_query(&insert)?;
+                    let sql = compiled.to_interpolated_sql()?;
+                    native_conn.execute_raw(&sql).await
+                } else {
+                    native_conn.insert_native(T::table_name(), rows).await
+                }
             }
         }
     }

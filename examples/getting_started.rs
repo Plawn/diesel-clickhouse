@@ -538,9 +538,15 @@ async fn main() -> anyhow::Result<()> {
             },
         ];
 
-        // Use SQL-based insert for JSON columns (Block API doesn't support JSON)
-        native_conn
-            .insert_sql(events::table, new_events.as_slice())
+        // Insert JSON data using the standard insert pattern
+        // The InsertDsl automatically uses SQL-based insert for JSON columns
+        insert_into(events::table)
+            .values(new_events.as_slice())
+            .insert(&native_conn)
+            .await?;
+        insert_into(events::table)
+            .values(new_events.as_slice())
+            .insert(&http_conn)
             .await?;
         println!("Inserted {} events with JSON metadata", new_events.len());
 
