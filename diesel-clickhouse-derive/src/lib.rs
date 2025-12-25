@@ -436,6 +436,11 @@ pub fn typed_row(attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(syn::Index::from)
         .collect();
 
+    // Generate column name identifiers for compile-time verification
+    let column_idents: Vec<Ident> = column_names.iter()
+        .map(|name| format_ident!("{}", name))
+        .collect();
+
     let expanded = quote! {
         // Re-emit the struct with clickhouse::Row derive for HTTP backend
         #(#attrs)*
@@ -448,6 +453,18 @@ pub fn typed_row(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #field_vis #field_names: #field_types,
             )*
         }
+
+        // Compile-time verification that all field/column names exist in the table
+        // This will produce a clear compile error if a field name doesn't match a table column
+        const _: () = {
+            #[allow(unused)]
+            fn _verify_column_names_for_struct() {
+                // Each reference to table::column_name will fail if column doesn't exist
+                #(
+                    let _ = #table_path::#column_idents;
+                )*
+            }
+        };
 
         // Generate Queryable implementation for compile-time type checking
         impl ::diesel_clickhouse::core::deserialize::Queryable<

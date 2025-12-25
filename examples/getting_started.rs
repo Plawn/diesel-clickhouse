@@ -227,12 +227,18 @@ async fn main() -> anyhow::Result<()> {
     // JOIN with groupArray - accumulate posts per user
     // Use .alias() to give explicit names to aggregate columns.
     // This ensures column names are consistent across both HTTP and Native backends.
+    //
+    // For custom selects, use #[column_name("...")] to map struct fields to query column names.
+    // This generates serde(rename) for HTTP and uses the correct column name for Native backend.
+    // IMPORTANT: The column_name must match the .alias() in your query!
     #[row]
     #[derive(Debug, Clone, diesel_clickhouse::Queryable)]
     struct UserWithPosts {
         id: u64,
         name: String,
+        #[column_name("post_titles")]
         post_titles: Vec<String>,
+        #[column_name("post_count")]
         post_count: u64,
     }
 
@@ -240,7 +246,7 @@ async fn main() -> anyhow::Result<()> {
         .select((
             users::id,
             users::name,
-            group_array(posts::title).alias("post_title"),
+            group_array(posts::title).alias("post_titles"),
             count(posts::id).alias("post_count"),
         ))
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
