@@ -768,8 +768,6 @@ pub fn derive_row(input: TokenStream) -> TokenStream {
 pub fn derive_queryable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    let generics = &input.generics;
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let fields = match extract_named_fields(&input, "Queryable") {
         Ok(fields) => fields,
@@ -778,17 +776,9 @@ pub fn derive_queryable(input: TokenStream) -> TokenStream {
 
     let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
     let field_types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
-    let field_names_str: Vec<_> = fields.iter()
-        .map(|f| get_column_name(f).unwrap_or_else(|| {
-            f.ident.as_ref()
-                .expect("Named fields always have identifiers")
-                .to_string()
-        }))
-        .collect();
 
     // Check for table or select attribute
     let queryable_impl = get_queryable_attribute(&input.attrs);
-    let has_queryable_attr = queryable_impl.is_some();
 
     // Generate field indices for Queryable::build
     let field_indices: Vec<syn::Index> = (0..field_names.len())
@@ -797,6 +787,7 @@ pub fn derive_queryable(input: TokenStream) -> TokenStream {
 
     let queryable_impl_tokens = match queryable_impl {
         Some(QueryableAttr::Table(table_path)) => {
+            // Use table's AllColumnsSqlType
             quote! {
                 impl ::diesel_clickhouse::core::deserialize::Queryable<
                     <#table_path::table as ::diesel_clickhouse::core::query_source::Table>::AllColumnsSqlType
@@ -812,6 +803,7 @@ pub fn derive_queryable(input: TokenStream) -> TokenStream {
             }
         }
         Some(QueryableAttr::Select(select_types)) => {
+            // Use explicitly specified SQL types
             quote! {
                 impl ::diesel_clickhouse::core::deserialize::Queryable<#select_types> for #name {
                     type Row = (#(#field_types,)*);
@@ -825,29 +817,25 @@ pub fn derive_queryable(input: TokenStream) -> TokenStream {
             }
         }
         None => {
-            // No table or select attribute - just generate FromRow (backward compatible)
-            quote! {}
-        }
-    };
+            // No table or select attribute - automatically deduce SQL types from field types
+            // using HasSqlType trait: String -> CHString, u64 -> UInt64, Vec<T> -> Array<T::SqlType>, etc.
+            quote! {
+                impl ::diesel_clickhouse::core::deserialize::Queryable<(
+                    #(<#field_types as ::diesel_clickhouse::types::HasSqlType>::SqlType,)*
+                )> for #name {
+                    type Row = (#(#field_types,)*);
 
-    // Only generate FromRow if no select/table attribute (backward compatible mode)
-    let from_row_impl = if !has_queryable_attr {
-        quote! {
-            impl #impl_generics diesel_clickhouse::deserialize::FromRow for #name #ty_generics #where_clause {
-                fn from_row(row: &dyn diesel_clickhouse::result::Row) -> diesel_clickhouse::result::QueryResult<Self> {
-                    let fields = diesel_clickhouse::deserialize::RowFields::new(row);
-                    Ok(Self {
-                        #(#field_names: fields.get(#field_names_str)?,)*
-                    })
+                    fn build(row: Self::Row) -> ::diesel_clickhouse::core::result::QueryResult<Self> {
+                        Ok(Self {
+                            #(#field_names: row.#field_indices,)*
+                        })
+                    }
                 }
             }
         }
-    } else {
-        quote! {}
     };
 
     let expanded = quote! {
-        #from_row_impl
         #queryable_impl_tokens
     };
 

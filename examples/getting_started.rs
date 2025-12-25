@@ -204,10 +204,10 @@ async fn main() -> anyhow::Result<()> {
     println!("Unknown user: {:?}", maybe_user);
 
     // JOIN - users with their posts (one row per post)
-    // For custom SELECT projections, use #[derive(Queryable)] with select attribute
+    // SQL types are automatically deduced from Rust field types via HasSqlType trait:
+    //   String -> CHString, u64 -> UInt64, Vec<String> -> Array<CHString>, etc.
     #[row]
     #[derive(Debug, Clone, diesel_clickhouse::Queryable)]
-    #[diesel_clickhouse(select = (CHString, CHString))]
     struct UserWithPost {
         name: String,
         title: String,
@@ -229,7 +229,6 @@ async fn main() -> anyhow::Result<()> {
     // This ensures column names are consistent across both HTTP and Native backends.
     #[row]
     #[derive(Debug, Clone, diesel_clickhouse::Queryable)]
-    #[diesel_clickhouse(select = (UInt64, CHString, Array<CHString>, UInt64))]
     struct UserWithPosts {
         id: u64,
         name: String,
@@ -241,7 +240,7 @@ async fn main() -> anyhow::Result<()> {
         .select((
             users::id,
             users::name,
-            group_array(posts::title).alias("post_titles"),
+            group_array(posts::title).alias("post_title"),
             count(posts::id).alias("post_count"),
         ))
         .inner_join_on(posts::table, users::id.eq(posts::user_id))
