@@ -24,23 +24,8 @@
 //! assert_eq!(interner.resolve(id_sym), Some("id"));
 //! ```
 
-use std::sync::RwLock;
+use parking_lot::RwLock;
 use string_interner::{DefaultSymbol, StringInterner, DefaultBackend};
-
-/// Error type for interner operations.
-#[derive(Debug, Clone)]
-pub struct InternerError(String);
-
-impl std::fmt::Display for InternerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::error::Error for InternerError {}
-
-/// Result type for interner operations.
-pub type InternerResult<T> = Result<T, InternerError>;
 
 /// A symbol representing an interned string.
 ///
@@ -52,6 +37,12 @@ pub type Symbol = DefaultSymbol;
 ///
 /// This interner stores unique strings once and returns symbols
 /// that can be used for fast comparison and lookup.
+///
+/// Uses `parking_lot::RwLock` for better performance under contention
+/// compared to `std::sync::RwLock`. parking_lot provides:
+/// - Faster lock acquisition (no syscall for uncontended locks)
+/// - Fair scheduling to prevent writer starvation
+/// - No lock poisoning (panics don't leave locks in broken state)
 pub struct ColumnInterner {
     inner: RwLock<StringInterner<DefaultBackend>>,
 }
@@ -75,88 +66,63 @@ impl ColumnInterner {
     ///
     /// If the string was already interned, returns the existing symbol.
     /// Otherwise, stores the string and returns a new symbol.
-    ///
-    /// Returns an error if the internal RwLock is poisoned.
     #[inline]
-    pub fn intern(&self, s: &str) -> InternerResult<Symbol> {
+    pub fn intern(&self, s: &str) -> Symbol {
         // Fast path: check if already interned (read lock)
         {
-            let interner = self.inner.read()
-                .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
+            let interner = self.inner.read();
             if let Some(sym) = interner.get(s) {
-                return Ok(sym);
+                return sym;
             }
         }
 
         // Slow path: intern the string (write lock)
-        let mut interner = self.inner.write()
-            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
-        Ok(interner.get_or_intern(s))
+        let mut interner = self.inner.write();
+        interner.get_or_intern(s)
     }
 
     /// Get the symbol for a string if it was already interned.
     ///
-    /// Returns `Ok(None)` if the string has not been interned.
-    /// Returns an error if the internal RwLock is poisoned.
+    /// Returns `None` if the string has not been interned.
     #[inline]
-    pub fn get(&self, s: &str) -> InternerResult<Option<Symbol>> {
-        let interner = self.inner.read()
-            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
-        Ok(interner.get(s))
+    pub fn get(&self, s: &str) -> Option<Symbol> {
+        self.inner.read().get(s)
     }
 
     /// Resolve a symbol back to its string.
     ///
-    /// Returns `Ok(None)` if the symbol is invalid.
-    /// Returns an error if the internal RwLock is poisoned.
+    /// Returns `None` if the symbol is invalid.
     #[inline]
-    pub fn resolve(&self, sym: Symbol) -> InternerResult<Option<String>> {
-        let interner = self.inner.read()
-            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
-        Ok(interner.resolve(sym).map(|s| s.to_owned()))
+    pub fn resolve(&self, sym: Symbol) -> Option<String> {
+        self.inner.read().resolve(sym).map(|s| s.to_owned())
     }
 
     /// Resolve a symbol, returning a reference via a closure.
     ///
     /// This avoids allocating a new string.
-    ///
-    /// Returns an error if the internal RwLock is poisoned.
     #[inline]
-    pub fn with_resolved<F, R>(&self, sym: Symbol, f: F) -> InternerResult<Option<R>>
+    pub fn with_resolved<F, R>(&self, sym: Symbol, f: F) -> Option<R>
     where
         F: FnOnce(&str) -> R,
     {
-        let interner = self.inner.read()
-            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
-        Ok(interner.resolve(sym).map(f))
+        self.inner.read().resolve(sym).map(f)
     }
 
     /// Get the number of interned strings.
-    ///
-    /// Returns an error if the internal RwLock is poisoned.
-    pub fn len(&self) -> InternerResult<usize> {
-        let interner = self.inner.read()
-            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
-        Ok(interner.len())
+    pub fn len(&self) -> usize {
+        self.inner.read().len()
     }
 
     /// Check if the interner is empty.
-    ///
-    /// Returns an error if the internal RwLock is poisoned.
-    pub fn is_empty(&self) -> InternerResult<bool> {
-        Ok(self.len()? == 0)
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Clear all interned strings.
     ///
     /// Warning: This invalidates all existing symbols!
-    ///
-    /// Returns an error if the internal RwLock is poisoned.
-    pub fn clear(&self) -> InternerResult<()> {
-        let mut interner = self.inner.write()
-            .map_err(|e| InternerError(format!("ColumnInterner RwLock poisoned: {}", e)))?;
-        *interner = StringInterner::<DefaultBackend>::new();
-        Ok(())
+    pub fn clear(&self) {
+        *self.inner.write() = StringInterner::<DefaultBackend>::new();
     }
 }
 
@@ -168,9 +134,8 @@ impl Default for ColumnInterner {
 
 impl std::fmt::Debug for ColumnInterner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let len = self.len().unwrap_or(0);
         f.debug_struct("ColumnInterner")
-            .field("len", &len)
+            .field("len", &self.len())
             .finish()
     }
 }
@@ -190,7 +155,7 @@ pub fn global_interner() -> &'static ColumnInterner {
 ///
 /// Convenience function equivalent to `global_interner().intern(s)`.
 #[inline]
-pub fn intern(s: &str) -> InternerResult<Symbol> {
+pub fn intern(s: &str) -> Symbol {
     global_interner().intern(s)
 }
 
@@ -198,7 +163,7 @@ pub fn intern(s: &str) -> InternerResult<Symbol> {
 ///
 /// Convenience function equivalent to `global_interner().resolve(sym)`.
 #[inline]
-pub fn resolve(sym: Symbol) -> InternerResult<Option<String>> {
+pub fn resolve(sym: Symbol) -> Option<String> {
     global_interner().resolve(sym)
 }
 
@@ -214,27 +179,17 @@ pub struct InternedSchema {
 
 impl InternedSchema {
     /// Create a new interned schema from column names.
-    ///
-    /// Returns an error if any interning operation fails.
-    pub fn new(column_names: &[&str]) -> InternerResult<Self> {
+    pub fn new(column_names: &[&str]) -> Self {
         let interner = global_interner();
-        let mut columns = Vec::with_capacity(column_names.len());
-        for &name in column_names {
-            columns.push(interner.intern(name)?);
-        }
-        Ok(Self { columns })
+        let columns = column_names.iter().map(|&name| interner.intern(name)).collect();
+        Self { columns }
     }
 
     /// Create from owned strings.
-    ///
-    /// Returns an error if any interning operation fails.
-    pub fn from_strings(column_names: &[String]) -> InternerResult<Self> {
+    pub fn from_strings(column_names: &[String]) -> Self {
         let interner = global_interner();
-        let mut columns = Vec::with_capacity(column_names.len());
-        for name in column_names {
-            columns.push(interner.intern(name)?);
-        }
-        Ok(Self { columns })
+        let columns = column_names.iter().map(|name| interner.intern(name)).collect();
+        Self { columns }
     }
 
     /// Get the number of columns.
@@ -256,24 +211,16 @@ impl InternedSchema {
     }
 
     /// Get the column name by index.
-    ///
-    /// Returns an error if the interner lock is poisoned.
-    pub fn column_name(&self, index: usize) -> InternerResult<Option<String>> {
-        match self.columns.get(index) {
-            Some(&sym) => resolve(sym),
-            None => Ok(None),
-        }
+    pub fn column_name(&self, index: usize) -> Option<String> {
+        self.columns.get(index).and_then(|&sym| resolve(sym))
     }
 
     /// Find the index of a column by name.
-    ///
-    /// Returns an error if the interner lock is poisoned.
-    pub fn find_column(&self, name: &str) -> InternerResult<Option<usize>> {
+    pub fn find_column(&self, name: &str) -> Option<usize> {
         let interner = global_interner();
-        match interner.get(name)? {
-            Some(target_sym) => Ok(self.columns.iter().position(|&sym| sym == target_sym)),
-            None => Ok(None),
-        }
+        interner.get(name).and_then(|target_sym| {
+            self.columns.iter().position(|&sym| sym == target_sym)
+        })
     }
 
     /// Iterate over column symbols.
@@ -282,12 +229,8 @@ impl InternedSchema {
     }
 
     /// Iterate over column names (allocates strings).
-    ///
-    /// Silently skips columns that fail to resolve.
     pub fn names(&self) -> impl Iterator<Item = String> + '_ {
-        self.columns.iter().filter_map(|&sym| {
-            resolve(sym).ok().flatten()
-        })
+        self.columns.iter().filter_map(|&sym| resolve(sym))
     }
 }
 
@@ -311,13 +254,8 @@ impl<'a> InternedRow<'a> {
     }
 
     /// Get value by column name.
-    ///
-    /// Returns an error if the interner lock is poisoned.
-    pub fn get_by_name(&self, name: &str) -> InternerResult<Option<&[u8]>> {
-        match self.schema.find_column(name)? {
-            Some(index) => Ok(self.get(index)),
-            None => Ok(None),
-        }
+    pub fn get_by_name(&self, name: &str) -> Option<&[u8]> {
+        self.schema.find_column(name).and_then(|index| self.get(index))
     }
 
     /// Get the number of columns.
@@ -341,55 +279,55 @@ mod tests {
     fn test_intern_and_resolve() {
         let interner = ColumnInterner::new();
 
-        let sym1 = interner.intern("id").expect("intern failed");
-        let sym2 = interner.intern("name").expect("intern failed");
-        let sym3 = interner.intern("id").expect("intern failed");
+        let sym1 = interner.intern("id");
+        let sym2 = interner.intern("name");
+        let sym3 = interner.intern("id");
 
         // Same string = same symbol
         assert_eq!(sym1, sym3);
         assert_ne!(sym1, sym2);
 
         // Resolve back to string
-        assert_eq!(interner.resolve(sym1).expect("resolve failed"), Some("id".to_owned()));
-        assert_eq!(interner.resolve(sym2).expect("resolve failed"), Some("name".to_owned()));
+        assert_eq!(interner.resolve(sym1), Some("id".to_owned()));
+        assert_eq!(interner.resolve(sym2), Some("name".to_owned()));
     }
 
     #[test]
     fn test_with_resolved() {
         let interner = ColumnInterner::new();
-        let sym = interner.intern("test_column").expect("intern failed");
+        let sym = interner.intern("test_column");
 
-        let len = interner.with_resolved(sym, |s| s.len()).expect("with_resolved failed");
+        let len = interner.with_resolved(sym, |s| s.len());
         assert_eq!(len, Some(11));
     }
 
     #[test]
     fn test_interned_schema() {
-        let schema = InternedSchema::new(&["id", "name", "age"]).expect("schema creation failed");
+        let schema = InternedSchema::new(&["id", "name", "age"]);
 
         assert_eq!(schema.len(), 3);
-        assert_eq!(schema.column_name(0).expect("column_name failed"), Some("id".to_owned()));
-        assert_eq!(schema.column_name(1).expect("column_name failed"), Some("name".to_owned()));
-        assert_eq!(schema.find_column("age").expect("find_column failed"), Some(2));
-        assert_eq!(schema.find_column("missing").expect("find_column failed"), None);
+        assert_eq!(schema.column_name(0), Some("id".to_owned()));
+        assert_eq!(schema.column_name(1), Some("name".to_owned()));
+        assert_eq!(schema.find_column("age"), Some(2));
+        assert_eq!(schema.find_column("missing"), None);
     }
 
     #[test]
     fn test_interned_row() {
-        let schema = InternedSchema::new(&["id", "name"]).expect("schema creation failed");
+        let schema = InternedSchema::new(&["id", "name"]);
         let values = vec![vec![1, 0, 0, 0], b"alice".to_vec()];
         let row = InternedRow::new(&schema, values);
 
         assert_eq!(row.get(0), Some([1, 0, 0, 0].as_slice()));
-        assert_eq!(row.get_by_name("name").expect("get_by_name failed"), Some(b"alice".as_slice()));
-        assert_eq!(row.get_by_name("missing").expect("get_by_name failed"), None);
+        assert_eq!(row.get_by_name("name"), Some(b"alice".as_slice()));
+        assert_eq!(row.get_by_name("missing"), None);
     }
 
     #[test]
     fn test_global_interner() {
-        let sym1 = intern("global_test").expect("intern failed");
-        let sym2 = intern("global_test").expect("intern failed");
+        let sym1 = intern("global_test");
+        let sym2 = intern("global_test");
         assert_eq!(sym1, sym2);
-        assert_eq!(resolve(sym1).expect("resolve failed"), Some("global_test".to_owned()));
+        assert_eq!(resolve(sym1), Some("global_test".to_owned()));
     }
 }
