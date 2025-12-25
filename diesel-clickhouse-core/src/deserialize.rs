@@ -206,3 +206,84 @@ impl<'a> Row for SingleValueRow<'a> {
         }
     }
 }
+
+// =============================================================================
+// Queryable<ST> implementations for primitives
+// =============================================================================
+
+/// Macro to implement Queryable for primitive types.
+macro_rules! impl_queryable_primitive {
+    ($rust_ty:ty, $sql_ty:ty) => {
+        impl Queryable<$sql_ty> for $rust_ty {
+            type Row = $rust_ty;
+
+            fn build(row: Self::Row) -> QueryResult<Self> {
+                Ok(row)
+            }
+        }
+    };
+}
+
+impl_queryable_primitive!(u8, UInt8);
+impl_queryable_primitive!(u16, UInt16);
+impl_queryable_primitive!(u32, UInt32);
+impl_queryable_primitive!(u64, UInt64);
+impl_queryable_primitive!(i8, Int8);
+impl_queryable_primitive!(i16, Int16);
+impl_queryable_primitive!(i32, Int32);
+impl_queryable_primitive!(i64, Int64);
+impl_queryable_primitive!(f32, Float32);
+impl_queryable_primitive!(f64, Float64);
+impl_queryable_primitive!(bool, Bool);
+impl_queryable_primitive!(String, CHString);
+
+// =============================================================================
+// Queryable<ST> implementations for tuples
+// =============================================================================
+
+/// Macro to implement Queryable for tuples.
+macro_rules! impl_queryable_tuple {
+    ($(($T:ident, $ST:ident)),+) => {
+        impl<$($T, $ST),+> Queryable<($($ST,)+)> for ($($T,)+)
+        where
+            $($T: Queryable<$ST>,)+
+            $($ST: SqlType,)+
+        {
+            type Row = ($($T::Row,)+);
+
+            fn build(row: Self::Row) -> QueryResult<Self> {
+                #[allow(non_snake_case)]
+                let ($($T,)+) = row;
+                Ok(($($T::build($T)?,)+))
+            }
+        }
+    };
+}
+
+impl_queryable_tuple!((A, SA));
+impl_queryable_tuple!((A, SA), (B, SB));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG), (H, SH));
+
+// =============================================================================
+// Queryable<Nullable<ST>> for Option<T>
+// =============================================================================
+
+impl<T, ST> Queryable<Nullable<ST>> for Option<T>
+where
+    T: Queryable<ST>,
+    ST: SqlType,
+{
+    type Row = Option<T::Row>;
+
+    fn build(row: Self::Row) -> QueryResult<Self> {
+        match row {
+            Some(r) => T::build(r).map(Some),
+            None => Ok(None),
+        }
+    }
+}

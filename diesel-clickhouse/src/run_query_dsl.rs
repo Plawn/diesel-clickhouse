@@ -154,21 +154,24 @@ where
     where
         U: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
     {
-        conn.load(self).await
+        #[allow(deprecated)]
+        conn.load_unchecked(self).await
     }
 
     async fn first<U>(self, conn: &Connection) -> QueryResult<U>
     where
         U: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
     {
-        conn.load(self).await?.into_iter().next().ok_or(Error::NotFound)
+        #[allow(deprecated)]
+        conn.load_unchecked(self).await?.into_iter().next().ok_or(Error::NotFound)
     }
 
     async fn get_result<U>(self, conn: &Connection) -> QueryResult<Option<U>>
     where
         U: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
     {
-        Ok(conn.load(self).await?.into_iter().next())
+        #[allow(deprecated)]
+        Ok(conn.load_unchecked(self).await?.into_iter().next())
     }
 
     async fn execute(self, conn: &Connection) -> QueryResult<()> {
@@ -189,21 +192,24 @@ where
     where
         U: crate::native::FromNativeBlock + Send,
     {
-        conn.load(self).await
+        #[allow(deprecated)]
+        conn.load_unchecked(self).await
     }
 
     async fn first<U>(self, conn: &Connection) -> QueryResult<U>
     where
         U: crate::native::FromNativeBlock + Send,
     {
-        conn.load(self).await?.into_iter().next().ok_or(Error::NotFound)
+        #[allow(deprecated)]
+        conn.load_unchecked(self).await?.into_iter().next().ok_or(Error::NotFound)
     }
 
     async fn get_result<U>(self, conn: &Connection) -> QueryResult<Option<U>>
     where
         U: crate::native::FromNativeBlock + Send,
     {
-        Ok(conn.load(self).await?.into_iter().next())
+        #[allow(deprecated)]
+        Ok(conn.load_unchecked(self).await?.into_iter().next())
     }
 
     async fn execute(self, conn: &Connection) -> QueryResult<()> {
@@ -224,21 +230,24 @@ where
     where
         U: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
     {
-        conn.load(self).await
+        #[allow(deprecated)]
+        conn.load_unchecked(self).await
     }
 
     async fn first<U>(self, conn: &Connection) -> QueryResult<U>
     where
         U: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
     {
-        conn.load(self).await?.into_iter().next().ok_or(Error::NotFound)
+        #[allow(deprecated)]
+        conn.load_unchecked(self).await?.into_iter().next().ok_or(Error::NotFound)
     }
 
     async fn get_result<U>(self, conn: &Connection) -> QueryResult<Option<U>>
     where
         U: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + crate::native::FromNativeBlock + Send,
     {
-        Ok(conn.load(self).await?.into_iter().next())
+        #[allow(deprecated)]
+        Ok(conn.load_unchecked(self).await?.into_iter().next())
     }
 
     async fn execute(self, conn: &Connection) -> QueryResult<()> {

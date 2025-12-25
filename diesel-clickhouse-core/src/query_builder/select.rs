@@ -5,9 +5,9 @@
 
 use crate::backend::Backend;
 use crate::expression::Expression;
-use crate::query_source::{Join, Inner, Left, Right, JoinTo, ArrayJoin};
+use crate::query_source::{Join, Inner, Left, Right, JoinTo, ArrayJoin, Table, JoinType};
 use crate::result::QueryResult;
-use super::{QueryFragment, AstPass};
+use super::{QueryFragment, AstPass, QueryOutputType};
 
 /// A SELECT statement builder.
 #[derive(Debug, Clone, Copy)]
@@ -469,6 +469,63 @@ impl<DB: Backend> QueryFragment<DB> for OffsetClause {
         pass.push_bindable(&self.0)?;
         Ok(())
     }
+}
+
+// =============================================================================
+// QueryOutputType implementations
+// =============================================================================
+
+/// Marker trait for types that provide a table's AllColumnsSqlType.
+/// This is used to handle SELECT * (S = ()) differently from explicit selection.
+pub trait HasAllColumnsSqlType {
+    /// The SQL type of all columns combined.
+    type AllColumnsSqlType: diesel_clickhouse_types::SqlType;
+}
+
+impl<T: Table> HasAllColumnsSqlType for T {
+    type AllColumnsSqlType = T::AllColumnsSqlType;
+}
+
+/// Implementation for joins - combines both tables' column types.
+impl<L, R, Kind, On> HasAllColumnsSqlType for Join<L, R, Kind, On>
+where
+    L: HasAllColumnsSqlType,
+    R: HasAllColumnsSqlType,
+    Kind: JoinType,
+{
+    type AllColumnsSqlType = (L::AllColumnsSqlType, R::AllColumnsSqlType);
+}
+
+/// Implementation for array joins - same as the base table.
+impl<F, A> HasAllColumnsSqlType for ArrayJoin<F, A>
+where
+    F: HasAllColumnsSqlType,
+{
+    type AllColumnsSqlType = F::AllColumnsSqlType;
+}
+
+/// Implementation for tables directly (users::table).
+/// When a table is used directly, the output type is all columns.
+impl<T: Table> QueryOutputType for T {
+    type SqlType = T::AllColumnsSqlType;
+}
+
+/// Implementation for SELECT with explicit columns (S: Expression).
+/// The output type is the SQL type of the selected expression.
+impl<F, S, W, O, L, Of, G, H> QueryOutputType for SelectStatement<F, S, W, O, L, Of, G, H>
+where
+    S: Expression,
+{
+    type SqlType = S::SqlType;
+}
+
+/// Implementation for SELECT * (S = ()).
+/// The output type is all columns of the source.
+impl<F, W, O, L, Of, G, H> QueryOutputType for SelectStatement<F, (), W, O, L, Of, G, H>
+where
+    F: HasAllColumnsSqlType,
+{
+    type SqlType = F::AllColumnsSqlType;
 }
 
 #[cfg(test)]

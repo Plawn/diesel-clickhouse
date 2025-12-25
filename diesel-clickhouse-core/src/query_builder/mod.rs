@@ -61,6 +61,26 @@ pub trait Query: QueryFragment<crate::backend::ClickHouse> {
     type SqlType: diesel_clickhouse_types::SqlType;
 }
 
+/// Trait for queries that have a known output SQL type.
+///
+/// This trait exposes the SQL type of a query's result columns at compile time,
+/// enabling type-safe verification that a result struct matches the query output.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // SELECT * FROM users returns (UInt64, CHString, Bool, ...)
+/// // The SqlType is determined by the table's AllColumnsSqlType
+/// users::table // SqlType = users::AllColumnsSqlType
+///
+/// // SELECT id, name FROM users returns (UInt64, CHString)
+/// users::table.select((users::id, users::name)) // SqlType = (UInt64, CHString)
+/// ```
+pub trait QueryOutputType {
+    /// The SQL type of the query's result columns.
+    type SqlType: diesel_clickhouse_types::SqlType;
+}
+
 // Implement QueryFragment for common types
 impl<DB: Backend> QueryFragment<DB> for () {
     fn walk_ast<'b>(&'b self, _pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
