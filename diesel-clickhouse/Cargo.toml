@@ -28,6 +28,9 @@ time = ["diesel-clickhouse-core/time"]
 # UUID support
 uuid = ["diesel-clickhouse-core/uuid", "dep:uuid"]
 
+# JSON support (ClickHouse 24.10+)
+json = ["diesel-clickhouse-types/json", "diesel-clickhouse-core/json", "dep:serde_json"]
+
 # Connection pool
 pool = ["dep:deadpool"]
 
@@ -79,6 +82,7 @@ bytes = { version = "1", optional = true }
 chrono = { workspace = true, optional = true }
 chrono-tz = { version = "0.8", optional = true, features = ["serde"] }
 uuid = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 deadpool = { version = "0.10", optional = true }
 tracing = { version = "0.1", optional = true }
 url = "2"

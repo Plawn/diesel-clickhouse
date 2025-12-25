@@ -489,3 +489,103 @@ impl IntoBlockColumnOwned for chrono::NaiveDateTime {
         column.push(tz_dt);
     }
 }
+
+// =============================================================================
+// JSON type support (ClickHouse 24.10+)
+// =============================================================================
+
+/// IntoBlockColumn implementation for serde_json::Value.
+///
+/// JSON values are serialized to strings for insertion. ClickHouse reads them
+/// back as JSON columns when the table schema defines the column as JSON type.
+#[cfg(feature = "json")]
+impl IntoBlockColumn for serde_json::Value {
+    type ColumnData = Vec<String>;
+    type ColumnValue = String;
+
+    #[inline]
+    fn to_column_value(&self) -> Self::ColumnValue {
+        // Use compact serialization; unwrap_or_default handles edge cases
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    #[inline]
+    fn into_column_value(self) -> Self::ColumnValue {
+        serde_json::to_string(&self).unwrap_or_default()
+    }
+
+    #[inline]
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(serde_json::to_string(value).unwrap_or_default());
+    }
+
+    #[inline]
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    #[inline]
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+        Vec::with_capacity(capacity)
+    }
+
+    #[inline]
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+#[cfg(feature = "json")]
+impl IntoBlockColumnOwned for serde_json::Value {
+    #[inline]
+    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
+        column.push(serde_json::to_string(&value).unwrap_or_default());
+    }
+}
+
+/// IntoBlockColumn implementation for JsonTyped<T>.
+///
+/// Typed JSON values are serialized to strings for insertion.
+#[cfg(feature = "json")]
+impl<T: serde::Serialize + Clone> IntoBlockColumn for diesel_clickhouse_types::JsonTyped<T> {
+    type ColumnData = Vec<String>;
+    type ColumnValue = String;
+
+    #[inline]
+    fn to_column_value(&self) -> Self::ColumnValue {
+        serde_json::to_string(&self.0).unwrap_or_default()
+    }
+
+    #[inline]
+    fn into_column_value(self) -> Self::ColumnValue {
+        serde_json::to_string(&self.0).unwrap_or_default()
+    }
+
+    #[inline]
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        column.push(serde_json::to_string(&value.0).unwrap_or_default());
+    }
+
+    #[inline]
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    #[inline]
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+        Vec::with_capacity(capacity)
+    }
+
+    #[inline]
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+#[cfg(feature = "json")]
+impl<T: serde::Serialize + Clone> IntoBlockColumnOwned for diesel_clickhouse_types::JsonTyped<T> {
+    #[inline]
+    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
+        column.push(serde_json::to_string(&value.0).unwrap_or_default());
+    }
+}

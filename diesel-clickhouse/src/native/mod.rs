@@ -167,6 +167,28 @@ impl NativeConnection {
             .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to get handle: {}", e))))
     }
 
+    /// Enable JSON-as-string mode for ClickHouse 24.10+ JSON type support.
+    ///
+    /// This setting configures the session to serialize JSON columns as strings
+    /// instead of using the native binary format. This is recommended by ClickHouse
+    /// for non-C++ clients due to TypeId instability.
+    ///
+    /// **Note**: This setting is automatically applied when connecting via
+    /// `NativeClientBuilder` with the `json` feature enabled. You only need
+    /// to call this method if you're getting new handles from the pool that
+    /// weren't created through the builder.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let conn = NativeConnection::establish("tcp://localhost:9000/default").await?;
+    /// conn.enable_json_support().await?;
+    /// ```
+    #[cfg(feature = "json")]
+    pub async fn enable_json_support(&self) -> QueryResult<()> {
+        self.execute_raw("SET output_format_native_write_json_as_string = 1").await
+    }
+
     /// Execute a raw SQL query (no results).
     pub async fn execute_raw(&self, sql: &str) -> QueryResult<()> {
         let mut client = self.get_handle().await?;

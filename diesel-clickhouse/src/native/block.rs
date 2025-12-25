@@ -140,6 +140,46 @@ where
     }
 }
 
+// =============================================================================
+// JSON type support (ClickHouse 24.10+)
+// =============================================================================
+
+/// BlockValue implementation for serde_json::Value.
+///
+/// JSON columns are read as strings (with `output_format_native_write_json_as_string=1`)
+/// and then parsed into serde_json::Value.
+#[cfg(feature = "json")]
+impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for serde_json::Value {
+    fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
+        let json_str: &str = block.get(row_idx, column)
+            .map_err(|e| Error::DeserializationError(Cow::Owned(
+                format!("Failed to get JSON column '{}': {}", column, e)
+            )))?;
+        serde_json::from_str(json_str)
+            .map_err(|e| Error::DeserializationError(Cow::Owned(
+                format!("Failed to parse JSON in column '{}': {}", column, e)
+            )))
+    }
+}
+
+/// BlockValue implementation for JsonTyped<T>.
+///
+/// JSON columns are read as strings and deserialized directly to the target type T.
+#[cfg(feature = "json")]
+impl<K: clickhouse_rs::types::ColumnType, T: serde::de::DeserializeOwned> BlockValue<K> for diesel_clickhouse_types::JsonTyped<T> {
+    fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
+        let json_str: &str = block.get(row_idx, column)
+            .map_err(|e| Error::DeserializationError(Cow::Owned(
+                format!("Failed to get JSON column '{}': {}", column, e)
+            )))?;
+        let inner: T = serde_json::from_str(json_str)
+            .map_err(|e| Error::DeserializationError(Cow::Owned(
+                format!("Failed to parse JSON in column '{}': {}", column, e)
+            )))?;
+        Ok(diesel_clickhouse_types::JsonTyped(inner))
+    }
+}
+
 /// Convert a native Block to a Vec using FromNativeBlock trait (optimized).
 pub fn block_to_vec_optimized<T: FromNativeBlock>(block: &ComplexBlock) -> QueryResult<Vec<T>> {
     let row_count = block.row_count();

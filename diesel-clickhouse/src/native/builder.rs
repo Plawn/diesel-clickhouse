@@ -198,6 +198,18 @@ impl NativeClientBuilder {
             .await
             .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Connection test failed: {}", e))))?;
 
+        // Enable JSON-as-string mode for ClickHouse 24.10+ JSON type support
+        // Note: This setting is session-scoped. New connections from the pool
+        // will need to have this setting applied via enable_json_support().
+        #[cfg(feature = "json")]
+        {
+            client
+                .query("SET output_format_native_write_json_as_string = 1")
+                .fetch_all()
+                .await
+                .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to enable JSON support: {}", e))))?;
+        }
+
         let server_addr = validated.server_addr();
         let native_conn = NativeConnection::from_pool(pool, validated.database, server_addr);
 

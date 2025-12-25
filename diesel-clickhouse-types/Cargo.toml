@@ -13,6 +13,7 @@ default = ["chrono"]
 chrono = ["dep:chrono"]
 time = ["dep:time"]
 uuid = ["dep:uuid"]
+json = ["dep:serde_json"]
 
 [dependencies]
 thiserror.workspace = true
@@ -22,3 +23,4 @@ serde.workspace = true
 chrono = { workspace = true, optional = true }
 time = { version = "0.3", optional = true }
 uuid = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }

@@ -305,7 +305,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Process rows with zero-copy - no String allocations per row!
-    let count = http_conn
+    let _count = http_conn
         .load_zero_copy(
             "SELECT id, name, email, age FROM users WHERE id >= 10",
             |row| {
@@ -323,7 +323,7 @@ async fn main() -> anyhow::Result<()> {
             },
         )
         .await?;
-    println!("Processed {} rows with zero-copy", count);
+    println!("Processed {} rows with zero-copy", _count);
 
     // You can also use the columnar Arrow API directly for analytics
     let result = http_conn
@@ -408,7 +408,18 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
     println!("Streamed {} users via Native\n", native_count);
-
+  let users_with_all_posts: Vec<UserWithPosts> = users::table
+        .select((
+            users::id,
+            users::name,
+            group_array(posts::title).alias("post_titles"),
+            count(posts::id).alias("post_count"),
+        ))
+        .inner_join_on(posts::table, users::id.eq(posts::user_id))
+        .filter(users::active.eq(true))
+        .group_by((users::id, users::name))
+        .load(&native_conn)
+        .await?;
     // Async callback version - useful for I/O operations per row
     println!("--- Async Streaming (HTTP) ---");
     http_conn

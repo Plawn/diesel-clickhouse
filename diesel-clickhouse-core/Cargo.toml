@@ -13,6 +13,7 @@ default = ["chrono"]
 chrono = ["diesel-clickhouse-types/chrono"]
 time = ["diesel-clickhouse-types/time"]
 uuid = ["diesel-clickhouse-types/uuid"]
+json = ["diesel-clickhouse-types/json"]
 
 [dependencies]
 diesel-clickhouse-types.workspace = true

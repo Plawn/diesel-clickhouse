@@ -41,25 +41,6 @@ Le PR #39906 a étendu le protocole natif pour supporter les query parameters �
 
 
 - better handle stream, besoin de channel ? on peut pas iter directement?
-
-- better handle errors: -> on veut une erreur de compilation
-      let mut stream = http_conn
-        .stream::<UserWithPosts, _>(users::table.filter(users::active.eq(true)))
-        .await?;
-
-- verify doc aligned with real implem
 - verifier les perfos d'insert
-
-- impact de 'static dans le code
-/// Both backends: requires all traits + 'static
-#[cfg(all(feature = "http", feature = "native"))]
-impl<T> StreamableRow for T where
-    T: clickhouse::Row
-        + clickhouse::RowOwned
-        + crate::native::FromAnyBlock
-        + Send
-        + 'static
-{
-}
 
 - insert natif, generattion des blocks optimisée

@@ -154,15 +154,156 @@ impl SqlType for Enum16 {
 }
 
 // =============================================================================
-// JSON type (experimental in ClickHouse)
+// JSON type (ClickHouse 24.10+)
 // =============================================================================
 
-/// ClickHouse JSON type (experimental).
+/// ClickHouse JSON type (ClickHouse 24.10+).
+///
+/// This type supports the new native JSON type in ClickHouse which stores
+/// JSON as typed subcolumns with efficient binary storage.
+///
+/// # Serialization
+///
+/// JSON is serialized as a String using ClickHouse settings:
+/// - HTTP: `output_format_binary_write_json_as_string=1`
+/// - Native: `output_format_native_write_json_as_string=1`
+///
+/// This approach is recommended by ClickHouse for non-C++ clients due to
+/// TypeId instability in the native binary format.
+///
+/// # Usage
+///
+/// Two approaches are supported:
+///
+/// 1. **Untyped**: Use `serde_json::Value` for flexible JSON handling
+/// 2. **Typed**: Use `JsonTyped<T>` wrapper for compile-time type safety
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::types::{Json, JsonTyped};
+///
+/// // Untyped - flexible JSON
+/// #[row]
+/// struct Event {
+///     id: u64,
+///     data: serde_json::Value,  // Any JSON
+/// }
+///
+/// // Typed - compile-time checked
+/// #[derive(Serialize, Deserialize)]
+/// struct UserPrefs {
+///     theme: String,
+///     notifications: bool,
+/// }
+///
+/// #[row]
+/// struct User {
+///     id: u64,
+///     preferences: JsonTyped<UserPrefs>,
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Json;
 
 impl SqlType for Json {
     fn type_name() -> &'static str { "JSON" }
+}
+
+/// Generic typed JSON wrapper for custom types.
+///
+/// Use this when you want to deserialize JSON columns directly to Rust structs.
+/// The inner type must implement `Serialize` and `DeserializeOwned`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::types::JsonTyped;
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct UserPrefs {
+///     theme: String,
+///     notifications: bool,
+/// }
+///
+/// #[row]
+/// struct User {
+///     id: u64,
+///     preferences: JsonTyped<UserPrefs>,
+/// }
+///
+/// // Access the inner value
+/// let user: User = conn.first(users::table).await?;
+/// println!("Theme: {}", user.preferences.theme);
+/// ```
+#[cfg(feature = "json")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsonTyped<T>(pub T);
+
+#[cfg(feature = "json")]
+impl<T> JsonTyped<T> {
+    /// Create a new JsonTyped wrapper.
+    pub fn new(value: T) -> Self {
+        Self(value)
+    }
+
+    /// Consume self and return the inner value.
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+#[cfg(feature = "json")]
+impl<T> std::ops::Deref for JsonTyped<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+#[cfg(feature = "json")]
+impl<T> std::ops::DerefMut for JsonTyped<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+#[cfg(feature = "json")]
+impl<T> From<T> for JsonTyped<T> {
+    fn from(value: T) -> Self {
+        Self(value)
+    }
+}
+
+// HasSqlType implementations for JSON types
+#[cfg(feature = "json")]
+impl HasSqlType for serde_json::Value {
+    type SqlType = Json;
+}
+
+#[cfg(feature = "json")]
+impl<T: 'static + Send + Sync> HasSqlType for JsonTyped<T> {
+    type SqlType = Json;
+}
+
+// Serde implementations for JsonTyped
+#[cfg(feature = "json")]
+impl<T: serde::Serialize> serde::Serialize for JsonTyped<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+#[cfg(feature = "json")]
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for JsonTyped<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        T::deserialize(deserializer).map(JsonTyped)
+    }
 }
 
 // =============================================================================

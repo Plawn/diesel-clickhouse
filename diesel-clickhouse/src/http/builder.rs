@@ -107,6 +107,15 @@ impl HttpClientBuilder {
             client = client.with_option(key, value);
         }
 
+        // Enable JSON-as-string mode for ClickHouse 24.10+ JSON type support
+        // This ensures stable serialization format (TypeId instability workaround)
+        #[cfg(feature = "json")]
+        {
+            client = client
+                .with_option("output_format_binary_write_json_as_string", "1")
+                .with_option("input_format_binary_read_json_as_string", "1");
+        }
+
         // Test connection
         client.query("SELECT 1").execute().await
             .map_err(Error::connection_from)?;

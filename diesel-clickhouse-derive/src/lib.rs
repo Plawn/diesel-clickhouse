@@ -285,8 +285,9 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             fn rows_to_block(rows: &[Self]) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
-                // Build columns using map().collect() pattern for better vectorization
-                // collect() pre-allocates with exact capacity since slice iterators are ExactSizeIterator
+                // Use extend() pattern - allows LLVM to vectorize each column independently
+                // Each extend() call can use SIMD for Copy types
+                // Trade-off: reads rows N times, but with L2 cache hits this is often faster
                 #(
                     let #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
                         rows.iter()
@@ -517,6 +518,7 @@ pub fn typed_row(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             fn rows_to_block(rows: &[Self]) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
+                // Use extend() pattern - allows LLVM to vectorize each column independently
                 #(
                     let #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
                         rows.iter()
@@ -533,6 +535,7 @@ pub fn typed_row(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             fn rows_into_block(rows: Vec<Self>) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
+                // Single pass - we consume ownership, can't iterate multiple times
                 let capacity = rows.len();
                 #(
                     let mut #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
