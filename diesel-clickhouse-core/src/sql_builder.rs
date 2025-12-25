@@ -216,7 +216,8 @@ pub fn build_sql_with_bindings<T: QueryFragment<ClickHouse> + ?Sized>(
     let mut collector = GenericBindCollector::default();
     let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
     fragment.walk_ast(pass)?;
-    Ok((builder.finish(), collector.bindable_values().to_vec()))
+    // Use into_bindable_values() to take ownership instead of cloning
+    Ok((builder.finish(), collector.into_bindable_values()))
 }
 
 /// Extension trait for query fragments to convert to SQL string.
@@ -320,7 +321,7 @@ mod tests {
             "SELECT * FROM users WHERE id = ? AND name = ?".to_string(),
             vec![
                 BindableValue::U64(42),
-                BindableValue::String("Alice".to_string()),
+                BindableValue::owned_string("Alice".to_string()),
             ],
         );
         let sql = compiled.to_interpolated_sql().expect("interpolation failed");
@@ -353,7 +354,7 @@ mod tests {
     fn test_interpolate_bindings_string_escaping() {
         let compiled = CompiledQuery::new(
             "SELECT * FROM users WHERE name = ?".to_string(),
-            vec![BindableValue::String("O'Brien".to_string())],
+            vec![BindableValue::owned_string("O'Brien".to_string())],
         );
         let sql = compiled.to_interpolated_sql().expect("interpolation failed");
         assert_eq!(sql, "SELECT * FROM users WHERE name = 'O''Brien'");
@@ -368,7 +369,7 @@ mod tests {
                 BindableValue::I64(-42),
                 BindableValue::F64(3.14),
                 BindableValue::Bool(true),
-                BindableValue::String("test".to_string()),
+                BindableValue::static_str("test"),
             ],
         );
         let sql = compiled.to_interpolated_sql().expect("interpolation failed");

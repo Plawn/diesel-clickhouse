@@ -11,6 +11,7 @@
 //! The [`Backend`] trait abstracts over these, allowing generic code to work
 //! with either protocol.
 
+use std::borrow::Cow;
 use std::fmt::Debug;
 use serde::Serialize;
 use smallvec::SmallVec;
@@ -24,6 +25,12 @@ use smallvec::SmallVec;
 /// This enum holds the actual typed value, allowing us to call `.bind()` with
 /// the correct type at execution time. This enables proper parameter binding
 /// and query plan caching on the ClickHouse server.
+///
+/// # String Optimization
+///
+/// The `String` variant uses `Cow<'static, str>` to avoid allocations for
+/// static string literals. Use `BindableValue::static_str("literal")` for
+/// compile-time known strings to avoid heap allocation.
 #[derive(Debug, Clone)]
 pub enum BindableValue {
     // Unsigned integers
@@ -41,11 +48,31 @@ pub enum BindableValue {
     F64(f64),
     // Boolean
     Bool(bool),
-    // String (owned for lifetime safety)
-    String(String),
+    // String (Cow for zero-alloc static strings)
+    String(Cow<'static, str>),
 }
 
 impl BindableValue {
+    /// Create a BindableValue from a static string literal.
+    ///
+    /// This avoids heap allocation for compile-time known strings.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let val = BindableValue::static_str("hello");  // No allocation
+    /// ```
+    #[inline]
+    pub const fn static_str(s: &'static str) -> Self {
+        BindableValue::String(Cow::Borrowed(s))
+    }
+
+    /// Create a BindableValue from an owned String.
+    #[inline]
+    pub fn owned_string(s: String) -> Self {
+        BindableValue::String(Cow::Owned(s))
+    }
+
     /// Get the ClickHouse type name for this value.
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -178,20 +205,25 @@ impl_to_bindable!(
 );
 
 impl ToBindableValue for String {
+    #[inline]
     fn to_bindable_value(&self) -> BindableValue {
-        BindableValue::String(self.clone())
+        BindableValue::String(Cow::Owned(self.clone()))
     }
 }
 
 impl ToBindableValue for str {
+    #[inline]
     fn to_bindable_value(&self) -> BindableValue {
-        BindableValue::String(self.to_owned())
+        BindableValue::String(Cow::Owned(self.to_owned()))
     }
 }
 
 impl ToBindableValue for &str {
+    #[inline]
     fn to_bindable_value(&self) -> BindableValue {
-        BindableValue::String((*self).to_owned())
+        // Note: For static strings, use BindableValue::static_str() directly
+        // to avoid allocation
+        BindableValue::String(Cow::Owned((*self).to_owned()))
     }
 }
 
@@ -220,6 +252,11 @@ pub trait BindCollector<'a, DB: Backend>: Default {
 
     /// Get the collected bindable values for native binding.
     fn bindable_values(&self) -> &[BindableValue];
+
+    /// Take ownership of the collected bindable values.
+    ///
+    /// This avoids cloning when the collector is no longer needed.
+    fn into_bindable_values(self) -> Vec<BindableValue>;
 }
 
 /// Trait for building SQL query strings.
@@ -421,6 +458,11 @@ impl<'a, DB: Backend> BindCollector<'a, DB> for BindCollectorImpl<DB> {
     #[inline]
     fn bindable_values(&self) -> &[BindableValue] {
         &self.bindable_values
+    }
+
+    #[inline]
+    fn into_bindable_values(self) -> Vec<BindableValue> {
+        self.bindable_values.into_vec()
     }
 }
 

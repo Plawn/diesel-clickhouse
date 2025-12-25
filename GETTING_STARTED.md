@@ -8,8 +8,9 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-diesel-clickhouse = { version = "0.1", features = ["http", "migrations"] }
+diesel-clickhouse = { version = "0.1", features = ["http", "native", "migrations"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+chrono = { version = "0.4", features = ["serde"] }
 ```
 
 ## 1. Define Your Schema
@@ -33,11 +34,14 @@ diesel_clickhouse::table! {
 
 ## 2. Define Row Types
 
-Use `#[derive(Row)]` for query results and `#[derive(Insertable)]` for inserts:
+Use `#[row]` for optimized binary deserialization that works with both HTTP and Native backends:
 
 ```rust
+use diesel_clickhouse::prelude::*;
+
 /// For inserting new users
-#[derive(Debug, Clone, Row, diesel_clickhouse::Insertable)]
+#[row]
+#[derive(Debug, Clone, diesel_clickhouse::Insertable)]
 #[diesel_clickhouse(table = users)]
 pub struct NewUser {
     pub id: u64,
@@ -48,14 +52,16 @@ pub struct NewUser {
 }
 
 /// For querying users
-#[derive(Debug, Clone, Row)]
+#[row]
+#[derive(Debug, Clone)]
 pub struct User {
     pub id: u64,
     pub name: String,
     pub email: String,
     pub age: u8,
     pub active: bool,
-    pub created_at: u32,  // Unix timestamp
+    #[cfg_attr(feature = "http", serde(with = "clickhouse::serde::chrono::datetime"))]
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 ```
 
@@ -66,11 +72,29 @@ use diesel_clickhouse::Connection;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // HTTP connection (recommended)
-    let conn = Connection::establish("http://localhost:8123/default").await?;
+    // HTTP backend (builder pattern - recommended)
+    let conn = Connection::http()
+        .host("localhost")
+        .port(8123)
+        .user("default")
+        .password("default")
+        .database("mydb")
+        .build()
+        .await?;
 
-    // Or with credentials
+    // Or Native backend (faster, requires direct TCP access)
+    // let conn = Connection::native()
+    //     .host("localhost")
+    //     .port(9000)
+    //     .user("default")
+    //     .password("default")
+    //     .database("mydb")
+    //     .build()
+    //     .await?;
+
+    // Or from URL
     // let conn = Connection::establish("http://user:pass@localhost:8123/mydb").await?;
+    // let conn = Connection::establish("tcp://user:pass@localhost:9000/mydb").await?;
 
     Ok(())
 }
@@ -109,7 +133,7 @@ let user = NewUser {
 
 insert_into(users::table)
     .values(&user)
-    .execute(&conn)
+    .insert(&conn)  // Use .insert() for optimized binary format
     .await?;
 ```
 
@@ -123,7 +147,7 @@ let new_users = vec![
 
 insert_into(users::table)
     .values(new_users.as_slice())
-    .execute(&conn)
+    .insert(&conn)
     .await?;
 ```
 
@@ -203,7 +227,8 @@ diesel_clickhouse::table! {
     }
 }
 
-#[derive(Debug, Row, diesel_clickhouse::Insertable)]
+#[row]
+#[derive(Debug, diesel_clickhouse::Insertable)]
 #[diesel_clickhouse(table = users)]
 struct NewUser {
     id: u64,
@@ -212,24 +237,31 @@ struct NewUser {
     active: bool,
 }
 
-#[derive(Debug, Row)]
+#[row]
+#[derive(Debug)]
 struct User {
     id: u64,
     name: String,
     age: u8,
     active: bool,
-    created_at: u32,
+    #[cfg_attr(feature = "http", serde(with = "clickhouse::serde::chrono::datetime"))]
+    created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let conn = Connection::establish("http://localhost:8123/default").await?;
+    let conn = Connection::http()
+        .host("localhost")
+        .port(8123)
+        .database("default")
+        .build()
+        .await?;
 
     // Insert
     let user = NewUser { id: 1, name: "Alice".into(), age: 30, active: true };
     insert_into(users::table)
         .values(&user)
-        .execute(&conn)
+        .insert(&conn)
         .await?;
 
     // Query
@@ -272,8 +304,50 @@ let users: Vec<User> = users::table
     .await?;
 ```
 
+## Streaming (Large Datasets)
+
+For memory-efficient processing of large result sets:
+
+```rust
+// Stream rows one by one
+let mut stream = conn
+    .stream::<User, _>(users::table.filter(users::active.eq(true)))
+    .await?;
+
+while let Some(user) = stream.next().await? {
+    println!("User: {}", user.name);
+}
+
+// Or use callback-based streaming
+conn.stream_for_each(
+    users::table.filter(users::active.eq(true)),
+    |user: User| {
+        println!("User: {} (age {})", user.name, user.age);
+        Ok(())
+    }
+).await?;
+```
+
+## Zero-Copy Arrow (High Performance)
+
+For maximum performance with large datasets, use Arrow format:
+
+```rust
+// Process rows with zero-copy - no String allocations!
+let count = conn.load_zero_copy(
+    "SELECT id, name, email FROM users WHERE active = 1",
+    |row| {
+        let id = row.get_u64("id")?;
+        let name = row.get_str("name")?;  // &str, not String
+        println!("User {}: {}", id, name);
+        Ok(())
+    }
+).await?;
+```
+
 ## Next Steps
 
 - Check out `examples/getting_started.rs` for a complete working example
-- See `examples/migrations.rs` for database migrations
+- See `examples/migrations_example.rs` for database migrations
 - Read about [connection pooling](examples/connection_pooling.rs) for production use
+- See [docs/BACKENDS.md](docs/BACKENDS.md) for backend comparison

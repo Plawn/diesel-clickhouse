@@ -12,8 +12,12 @@ A type-safe, Diesel-inspired ORM for ClickHouse with async support.
 - **Diesel-like API** - Familiar patterns for Diesel users
 - **ClickHouse-specific extensions** - FINAL, PREWHERE, SAMPLE, ARRAY JOIN, and more
 - **Async-first design** - Built on tokio for async/await support
+- **Dual-protocol support** - HTTP and Native TCP protocols via unified API
+- **Zero-copy Arrow integration** - High-performance columnar data with Apache Arrow
+- **Streaming support** - Memory-efficient processing of large result sets
+- **Connection pooling** - Built-in pool with configurable options
 - **Migration system** - Similar to Diesel's migration tooling
-- **Derive macros** - `#[derive(Queryable, Insertable, Selectable)]`
+- **Derive macros** - `#[derive(Queryable, Insertable, Selectable)]` and `#[row]`
 - **Full type coverage** - All ClickHouse types including Array, Map, Tuple, LowCardinality
 
 ## Quick Start
@@ -32,7 +36,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 use diesel_clickhouse::prelude::*;
 
 diesel_clickhouse::table! {
-    events {
+    events (id, timestamp) {
         id -> UInt64,
         user_id -> UInt32,
         event_type -> CHString,
@@ -42,25 +46,65 @@ diesel_clickhouse::table! {
 }
 ```
 
-### Query Data
+### Define Row Types
+
+Use `#[row]` for optimized binary deserialization that works with both backends:
 
 ```rust
 use diesel_clickhouse::prelude::*;
 
-#[derive(Debug, Queryable)]
+/// For querying events
+#[row]
+#[derive(Debug, Clone)]
 struct Event {
     id: u64,
     user_id: u32,
     event_type: String,
 }
 
+/// For inserting new events
+#[row]
+#[derive(Debug, Clone, Insertable)]
+#[diesel_clickhouse(table = events)]
+struct NewEvent {
+    id: u64,
+    user_id: u32,
+    event_type: String,
+    timestamp: chrono::NaiveDateTime,
+}
+```
+
+### Connect and Query
+
+```rust
+use diesel_clickhouse::prelude::*;
+use diesel_clickhouse::Connection;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // HTTP backend
-    let conn = Connection::establish("http://localhost:8123/default").await?;
-    // Or Native backend: Connection::establish("tcp://localhost:9000/default").await?;
+    // HTTP backend (builder pattern)
+    let conn = Connection::http()
+        .host("localhost")
+        .port(8123)
+        .user("default")
+        .password("default")
+        .database("mydb")
+        .build()
+        .await?;
 
-    // Simple query
+    // Or Native backend:
+    // let conn = Connection::native()
+    //     .host("localhost")
+    //     .port(9000)
+    //     .database("mydb")
+    //     .build()
+    //     .await?;
+
+    // Or from URL:
+    // let conn = Connection::establish("http://localhost:8123/default").await?;
+    // let conn = Connection::establish("tcp://localhost:9000/default").await?;
+
+    // Query with filters
     let events: Vec<Event> = events::table
         .select((events::id, events::user_id, events::event_type))
         .filter(events::user_id.eq(42))
@@ -76,23 +120,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Insert Data
 
 ```rust
-#[derive(Insertable)]
-#[diesel_clickhouse(table = events)]
-struct NewEvent {
-    id: u64,
-    user_id: u32,
-    event_type: String,
-    timestamp: chrono::NaiveDateTime,
-}
-
 let new_events = vec![
     NewEvent { id: 1, user_id: 42, event_type: "click".into(), timestamp: now },
     NewEvent { id: 2, user_id: 42, event_type: "view".into(), timestamp: now },
 ];
 
-conn.insert(
-    insert_into(events::table).values(&new_events)
-).await?;
+// Idiomatic Diesel-style insert
+insert_into(events::table)
+    .values(new_events.as_slice())
+    .insert(&conn)
+    .await?;
 ```
 
 ## ClickHouse-Specific Features
@@ -282,168 +319,145 @@ async fn main() {
 Efficient connection management for high-concurrency applications:
 
 ```rust
-use diesel_clickhouse::pool::{Pool, PoolConfig};
+use diesel_clickhouse::{Connection, pool::Pool};
 
-// Create a pool with custom settings
-let config = PoolConfig::new(20)
-    .min_idle(5)
-    .connection_timeout_ms(30_000);
-
-let pool = Pool::new("http://localhost:8123/default", config).await?;
+// Using Builder (Recommended)
+let pool = Pool::builder(
+    Connection::http()
+        .host("localhost")
+        .port(8123)
+        .user("default")
+        .password("default")
+        .database("mydb")
+)
+.max_size(20)
+.min_idle(5)
+.connection_timeout_ms(30_000)
+.idle_timeout_ms(300_000)
+.build()
+.await?;
 
 // Get a connection (automatically returned to pool on drop)
 let conn = pool.get().await?;
-conn.connection().execute("SELECT 1").await?;
+conn.execute("SELECT 1").await?;
+
+// Or using URL
+use diesel_clickhouse::pool::PoolConfig;
+let pool = Pool::new(
+    "http://user:password@localhost:8123/mydb",
+    PoolConfig::new(20).min_idle(5)
+).await?;
 ```
 
-### Batch Inserts
+### Streaming Results
 
-Optimized bulk inserts for ClickHouse's batch-oriented design:
+Memory-efficient processing for large result sets:
 
 ```rust
-use diesel_clickhouse::BatchInserter;
+// Using stream() - returns an async iterator
+let mut stream = conn
+    .stream::<User, _>(users::table.filter(users::active.eq(true)))
+    .await?;
 
-let mut batch = BatchInserter::new(&conn, "events", 10000);
-
-for event in events {
-    batch.push(&event).await?;
+while let Some(user) = stream.next().await? {
+    println!("User: {}", user.name);
 }
-batch.flush().await?;  // Insert remaining rows
+
+// Using stream_for_each() - callback-based streaming
+conn.stream_for_each(
+    users::table.filter(users::active.eq(true)),
+    |user: User| {
+        println!("User: {} (age {})", user.name, user.age);
+        Ok(())
+    }
+).await?;
+
+// Async callback version - useful for I/O operations per row
+conn.stream_for_each_async(
+    users::table.filter(users::id.gt(10u64)),
+    |user: User| async move {
+        // Async processing (e.g., HTTP call, database write)
+        println!("Processing user: {}", user.name);
+        Ok(())
+    }
+).await?;
 ```
 
-### Async Insert Mode
+### Zero-Copy Arrow Integration
 
-High-throughput inserts using ClickHouse's async_insert mode:
+High-performance columnar data processing with Apache Arrow:
 
 ```rust
-use diesel_clickhouse::async_insert::{AsyncInserter, AsyncInsertConfig};
+use diesel_clickhouse::arrow::array::{Int64Array, StringArray};
 
-let config = AsyncInsertConfig::default()
-    .busy_timeout_ms(5000)
-    .max_data_size_bytes(1_000_000);
+// Load data as Arrow RecordBatch
+let result = conn
+    .load_arrow("SELECT id, name, age FROM users")
+    .await?;
 
-let inserter = AsyncInserter::new(&conn, config);
-inserter.insert("events", &new_events).await?;
+println!("Loaded {} rows, {} columns", result.num_rows(), result.num_columns());
+
+// Process with zero-copy - no String allocations per row!
+let count = conn.load_zero_copy(
+    "SELECT id, name, email, age FROM users WHERE active = 1",
+    |row| {
+        // Borrowed references into Arrow buffer - zero allocations!
+        let id = row.get_u64("id")?;
+        let name = row.get_str("name")?;  // &str, not String
+        let email = row.get_str("email")?;
+        let age = row.get_u8("age")?;
+
+        println!("User {}: {} ({}) - age {}", id, name, email, age);
+        Ok(())
+    }
+).await?;
 ```
 
-### Prepared Statement Cache
-
-Reduce query compilation overhead for repeated queries:
+### JOINs with Aggregation
 
 ```rust
-use diesel_clickhouse::prepared::{PreparedCache, QueryTemplate};
-
-let cache = PreparedCache::new(100);
-
-// Create a template with placeholders
-let template = QueryTemplate::new("SELECT * FROM events WHERE user_id = {}");
-let stmt = cache.get_or_prepare(&template);
-
-// Execute with parameters
-let sql = stmt.with_params(&[&"42"]);
-```
-
-### Metrics & Observability
-
-Built-in metrics collection for performance monitoring:
-
-```rust
-use diesel_clickhouse::metrics::{MetricsCollector, global_metrics};
-
-// Use global metrics
-let timer = global_metrics().start_query();
-// ... execute query ...
-timer.record_success();
-
-// Get metrics snapshot
-let snapshot = global_metrics().snapshot();
-println!("Total queries: {}", snapshot.total_queries);
-println!("Avg latency: {:?}", snapshot.avg_latency());
-```
-
-### Zero-Copy Parsing
-
-Parse large result sets without memory allocation:
-
-```rust
-use diesel_clickhouse::zero_copy::{ZeroCopyParser, TsvParser};
-
-// Parse TSV without allocating strings
-let parser = TsvParser::new();
-for row in parser.parse_rows(tsv_data) {
-    let id: i64 = row.get(0)?.parse()?;
-    let name: &str = row.get(1)?.as_str();
+#[row]
+#[derive(Debug, Clone)]
+struct UserWithPosts {
+    id: u64,
+    name: String,
+    post_titles: Vec<String>,
+    post_count: u64,
 }
-```
 
-### Parallel Processing
-
-Process large result sets in parallel using Rayon:
-
-```rust
-use diesel_clickhouse::parallel::{ParallelProcessor, ParallelExt};
-
-// Process items in parallel
-let results: Vec<ProcessedRow> = rows
-    .parallel()
-    .threshold(1000)  // Only parallelize if > 1000 items
-    .process(|row| expensive_transform(row));
-
-// Or use chunk processing
-let chunk_sums: Vec<i64> = rows
-    .chunks_parallel(1000)
-    .process_chunks(|chunk| chunk.iter().map(|r| r.value).sum());
-```
-
-### Arena Allocation
-
-Reduce heap allocations during complex query building:
-
-```rust
-use diesel_clickhouse::arena::{QueryArena, ArenaQueryBuilder, with_arena};
-
-// Thread-local arena for zero-allocation query building
-let sql = with_arena(|arena| {
-    let mut builder = ArenaQueryBuilder::new(arena);
-    builder.push("SELECT ");
-    builder.push_identifier("name");
-    builder.push(" FROM ");
-    builder.push_identifier("users");
-    builder.finish()
-});
-```
-
-### String Interning
-
-Efficient column name handling for result set processing:
-
-```rust
-use diesel_clickhouse::interner::{InternedSchema, global_interner};
-
-// Intern column names for fast lookup
-let schema = InternedSchema::new(&["id", "name", "age"]);
-
-// O(1) column lookup by name
-let idx = schema.find_column("name").unwrap();
+let users_with_posts: Vec<UserWithPosts> = users::table
+    .select((
+        users::id,
+        users::name,
+        group_array(posts::title).alias("post_titles"),
+        count(posts::id).alias("post_count"),
+    ))
+    .inner_join_on(posts::table, users::id.eq(posts::user_id))
+    .filter(users::active.eq(true))
+    .group_by((users::id, users::name))
+    .load(&conn)
+    .await?;
 ```
 
 ## Feature Flags
 
 ```toml
 [dependencies]
-diesel-clickhouse = { version = "0.1", features = ["chrono", "uuid"] }
+diesel-clickhouse = { version = "0.1", features = ["chrono", "uuid", "arrow"] }
 ```
 
 | Feature | Description | Default |
 |---------|-------------|---------|
 | `http` | HTTP backend via clickhouse crate | Yes |
-| `native` | Native TCP protocol backend | No |
+| `native` | Native TCP protocol backend | Yes |
+| `arrow` | Zero-copy columnar data with Apache Arrow | Yes |
 | `chrono` | DateTime support via chrono | Yes |
 | `time` | DateTime support via time crate | No |
 | `uuid` | UUID support | No |
-| `pool` | Connection pooling via deadpool | No |
-| `native-tls` | TLS via native-tls | No |
-| `rustls-tls` | TLS via rustls | No |
+| `pool` | Connection pooling | No |
+| `native-tls` | TLS for HTTP backend via native-tls | No |
+| `rustls-tls` | TLS for HTTP backend via rustls | No |
+| `native-tls-native` | TLS for Native backend | No |
 | `tracing` | Tracing integration | No |
 | `migrations` | Migration system | No |
 

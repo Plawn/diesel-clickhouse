@@ -1,13 +1,49 @@
 # Backends diesel-clickhouse
 
-diesel-clickhouse supporte deux backends pour se connecter à ClickHouse :
+diesel-clickhouse supporte deux backends pour se connecter à ClickHouse via une API unifiée :
 
 | Backend | Protocole | Ports | Performance | Cas d'usage |
 |---------|-----------|-------|-------------|-------------|
 | **HTTP** | HTTP/HTTPS | 8123 / 8443 | Bon | Défaut, facile à déployer |
 | **Native** | TCP binaire | 9000 / 9440 | Meilleur | Haute performance |
 
-## HTTP Backend (défaut)
+## API Unifiée (Recommandée)
+
+L'API unifiée `Connection` fonctionne avec les deux backends :
+
+```rust
+use diesel_clickhouse::prelude::*;
+use diesel_clickhouse::Connection;
+
+// HTTP backend
+let http_conn = Connection::http()
+    .host("localhost")
+    .port(8123)
+    .user("default")
+    .password("default")
+    .database("mydb")
+    .build()
+    .await?;
+
+// Native backend
+let native_conn = Connection::native()
+    .host("localhost")
+    .port(9000)
+    .user("default")
+    .password("default")
+    .database("mydb")
+    .build()
+    .await?;
+
+// Ou via URL
+let conn = Connection::establish("http://localhost:8123/default").await?;
+let conn = Connection::establish("tcp://localhost:9000/default").await?;
+
+// Même API pour les deux !
+conn.execute("CREATE TABLE test (id UInt64) ENGINE = Memory").await?;
+```
+
+## HTTP Backend
 
 Le backend HTTP utilise l'interface REST de ClickHouse. C'est le choix par défaut car il fonctionne à travers les proxys, load balancers et firewalls.
 
@@ -26,63 +62,56 @@ diesel-clickhouse = { version = "0.1", features = ["http", "native-tls"] }
 ### Connexion
 
 ```rust
-use diesel_clickhouse::http::ClickHouseConnection;
+use diesel_clickhouse::Connection;
 
-// Sans TLS (port 8123)
-let conn = ClickHouseConnection::new("http://localhost:8123/default").await?;
+// Builder pattern (recommandé)
+let conn = Connection::http()
+    .host("localhost")
+    .port(8123)
+    .user("default")
+    .password("default")
+    .database("mydb")
+    .build()
+    .await?;
 
 // Avec TLS (port 8443)
-let conn = ClickHouseConnection::new("https://localhost:8443/default").await?;
-
-// Avec authentification
-let conn = ClickHouseConnection::new("http://user:password@localhost:8123/mydb").await?;
+let conn = Connection::establish("https://localhost:8443/default").await?;
 ```
 
-### Requêtes
+### Requêtes et Insertions
 
 ```rust
 use diesel_clickhouse::prelude::*;
-use clickhouse::Row;
-use serde::Deserialize;
 
-// Le type de résultat doit implémenter clickhouse::Row
-#[derive(Row, Deserialize)]
+#[row]
+#[derive(Debug, Clone)]
 struct User {
     id: u64,
     name: String,
 }
 
-// Requête avec le query builder
-let users: Vec<User> = conn
-    .query(users::table.filter(users::active.eq(true)))
-    .fetch_all()
-    .await?;
-
-// Requête SQL brute
-let users: Vec<User> = conn
-    .client()
-    .query("SELECT id, name FROM users WHERE active = 1")
-    .fetch_all()
-    .await?;
-```
-
-### Insertions
-
-```rust
-use clickhouse::Row;
-use serde::Serialize;
-
-#[derive(Row, Serialize)]
+#[row]
+#[derive(Debug, Clone, Insertable)]
+#[diesel_clickhouse(table = users)]
 struct NewUser {
     id: u64,
     name: String,
 }
 
-// Via l'inserter (streaming, efficace pour gros volumes)
-let mut inserter = conn.inserter::<NewUser, _>(users::table).await?;
-inserter.write(&NewUser { id: 1, name: "Alice".into() }).await?;
-inserter.write(&NewUser { id: 2, name: "Bob".into() }).await?;
-inserter.end().await?;
+// Requête avec le query builder
+let users: Vec<User> = users::table
+    .filter(users::active.eq(true))
+    .load(&conn)
+    .await?;
+
+// Insertion idiomatique Diesel
+insert_into(users::table)
+    .values(&[
+        NewUser { id: 1, name: "Alice".into() },
+        NewUser { id: 2, name: "Bob".into() },
+    ])
+    .insert(&conn)
+    .await?;
 ```
 
 ---
@@ -101,90 +130,52 @@ diesel-clickhouse = { version = "0.1", features = ["native"] }
 diesel-clickhouse = { version = "0.1", features = ["native", "native-tls-native"] }
 ```
 
-### Format de l'URL
-
-```
-tcp://[user:password@]host[:port]/database[?options]
-```
-
-**Options disponibles :**
-
-| Option | Description | Défaut |
-|--------|-------------|--------|
-| `secure` | Active TLS | `false` |
-| `skip_verify` | Ignore la vérification du certificat | `false` |
-| `compression` | Compression LZ4 | `none` |
-| `connection_timeout` | Timeout de connexion | `500ms` |
-| `query_timeout` | Timeout des requêtes | `180s` |
-| `pool_min` | Connexions minimum dans le pool | `1` |
-| `pool_max` | Connexions maximum dans le pool | `10` |
-
 ### Connexion
 
 ```rust
-use diesel_clickhouse::native::NativeConnection;
+use diesel_clickhouse::Connection;
 
-// Sans TLS (port 9000)
-let conn = NativeConnection::establish("tcp://localhost:9000/default").await?;
+// Builder pattern (recommandé)
+let conn = Connection::native()
+    .host("localhost")
+    .port(9000)
+    .user("default")
+    .password("default")
+    .database("mydb")
+    .build()
+    .await?;
 
-// Avec TLS (port 9440)
-let conn = NativeConnection::establish(
-    "tcp://localhost:9440/default?secure=true"
-).await?;
+// Via URL
+let conn = Connection::establish("tcp://localhost:9000/default").await?;
 
-// Avec authentification et options
-let conn = NativeConnection::establish(
-    "tcp://admin:secret@clickhouse.example.com:9000/analytics?compression=lz4&pool_max=20"
+// Avec options dans l'URL
+let conn = Connection::establish(
+    "tcp://admin:secret@clickhouse.example.com:9000/analytics?compression=lz4"
 ).await?;
 ```
 
-### Requêtes
+### Requêtes et Insertions
 
 ```rust
 use diesel_clickhouse::prelude::*;
 
-// Requête avec le query builder
-let block = conn.query(
-    users::table.filter(users::active.eq(true))
-).await?;
-
-// Itérer sur les résultats
-for row in block.rows() {
-    let id: u64 = row.get("id")?;
-    let name: &str = row.get("name")?;
-    println!("{}: {}", id, name);
-}
-
-// Requête SQL brute
-let block = conn.query_raw("SELECT id, name FROM users WHERE active = 1").await?;
-```
-
-### Insertions
-
-```rust
-use diesel_clickhouse::native::NativeBlock;
-
-// Via Block (efficace pour gros volumes)
-let block = NativeBlock::new()
-    .column("id", vec![1u64, 2, 3])
-    .column("name", vec!["Alice", "Bob", "Charlie"]);
-
-conn.insert("users", block).await?;
-
-// Via ToNativeBlock (typé, recommandé)
 #[row]
-#[derive(Clone, Insertable)]
-#[diesel_clickhouse(table = users)]
-struct NewUser {
+#[derive(Debug, Clone)]
+struct User {
     id: u64,
     name: String,
 }
 
-let users = vec![
-    NewUser { id: 1, name: "Alice".into() },
-    NewUser { id: 2, name: "Bob".into() },
-];
-conn.insert_native("users", &users).await?;
+// Même API que HTTP !
+let users: Vec<User> = users::table
+    .filter(users::active.eq(true))
+    .load(&conn)
+    .await?;
+
+insert_into(users::table)
+    .values(&new_users)
+    .insert(&conn)
+    .await?;
 ```
 
 ---
@@ -207,10 +198,12 @@ conn.insert_native("users", &users).await?;
 | Fonctionnalité | HTTP | Native |
 |----------------|------|--------|
 | Query builder diesel | ✅ | ✅ |
+| API unifiée Connection | ✅ | ✅ |
 | TLS | ✅ | ✅ |
 | Compression | ✅ (via HTTP) | ✅ (LZ4) |
-| Connection pooling | ❌ (manuel) | ✅ (intégré) |
+| Connection pooling | ✅ (via Pool) | ✅ (via Pool) |
 | Streaming results | ✅ | ✅ |
+| Zero-copy Arrow | ✅ | ✅ |
 | Progress tracking | ❌ | ✅ |
 | Fonctionne derrière proxy | ✅ | ❌ |
 | Fonctionne avec CDN | ✅ | ❌ |
@@ -229,33 +222,66 @@ conn.insert_native("users", &users).await?;
 - Communication directe serveur-à-serveur
 - Gros volumes de données
 - Besoin de progress tracking
-- Connection pooling intégré souhaité
 
 ---
 
-## Utiliser les deux backends
+## Streaming et Arrow
 
-Vous pouvez activer les deux backends et choisir à runtime :
-
-```toml
-[dependencies]
-diesel-clickhouse = { version = "0.1", features = ["http", "native"] }
-```
+Les deux backends supportent le streaming et Arrow :
 
 ```rust
-use diesel_clickhouse::http::ClickHouseConnection;
-use diesel_clickhouse::native::NativeConnection;
+// Streaming - fonctionne avec HTTP et Native
+let mut stream = conn
+    .stream::<User, _>(users::table.filter(users::active.eq(true)))
+    .await?;
 
-async fn connect(use_native: bool) -> Result<(), Error> {
-    if use_native {
-        let conn = NativeConnection::establish("tcp://localhost:9000/default").await?;
-        // utiliser conn...
-    } else {
-        let conn = ClickHouseConnection::new("http://localhost:8123/default").await?;
-        // utiliser conn...
-    }
-    Ok(())
+while let Some(user) = stream.next().await? {
+    println!("User: {}", user.name);
 }
+
+// Zero-copy Arrow (HTTP uniquement pour l'instant)
+let count = conn.load_zero_copy(
+    "SELECT id, name FROM users",
+    |row| {
+        let name = row.get_str("name")?;  // &str, zero-copy
+        Ok(())
+    }
+).await?;
+```
+
+---
+
+## Connection Pooling
+
+Les deux backends supportent le pooling via `Pool` :
+
+```rust
+use diesel_clickhouse::{Connection, pool::Pool};
+
+// HTTP pool
+let pool = Pool::builder(
+    Connection::http()
+        .host("localhost")
+        .port(8123)
+        .database("mydb")
+)
+.max_size(20)
+.min_idle(5)
+.build()
+.await?;
+
+// Native pool
+let pool = Pool::builder(
+    Connection::native()
+        .host("localhost")
+        .port(9000)
+        .database("mydb")
+)
+.max_size(20)
+.build()
+.await?;
+
+let conn = pool.get().await?;
 ```
 
 ---
@@ -265,28 +291,25 @@ async fn connect(use_native: bool) -> Result<(), Error> {
 ### HTTP avec TLS
 
 ```rust
+use diesel_clickhouse::Connection;
+
 // rustls (recommandé, pur Rust)
 // Cargo.toml: features = ["http", "rustls-tls"]
-let conn = ClickHouseConnection::new("https://localhost:8443/default").await?;
+let conn = Connection::establish("https://localhost:8443/default").await?;
 
 // native-tls (utilise OpenSSL)
 // Cargo.toml: features = ["http", "native-tls"]
-let conn = ClickHouseConnection::new("https://localhost:8443/default").await?;
+let conn = Connection::establish("https://localhost:8443/default").await?;
 ```
 
 ### Native avec TLS
 
 ```rust
+use diesel_clickhouse::Connection;
+
 // Cargo.toml: features = ["native", "native-tls-native"]
-
-// TLS standard
-let conn = NativeConnection::establish(
+let conn = Connection::establish(
     "tcp://localhost:9440/default?secure=true"
-).await?;
-
-// TLS sans vérification (dev uniquement!)
-let conn = NativeConnection::establish(
-    "tcp://localhost:9440/default?secure=true&skip_verify=true"
 ).await?;
 ```
 

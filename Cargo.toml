@@ -75,10 +75,10 @@ include_dir = "0.7"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Paul Music <music.music.music@music.music>"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/diesel-clickhouse"
-description = "A type-safe, Diesel-inspired ORM for ClickHouse"
+repository = "https://github.com/plmusic/diesel-clickhouse"
+description = "A type-safe, Diesel-inspired async ORM for ClickHouse with HTTP and Native protocol support"
 keywords = ["clickhouse", "orm", "database", "sql", "async"]
 categories = ["database", "asynchronous"]
 

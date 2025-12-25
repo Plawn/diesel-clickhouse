@@ -87,9 +87,12 @@ Use `Result` types and proper error handling throughout.
 ## Feature Flags
 
 The main `diesel-clickhouse` crate has these key features:
-- `http` / `native`: Backend selection
+- `http` / `native`: Backend selection (both enabled by default)
+- `arrow`: Zero-copy columnar data with Apache Arrow (default)
 - `chrono` / `time`: DateTime handling
 - `uuid`: UUID support
-- `pool`: Connection pooling via deadpool
+- `pool`: Connection pooling
 - `migrations`: Migration system
-- `simd-json`: SIMD-accelerated JSON parsing
+- `native-tls` / `rustls-tls`: TLS for HTTP backend
+- `native-tls-native`: TLS for Native backend
+- `tracing`: Tracing integration
