@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("   Pool created: max_size={}, idle={}",
         pool.config().max_size,
-        pool.idle_count().await);
+        pool.idle_count());
 
     // Use the pool
     {

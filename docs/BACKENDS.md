@@ -1,15 +1,15 @@
-# Backends diesel-clickhouse
+# Backends
 
-diesel-clickhouse supporte deux backends pour se connecter à ClickHouse via une API unifiée :
+diesel-clickhouse supports two backends for connecting to ClickHouse via a unified API:
 
-| Backend | Protocole | Ports | Performance | Cas d'usage |
-|---------|-----------|-------|-------------|-------------|
-| **HTTP** | HTTP/HTTPS | 8123 / 8443 | Bon | Défaut, facile à déployer |
-| **Native** | TCP binaire | 9000 / 9440 | Meilleur | Haute performance |
+| Backend | Protocol | Ports | Performance | Use Case |
+|---------|----------|-------|-------------|----------|
+| **HTTP** | HTTP/HTTPS | 8123 / 8443 | Good | Default, easy to deploy |
+| **Native** | Binary TCP | 9000 / 9440 | Better | High performance |
 
-## API Unifiée (Recommandée)
+## Unified API (Recommended)
 
-L'API unifiée `Connection` fonctionne avec les deux backends :
+The unified `Connection` API works with both backends:
 
 ```rust
 use diesel_clickhouse::prelude::*;
@@ -35,36 +35,36 @@ let native_conn = Connection::native()
     .build()
     .await?;
 
-// Ou via URL
+// Or via URL
 let conn = Connection::establish("http://localhost:8123/default").await?;
 let conn = Connection::establish("tcp://localhost:9000/default").await?;
 
-// Même API pour les deux !
+// Same API for both!
 conn.execute("CREATE TABLE test (id UInt64) ENGINE = Memory").await?;
 ```
 
 ## HTTP Backend
 
-Le backend HTTP utilise l'interface REST de ClickHouse. C'est le choix par défaut car il fonctionne à travers les proxys, load balancers et firewalls.
+The HTTP backend uses ClickHouse's REST interface. It's the default choice because it works through proxies, load balancers, and firewalls.
 
-### Activation
+### Enabling
 
 ```toml
 [dependencies]
 diesel-clickhouse = { version = "0.1", features = ["http"] }
 
-# Avec TLS
+# With TLS
 diesel-clickhouse = { version = "0.1", features = ["http", "rustls-tls"] }
-# ou
+# or
 diesel-clickhouse = { version = "0.1", features = ["http", "native-tls"] }
 ```
 
-### Connexion
+### Connection
 
 ```rust
 use diesel_clickhouse::Connection;
 
-// Builder pattern (recommandé)
+// Builder pattern (recommended)
 let conn = Connection::http()
     .host("localhost")
     .port(8123)
@@ -74,11 +74,11 @@ let conn = Connection::http()
     .build()
     .await?;
 
-// Avec TLS (port 8443)
+// With TLS (port 8443)
 let conn = Connection::establish("https://localhost:8443/default").await?;
 ```
 
-### Requêtes et Insertions
+### Queries and Inserts
 
 ```rust
 use diesel_clickhouse::prelude::*;
@@ -98,13 +98,13 @@ struct NewUser {
     name: String,
 }
 
-// Requête avec le query builder
+// Query with the query builder
 let users: Vec<User> = users::table
     .filter(users::active.eq(true))
     .load(&conn)
     .await?;
 
-// Insertion idiomatique Diesel
+// Idiomatic Diesel-style insert
 insert_into(users::table)
     .values(&[
         NewUser { id: 1, name: "Alice".into() },
@@ -118,24 +118,24 @@ insert_into(users::table)
 
 ## Native Backend
 
-Le backend natif utilise le protocole binaire TCP de ClickHouse. Il offre de meilleures performances car il évite l'overhead HTTP et utilise un format binaire optimisé.
+The Native backend uses ClickHouse's binary TCP protocol. It offers better performance because it avoids HTTP overhead and uses an optimized binary format.
 
-### Activation
+### Enabling
 
 ```toml
 [dependencies]
 diesel-clickhouse = { version = "0.1", features = ["native"] }
 
-# Avec TLS
+# With TLS
 diesel-clickhouse = { version = "0.1", features = ["native", "native-tls-native"] }
 ```
 
-### Connexion
+### Connection
 
 ```rust
 use diesel_clickhouse::Connection;
 
-// Builder pattern (recommandé)
+// Builder pattern (recommended)
 let conn = Connection::native()
     .host("localhost")
     .port(9000)
@@ -148,13 +148,13 @@ let conn = Connection::native()
 // Via URL
 let conn = Connection::establish("tcp://localhost:9000/default").await?;
 
-// Avec options dans l'URL
+// With options in URL
 let conn = Connection::establish(
     "tcp://admin:secret@clickhouse.example.com:9000/analytics?compression=lz4"
 ).await?;
 ```
 
-### Requêtes et Insertions
+### Queries and Inserts
 
 ```rust
 use diesel_clickhouse::prelude::*;
@@ -166,7 +166,7 @@ struct User {
     name: String,
 }
 
-// Même API que HTTP !
+// Same API as HTTP!
 let users: Vec<User> = users::table
     .filter(users::active.eq(true))
     .load(&conn)
@@ -180,57 +180,57 @@ insert_into(users::table)
 
 ---
 
-## Comparaison détaillée
+## Detailed Comparison
 
 ### Performance
 
-| Opération | HTTP | Native | Différence |
+| Operation | HTTP | Native | Difference |
 |-----------|------|--------|------------|
-| Latence connexion | ~5ms | ~2ms | Native 2x plus rapide |
-| Overhead par requête | ~1ms | ~0.1ms | Native 10x moins d'overhead |
-| Débit INSERT | Bon | Excellent | Native ~30% plus rapide |
-| Débit SELECT | Bon | Excellent | Native ~20% plus rapide |
+| Connection latency | ~5ms | ~2ms | Native 2x faster |
+| Per-request overhead | ~1ms | ~0.1ms | Native 10x less overhead |
+| INSERT throughput | Good | Excellent | Native ~30% faster |
+| SELECT throughput | Good | Excellent | Native ~20% faster |
 
-*Note: Les chiffres varient selon le réseau et la taille des données.*
+*Note: Numbers vary based on network and data size.*
 
-### Fonctionnalités
+### Features
 
-| Fonctionnalité | HTTP | Native |
-|----------------|------|--------|
-| Query builder diesel | ✅ | ✅ |
-| API unifiée Connection | ✅ | ✅ |
+| Feature | HTTP | Native |
+|---------|------|--------|
+| Diesel query builder | ✅ | ✅ |
+| Unified Connection API | ✅ | ✅ |
 | TLS | ✅ | ✅ |
 | Compression | ✅ (via HTTP) | ✅ (LZ4) |
 | Connection pooling | ✅ (via Pool) | ✅ (via Pool) |
 | Streaming results | ✅ | ✅ |
 | Zero-copy Arrow | ✅ | ✅ |
 | Progress tracking | ❌ | ✅ |
-| Fonctionne derrière proxy | ✅ | ❌ |
-| Fonctionne avec CDN | ✅ | ❌ |
+| Works behind proxy | ✅ | ❌ |
+| Works with CDN | ✅ | ❌ |
 
-### Quand utiliser HTTP
+### When to Use HTTP
 
-- Déploiement derrière un reverse proxy (nginx, haproxy)
-- Accès via un CDN ou load balancer
-- Environnement cloud avec restrictions réseau
-- Développement local simple
-- Intégration avec des outils de monitoring HTTP
+- Deployment behind a reverse proxy (nginx, haproxy)
+- Access via CDN or load balancer
+- Cloud environment with network restrictions
+- Simple local development
+- Integration with HTTP monitoring tools
 
-### Quand utiliser Native
+### When to Use Native
 
-- Haute performance requise
-- Communication directe serveur-à-serveur
-- Gros volumes de données
-- Besoin de progress tracking
+- High performance required
+- Direct server-to-server communication
+- Large data volumes
+- Need for progress tracking
 
 ---
 
-## Streaming et Arrow
+## Streaming and Arrow
 
-Les deux backends supportent le streaming et Arrow :
+Both backends support streaming and Arrow:
 
 ```rust
-// Streaming - fonctionne avec HTTP et Native
+// Streaming - works with both HTTP and Native
 let mut stream = conn
     .stream::<User, _>(users::table.filter(users::active.eq(true)))
     .await?;
@@ -239,7 +239,7 @@ while let Some(user) = stream.next().await? {
     println!("User: {}", user.name);
 }
 
-// Zero-copy Arrow (HTTP uniquement pour l'instant)
+// Zero-copy Arrow (HTTP only for now)
 let count = conn.load_zero_copy(
     "SELECT id, name FROM users",
     |row| {
@@ -253,7 +253,7 @@ let count = conn.load_zero_copy(
 
 ## Connection Pooling
 
-Les deux backends supportent le pooling via `Pool` :
+Both backends support pooling via `Pool`:
 
 ```rust
 use diesel_clickhouse::{Connection, pool::Pool};
@@ -286,23 +286,23 @@ let conn = pool.get().await?;
 
 ---
 
-## Configuration TLS
+## TLS Configuration
 
-### HTTP avec TLS
+### HTTP with TLS
 
 ```rust
 use diesel_clickhouse::Connection;
 
-// rustls (recommandé, pur Rust)
+// rustls (recommended, pure Rust)
 // Cargo.toml: features = ["http", "rustls-tls"]
 let conn = Connection::establish("https://localhost:8443/default").await?;
 
-// native-tls (utilise OpenSSL)
+// native-tls (uses OpenSSL)
 // Cargo.toml: features = ["http", "native-tls"]
 let conn = Connection::establish("https://localhost:8443/default").await?;
 ```
 
-### Native avec TLS
+### Native with TLS
 
 ```rust
 use diesel_clickhouse::Connection;
@@ -315,13 +315,13 @@ let conn = Connection::establish(
 
 ---
 
-## Ports ClickHouse
+## ClickHouse Ports
 
-| Service | Port défaut | Description |
-|---------|-------------|-------------|
-| HTTP | 8123 | Interface HTTP sans TLS |
-| HTTPS | 8443 | Interface HTTP avec TLS |
-| Native | 9000 | Protocole natif sans TLS |
-| Native TLS | 9440 | Protocole natif avec TLS |
+| Service | Default Port | Description |
+|---------|--------------|-------------|
+| HTTP | 8123 | HTTP interface without TLS |
+| HTTPS | 8443 | HTTP interface with TLS |
+| Native | 9000 | Native protocol without TLS |
+| Native TLS | 9440 | Native protocol with TLS |
 
-Vérifiez votre configuration ClickHouse (`config.xml`) pour les ports exacts.
+Check your ClickHouse configuration (`config.xml`) for exact port numbers.

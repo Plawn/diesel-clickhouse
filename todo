@@ -1,47 +1,33 @@
+# diesel-clickhouse TODO
 
-# TODO
-- gestion des migrations en entier -> OK
-- gestion du cli en entier -> print schema a finir ?
-- ajout de la doc sur les multiples backend (natif et http)
-- mettre à jour le readme / doc
-- insertion mode batch
-- checker les examples -> OK
-  - supprimer ce qui a pas de sens
-  - supprimer les migrations qui servent à rien
-- audit performance prepared queries
-  - vérification de l'utilisation de bind params -> vérifier sur les deux backends qu'on bind bien même si que coté client
-- audit les perfos
-- remove legacy and duplications
-- zero copy parsing ?
-- async code insert ?
-- utiliser le format binaire rapide pour les deux backends -> OK
-- update the examples -> OK
-- ensure the integrations tests work end to end
-- voir sir on peut implementer la macro #row avec un derive plutot -> Non
-- implement client propre au lieu de url only -> OK
-- checker les depdendaces
-- still need json ?
-- gestion du pooling -> pool avec un proper constructor
-- zero copy en native ?
-- compilation des query ?
-- sur le mode zero copy utiliser des vrais query et pas des strings
-- native arrow zero copy
-  - derive row
-  - query pas string
-- unifier les loads optimized et load_binary -> OK
-- opti les perfos du backend natif
-- clean le binding de params
-- todo clean
-     if self.compression == Compression::Lz4 {
-            client = client.with_compression(clickhouse::Compression::Lz4);
-        }
+## Completed
+- [x] Migration system implementation
+- [x] CLI implementation (print-schema needs completion)
+- [x] Multi-backend documentation (HTTP and Native)
+- [x] Update README and documentation
+- [x] Batch insertion mode
+- [x] Check and update examples
+- [x] Use binary format for both backends
+- [x] Implement proper connection builders
+- [x] Check dependencies
+- [x] Connection pooling with proper constructor
+- [x] Unify load_optimized and load_binary
+- [x] Optimize native backend performance
+- [x] Clean parameter binding
+- [x] Better stream handling (channels)
+- [x] Verify insert performance
+- [x] Optimized native insert block generation
 
-https://github.com/ClickHouse/ClickHouse/pull/39906
-Le PR #39906 a étendu le protocole natif pour supporter les query parameters — les paramètres sont maintenant transmis dans les paquets Query juste après le texte de la requête GitHub
+## In Progress
+- [ ] Ensure integration tests work end-to-end
+- [ ] Complete print-schema CLI command
 
+## Future Improvements
+- [ ] Zero-copy parsing for Native backend
+- [ ] Query compilation/caching
+- [ ] Native Arrow zero-copy (derive row + query not string)
+- [ ] Consider server-side prepared statements (ClickHouse PR #39906)
 
-- better handle stream, besoin de channel ? on peut pas iter directement?
-- verifier les perfos d'insert
-
-- insert natif, generattion des blocks optimisée
-- update(execute) fait du interpolated par ddefaut
+## Notes
+- update(execute) uses interpolated SQL by default
+- LZ4 compression config needs cleanup in http.rs

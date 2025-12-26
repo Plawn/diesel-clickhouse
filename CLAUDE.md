@@ -96,3 +96,29 @@ The main `diesel-clickhouse` crate has these key features:
 - `native-tls` / `rustls-tls`: TLS for HTTP backend
 - `native-tls-native`: TLS for Native backend
 - `tracing`: Tracing integration
+- `json`: JSON type support (JsonTyped<T>)
+
+## Key Files
+
+- `diesel-clickhouse/src/unified.rs`: Unified `Connection` API
+- `diesel-clickhouse/src/run_query_dsl.rs`: `RunQueryDsl`, `InsertDsl`, `ExecuteDsl` traits
+- `diesel-clickhouse/src/http/mod.rs`: HTTP backend implementation
+- `diesel-clickhouse/src/native/mod.rs`: Native backend implementation
+- `diesel-clickhouse-core/src/query_builder/`: Query building infrastructure
+- `diesel-clickhouse-derive/src/lib.rs`: Procedural macros (`#[row]`, `table!`, derives)
+
+## Common Tasks
+
+```bash
+# Format code
+cargo fmt --all
+
+# Run specific test
+cargo test -p diesel-clickhouse test_name
+
+# Check for compile errors quickly
+cargo check --all --all-features
+
+# Generate documentation
+cargo doc --all --no-deps --open
+```
