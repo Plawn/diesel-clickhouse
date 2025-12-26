@@ -277,3 +277,140 @@ impl<T: ToRow> ToRow for Option<T> {
         }
     }
 }
+
+// =============================================================================
+// ToSqlValues trait for async insert
+// =============================================================================
+
+/// Trait for converting a row to SQL literal values.
+///
+/// This is used by the async insert module to generate INSERT statements
+/// with inline values. It is automatically implemented by `#[derive(Insertable)]`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[derive(Insertable)]
+/// #[diesel_clickhouse(table = events)]
+/// struct NewEvent {
+///     id: u64,
+///     name: String,
+/// }
+///
+/// let event = NewEvent { id: 1, name: "test".into() };
+/// let columns = NewEvent::column_names(); // ["id", "name"]
+/// let values = event.to_sql_values();     // ["1", "'test'"]
+/// ```
+pub trait ToSqlValues {
+    /// Get the column names for this row type.
+    fn column_names() -> Vec<&'static str>;
+
+    /// Convert the row to SQL value strings.
+    ///
+    /// Each value is formatted as a SQL literal:
+    /// - Integers: `42`
+    /// - Floats: `3.14`
+    /// - Strings: `'hello'` (with proper escaping)
+    /// - NULL: `NULL`
+    fn to_sql_values(&self) -> Vec<String>;
+}
+
+/// Helper function to format a value as a SQL literal.
+pub fn format_sql_literal<T: ToSqlLiteral>(value: &T) -> String {
+    value.to_sql_literal()
+}
+
+/// Trait for formatting a value as a SQL literal string.
+pub trait ToSqlLiteral {
+    /// Format as a SQL literal.
+    fn to_sql_literal(&self) -> String;
+}
+
+// Implement for common types
+macro_rules! impl_to_sql_literal_numeric {
+    ($($t:ty),*) => {
+        $(
+            impl ToSqlLiteral for $t {
+                fn to_sql_literal(&self) -> String {
+                    self.to_string()
+                }
+            }
+        )*
+    };
+}
+
+impl_to_sql_literal_numeric!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64);
+
+impl ToSqlLiteral for bool {
+    fn to_sql_literal(&self) -> String {
+        if *self { "true".to_string() } else { "false".to_string() }
+    }
+}
+
+impl ToSqlLiteral for String {
+    fn to_sql_literal(&self) -> String {
+        format_sql_string(self)
+    }
+}
+
+impl ToSqlLiteral for str {
+    fn to_sql_literal(&self) -> String {
+        format_sql_string(self)
+    }
+}
+
+impl ToSqlLiteral for &str {
+    fn to_sql_literal(&self) -> String {
+        format_sql_string(self)
+    }
+}
+
+impl<T: ToSqlLiteral> ToSqlLiteral for Option<T> {
+    fn to_sql_literal(&self) -> String {
+        match self {
+            Some(v) => v.to_sql_literal(),
+            None => "NULL".to_string(),
+        }
+    }
+}
+
+impl<T: ToSqlLiteral> ToSqlLiteral for &T {
+    fn to_sql_literal(&self) -> String {
+        (*self).to_sql_literal()
+    }
+}
+
+/// Format a string as a SQL string literal with proper escaping.
+fn format_sql_string(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 2);
+    result.push('\'');
+    for c in s.chars() {
+        match c {
+            '\'' => result.push_str("''"),
+            '\\' => result.push_str("\\\\"),
+            _ => result.push(c),
+        }
+    }
+    result.push('\'');
+    result
+}
+
+#[cfg(feature = "json")]
+impl ToSqlLiteral for serde_json::Value {
+    fn to_sql_literal(&self) -> String {
+        match serde_json::to_string(self) {
+            Ok(json_str) => format_sql_string(&json_str),
+            Err(_) => "NULL".to_string(),
+        }
+    }
+}
+
+#[cfg(feature = "json")]
+impl<T: serde::Serialize> ToSqlLiteral for diesel_clickhouse_types::JsonTyped<T> {
+    fn to_sql_literal(&self) -> String {
+        match serde_json::to_string(&self.0) {
+            Ok(json_str) => format_sql_string(&json_str),
+            Err(_) => "NULL".to_string(),
+        }
+    }
+}

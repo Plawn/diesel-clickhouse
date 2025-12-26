@@ -1025,6 +1025,21 @@ pub fn derive_insertable(input: TokenStream) -> TokenStream {
                 Ok(())
             }
         }
+
+        // Generate ToSqlValues for async insert support
+        impl #impl_generics diesel_clickhouse::serialize::ToSqlValues for #name #ty_generics #where_clause {
+            fn column_names() -> Vec<&'static str> {
+                vec![#(#column_names_array),*]
+            }
+
+            fn to_sql_values(&self) -> Vec<String> {
+                vec![
+                    #(
+                        diesel_clickhouse::serialize::ToSqlLiteral::to_sql_literal(&self.#field_names),
+                    )*
+                ]
+            }
+        }
     };
 
     TokenStream::from(expanded)

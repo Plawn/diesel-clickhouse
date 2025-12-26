@@ -382,3 +382,18 @@ pub use pool::{Pool, PoolConfig, PooledConnection};
 pub mod migrations {
     pub use diesel_clickhouse_migrations::*;
 }
+
+/// Async insert module for high-throughput data ingestion.
+///
+/// Uses ClickHouse's async insert mode for server-side buffering.
+#[cfg(any(feature = "http", feature = "native"))]
+pub mod async_insert;
+
+#[cfg(any(feature = "http", feature = "native"))]
+pub use async_insert::{AsyncInsertConfig, AsyncInserter, BufferedAsyncInserter, AsyncInsertExt};
+
+#[cfg(feature = "http")]
+pub use async_insert::HttpAsyncInserter;
+
+#[cfg(feature = "native")]
+pub use async_insert::NativeAsyncInserter;

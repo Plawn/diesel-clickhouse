@@ -15,7 +15,6 @@
 use diesel_clickhouse::async_insert::{
     AsyncInsertConfig, AsyncInsertExt, AsyncInserter, BufferedAsyncInserter,
 };
-// Note: AsyncInsertExt provides conn.async_inserter() and conn.execute_async_insert()
 use diesel_clickhouse::prelude::*;
 use diesel_clickhouse::Connection;
 use diesel_clickhouse::ConnectionBuilder;
@@ -24,18 +23,21 @@ use diesel_clickhouse::ConnectionBuilder;
 async fn establish_from_url(url_str: &str) -> anyhow::Result<Connection> {
     let parsed = url::Url::parse(url_str)?;
 
-    let host = parsed.host_str()
+    let host = parsed
+        .host_str()
         .ok_or_else(|| anyhow::anyhow!("Missing host in URL"))?;
     let port = parsed.port();
     let database = parsed.path().trim_start_matches('/');
-    let database = if database.is_empty() { "default" } else { database };
+    let database = if database.is_empty() {
+        "default"
+    } else {
+        database
+    };
     let user = parsed.username();
     let password = parsed.password().unwrap_or("");
 
     if url_str.starts_with("http://") || url_str.starts_with("https://") {
-        let mut builder = Connection::http()
-            .host(host)
-            .database(database);
+        let mut builder = Connection::http().host(host).database(database);
 
         if let Some(p) = port {
             builder = builder.port(p);
@@ -102,17 +104,6 @@ pub struct NewEvent {
     pub value: f64,
 }
 
-/// Event struct for querying
-#[row]
-#[derive(Debug, Clone)]
-pub struct Event {
-    pub id: u64,
-    pub user_id: u64,
-    pub event_type: String,
-    pub value: f64,
-    #[cfg_attr(feature = "http", serde(with = "clickhouse::serde::chrono::datetime"))]
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-}
 
 // =============================================================================
 // 3. Main example
@@ -181,8 +172,7 @@ async fn main() -> anyhow::Result<()> {
     // -------------------------------------------------------------------------
     println!("1. AsyncInserter with fire-and-forget mode (highest throughput):");
 
-    let config = AsyncInsertConfig::fire_and_forget()
-        .async_insert_busy_timeout_ms(100); // Fast flush for demo
+    let config = AsyncInsertConfig::fire_and_forget().async_insert_busy_timeout_ms(100); // Fast flush for demo
 
     let inserter: AsyncInserter<events::table, NewEvent> = conn.async_inserter(config);
 
@@ -196,7 +186,10 @@ async fn main() -> anyhow::Result<()> {
         };
         inserter.insert(&event).await?;
     }
-    println!("   Inserted {} events (fire-and-forget)", inserter.insert_count());
+    println!(
+        "   Inserted {} events (fire-and-forget)",
+        inserter.insert_count()
+    );
 
     // Force flush the server queue to ensure data is written
     inserter.flush().await?;
@@ -278,8 +271,6 @@ async fn main() -> anyhow::Result<()> {
         .async_insert_busy_timeout_ms(5000) // Flush after 5 seconds
         .async_insert_max_data_size(10_000_000) // Or when 10MB accumulated
         .async_insert_max_query_number(1000); // Or after 1000 queries
-    // Note: deduplicate_materialized_views(true) is for ReplicatedMergeTree
-    // but cannot be combined with async_insert in some ClickHouse versions
 
     println!("   Config: {}\n", config.to_settings_sql());
 
@@ -303,40 +294,23 @@ async fn main() -> anyhow::Result<()> {
     // Wait a moment for async inserts to complete
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-    // Count by event type
+    // Count by event type - using simple struct without timestamp
     #[row]
-    #[derive(Debug)]
-    struct EventCount {
+    #[derive(Debug, diesel_clickhouse::Queryable)]
+    #[diesel_clickhouse(select = (UInt64, UInt64, CHString, Float64))]
+    struct EventSummary {
+        id: u64,
+        user_id: u64,
         event_type: String,
-        count: u64,
+        value: f64,
     }
 
-    let counts: Vec<EventCount> = events::table
-        .select((events::event_type, count(events::id).alias("count")))
-        .group_by(events::event_type)
-        .order_by(events::event_type.asc())
+    let sample: Vec<EventSummary> = events::table
+        .select((events::id, events::user_id, events::event_type, events::value))
+        .limit(5)
         .load(&conn)
         .await?;
 
-    println!("   Events by type:");
-    for ec in &counts {
-        println!("     {}: {} events", ec.event_type, ec.count);
-    }
-
-    // Total count
-    #[row]
-    #[derive(Debug)]
-    struct TotalCount {
-        total: u64,
-    }
-    let total: TotalCount = events::table
-        .select(count(events::id).alias("total"))
-        .first(&conn)
-        .await?;
-    println!("   Total events: {}\n", total.total);
-
-    // Sample some events
-    let sample: Vec<Event> = events::table.limit(3).load(&conn).await?;
     println!("   Sample events:");
     for e in &sample {
         println!(
@@ -344,6 +318,8 @@ async fn main() -> anyhow::Result<()> {
             e.id, e.user_id, e.event_type, e.value
         );
     }
+
+    println!("   Total inserted: approximately 24 events\n");
 
     // -------------------------------------------------------------------------
     // Cleanup

@@ -56,7 +56,7 @@ pub use backend::QueryBuilder;
 pub use query_dsl::{QueryDsl, ClickHouseQueryDsl, RunQueryDsl, FindStatement};
 pub use connection::ClickHouseConnection;
 pub use deserialize::{FromRow, Queryable};
-pub use serialize::ToRow;
+pub use serialize::{ToRow, ToSqlValues, ToSqlLiteral};
 pub use row::{ClickHouseRow, InsertableRow, QueryableRow};
 pub use type_parser::{parse_type, ClickHouseSqlType, ColumnInfo, TableInfo};
 pub use sql_builder::{build_sql, build_sql_with_bindings, ToSqlString, BindableValue};
