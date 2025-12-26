@@ -940,6 +940,67 @@ impl ClickHouseConnection {
     }
 }
 
+// =============================================================================
+// Async Insert Support
+// =============================================================================
+
+impl ClickHouseConnection {
+    /// Insert rows using async insert mode with RowBinary format.
+    ///
+    /// This method uses ClickHouse's async insert mode which buffers data
+    /// server-side for optimal write performance.
+    ///
+    /// # Type Requirements
+    ///
+    /// The row type `R` must:
+    /// - Derive `#[derive(clickhouse::Row, serde::Serialize)]`
+    /// - Have `Value<'a> = R` (typically primitive-only fields)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::async_insert::AsyncInsertConfig;
+    ///
+    /// let config = AsyncInsertConfig::fire_and_forget();
+    /// conn.async_insert_rows::<events::table, _>(&config, &events).await?;
+    /// ```
+    pub async fn async_insert_rows<T, R>(
+        &self,
+        config: &crate::async_insert::AsyncInsertConfig,
+        rows: &[R],
+    ) -> QueryResult<()>
+    where
+        T: crate::core::query_source::Table,
+        R: clickhouse::Row + Serialize + Send + Sync,
+        for<'a> R: clickhouse::Row<Value<'a> = R>,
+        for<'a> <R as clickhouse::Row>::Value<'a>: Serialize,
+    {
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let insert = self
+            .client()
+            .insert::<R>(T::table_name())
+            .await
+            .map_err(Error::query_from)?;
+
+        let mut insert = config.apply_to_http_insert(insert);
+
+        for row in rows {
+            insert.write(row).await.map_err(Error::query_from)?;
+        }
+
+        insert.end().await.map_err(Error::query_from)?;
+        Ok(())
+    }
+
+    /// Force the server to flush its async insert buffer.
+    pub async fn flush_async_insert_queue(&self) -> QueryResult<()> {
+        self.execute_raw("SYSTEM FLUSH ASYNC INSERT QUEUE").await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

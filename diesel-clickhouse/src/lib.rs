@@ -391,9 +391,3 @@ pub mod async_insert;
 
 #[cfg(any(feature = "http", feature = "native"))]
 pub use async_insert::{AsyncInsertConfig, AsyncInserter, BufferedAsyncInserter, AsyncInsertExt};
-
-#[cfg(feature = "http")]
-pub use async_insert::HttpAsyncInserter;
-
-#[cfg(feature = "native")]
-pub use async_insert::NativeAsyncInserter;

@@ -689,6 +689,56 @@ pub trait ExecuteMut: QueryFragment<ClickHouse> + Send + Sync + Sized {
 
 impl<T: QueryFragment<ClickHouse> + Send + Sync> ExecuteMut for T {}
 
+// =============================================================================
+// Async Insert Support
+// =============================================================================
+
+impl NativeConnection {
+    /// Insert rows using async insert mode with Block format.
+    ///
+    /// This method uses ClickHouse's async insert mode which buffers data
+    /// server-side for optimal write performance.
+    ///
+    /// Note: This applies the async insert settings before each insert.
+    /// For better performance with many small inserts, use `AsyncInserter`
+    /// which caches the settings application.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use diesel_clickhouse::async_insert::AsyncInsertConfig;
+    ///
+    /// let config = AsyncInsertConfig::fire_and_forget();
+    /// conn.async_insert_rows::<events::table, _>(&config, &events).await?;
+    /// ```
+    pub async fn async_insert_rows<T, R>(
+        &self,
+        config: &crate::async_insert::AsyncInsertConfig,
+        rows: &[R],
+    ) -> QueryResult<()>
+    where
+        T: crate::core::query_source::Table,
+        R: ToNativeBlock + Send,
+    {
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        // Apply async insert settings
+        for cmd in config.to_native_set_commands() {
+            self.execute_raw(&cmd).await?;
+        }
+
+        let block = R::rows_to_block(rows)?;
+        self.insert(T::table_name(), block).await
+    }
+
+    /// Force the server to flush its async insert buffer.
+    pub async fn flush_async_insert_queue(&self) -> QueryResult<()> {
+        self.execute_raw("SYSTEM FLUSH ASYNC INSERT QUEUE").await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -174,7 +174,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = AsyncInsertConfig::fire_and_forget().async_insert_busy_timeout_ms(100); // Fast flush for demo
 
-    let inserter: AsyncInserter<events::table, NewEvent> = conn.async_inserter(config);
+    let inserter: AsyncInserter<events::table, NewEvent> = conn.clone().async_inserter(config);
 
     // Insert events one by one - they're buffered server-side
     for i in 1..=5 {
@@ -201,7 +201,7 @@ async fn main() -> anyhow::Result<()> {
     println!("2. AsyncInserter with synchronous mode (highest durability):");
 
     let config = AsyncInsertConfig::synchronous();
-    let inserter: AsyncInserter<events::table, NewEvent> = conn.async_inserter(config);
+    let inserter: AsyncInserter<events::table, NewEvent> = conn.clone().async_inserter(config);
 
     // Insert batch - waits for server confirmation
     let batch: Vec<NewEvent> = (6..=10)
@@ -227,7 +227,7 @@ async fn main() -> anyhow::Result<()> {
     let config = AsyncInsertConfig::fire_and_forget();
     let buffer_size = 5; // Flush every 5 events locally
     let buffered: BufferedAsyncInserter<events::table, NewEvent> =
-        BufferedAsyncInserter::new(&conn, config, buffer_size);
+        conn.clone().buffered_async_inserter(config, buffer_size);
 
     // Push events - auto-flushes when buffer is full
     for i in 11..=23 {
@@ -275,7 +275,7 @@ async fn main() -> anyhow::Result<()> {
     println!("   Config: {}\n", config.to_settings_sql());
 
     // Insert using custom config via AsyncInserter
-    let inserter: AsyncInserter<events::table, NewEvent> = conn.async_inserter(config);
+    let inserter: AsyncInserter<events::table, NewEvent> = conn.clone().async_inserter(config);
     inserter
         .insert(&NewEvent {
             id: 100,
