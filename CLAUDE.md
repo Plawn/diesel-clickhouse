@@ -72,7 +72,175 @@ The `Connection` enum in `unified.rs` provides a unified API over both backends.
 
 ## Development Rules
 
-- **Unified interface first**: Each new feature must be available in the unified `Connection` interface (in `unified.rs`) if technically possible. Don't add backend-specific features without exposing them through the unified API.
+### CRITICAL: Read Before Writing
+
+**NEVER write code without first understanding the existing codebase.** Before implementing anything:
+1. Search for similar existing implementations using grep/glob
+2. Identify patterns already used in the codebase
+3. Reuse existing utilities, traits, and helpers
+4. Follow the established code style exactly
+
+### Unified Interface First
+
+Each new feature must be available in the unified `Connection` interface (in `unified.rs`) if technically possible. Don't add backend-specific features without exposing them through the unified API.
+
+### Multi-Backend Factorization (MANDATORY)
+
+This project supports HTTP and Native backends. **Code must be factorized properly:**
+
+```rust
+// ❌ FORBIDDEN: Duplicated logic in each backend
+// http/mod.rs
+impl HttpConnection {
+    pub async fn execute_query(&self, sql: &str) -> Result<()> {
+        let sql = self.prepare_sql(sql);  // Duplicated
+        let sql = self.add_settings(sql); // Duplicated
+        self.http_client.post(sql).await
+    }
+}
+// native/mod.rs
+impl NativeConnection {
+    pub async fn execute_query(&self, sql: &str) -> Result<()> {
+        let sql = self.prepare_sql(sql);  // Same logic duplicated!
+        let sql = self.add_settings(sql); // Same logic duplicated!
+        self.native_client.execute(sql).await
+    }
+}
+
+// ✅ MANDATORY: Shared logic in core, backend-specific only where needed
+// core: shared preparation logic
+fn prepare_query(sql: &str, settings: &Settings) -> String { ... }
+
+// backends: only transport-specific code
+impl HttpConnection {
+    pub async fn execute_query(&self, sql: &str) -> Result<()> {
+        let sql = prepare_query(sql, &self.settings);
+        self.http_client.post(sql).await  // HTTP-specific only
+    }
+}
+```
+
+**Factorization checklist:**
+- [ ] SQL generation: MUST be in `diesel-clickhouse-core` (backend-agnostic)
+- [ ] Type conversions: MUST be in `diesel-clickhouse-types`
+- [ ] Query building: MUST use shared `QueryFragment` trait
+- [ ] Only transport layer differs between backends
+- [ ] New trait? Ask: can both backends implement it identically? If yes → core crate
+
+### Code Deduplication (MANDATORY)
+
+**Never duplicate code. Extract and reuse.**
+
+```rust
+// ❌ FORBIDDEN: Copy-pasted logic
+fn process_users(users: Vec<User>) -> Vec<ProcessedUser> {
+    users.into_iter()
+        .filter(|u| u.active)
+        .map(|u| ProcessedUser { name: u.name.to_uppercase(), ... })
+        .collect()
+}
+fn process_admins(admins: Vec<Admin>) -> Vec<ProcessedAdmin> {
+    admins.into_iter()
+        .filter(|a| a.active)  // Same filter!
+        .map(|a| ProcessedAdmin { name: a.name.to_uppercase(), ... })  // Same transform!
+        .collect()
+}
+
+// ✅ MANDATORY: Extract common behavior via traits
+trait Processable {
+    fn is_active(&self) -> bool;
+    fn name(&self) -> &str;
+}
+fn process<T: Processable, R>(items: Vec<T>, map_fn: impl Fn(T) -> R) -> Vec<R> {
+    items.into_iter().filter(|i| i.is_active()).map(map_fn).collect()
+}
+```
+
+**Before writing new code, ALWAYS:**
+1. `grep -r "similar_pattern"` to find existing implementations
+2. Check if a trait already exists for the behavior
+3. Check `diesel-clickhouse-core` for reusable utilities
+4. If 3+ lines are similar somewhere → extract to shared function/trait
+
+### Idiomatic Rust (MANDATORY)
+
+**Write Rust the Rust way. Follow community conventions.**
+
+```rust
+// ❌ FORBIDDEN: Non-idiomatic patterns
+fn get_value(opt: Option<i32>) -> i32 {
+    if opt.is_some() {
+        opt.unwrap()  // Anti-pattern
+    } else {
+        0
+    }
+}
+
+fn find_user(users: &[User], id: u64) -> Option<&User> {
+    for user in users {
+        if user.id == id {
+            return Some(user);
+        }
+    }
+    None
+}
+
+// ✅ MANDATORY: Idiomatic patterns
+fn get_value(opt: Option<i32>) -> i32 {
+    opt.unwrap_or(0)
+}
+
+fn find_user(users: &[User], id: u64) -> Option<&User> {
+    users.iter().find(|u| u.id == id)
+}
+```
+
+**Idiomatic patterns to use:**
+- `Option`: use `map`, `and_then`, `unwrap_or`, `ok_or`, `?` operator
+- `Result`: use `map_err`, `context` (anyhow), `?` operator, never `.unwrap()` in lib code
+- `Iterator`: use combinators (`map`, `filter`, `fold`, `find`, `any`, `all`)
+- `match`: prefer over `if let` chains when multiple variants
+- `impl Into<T>` / `AsRef<T>`: for flexible APIs
+- Builder pattern: for complex struct construction
+- `From`/`Into`: for type conversions, not custom methods
+- `Default`: implement for structs with sensible defaults
+- `#[must_use]`: on functions returning values that shouldn't be ignored
+
+```rust
+// ❌ FORBIDDEN: Custom conversion method
+impl Foo {
+    fn to_bar(&self) -> Bar { ... }
+}
+
+// ✅ MANDATORY: Use From trait
+impl From<&Foo> for Bar {
+    fn from(foo: &Foo) -> Self { ... }
+}
+// Usage: Bar::from(&foo) or foo.into()
+```
+
+### Error Handling
+
+```rust
+// ❌ FORBIDDEN in library code
+.unwrap()
+.expect("msg")
+panic!()
+
+// ✅ MANDATORY: Propagate errors
+.ok_or_else(|| Error::NotFound)?
+.map_err(Error::from)?
+```
+
+### Naming Conventions
+
+- Types: `PascalCase`
+- Functions/methods: `snake_case`
+- Constants: `SCREAMING_SNAKE_CASE`
+- Modules: `snake_case`
+- Trait methods that return `Self`: `new`, `with_*`, `into_*`
+- Trait methods that borrow: `as_*`, `to_*` (allocating), methods without prefix (non-allocating)
+- Boolean methods: `is_*`, `has_*`, `can_*`
 
 ## Code Style
 
@@ -395,4 +563,42 @@ cargo flamegraph --bin my_app
 
 ---
 
-*Rust te permet d'être aussi rapide que C. Utilise ce pouvoir.*
+# Final Checklist (BEFORE SUBMITTING ANY CODE)
+
+Run through this checklist for every piece of code:
+
+## 1. Did I Research First?
+- [ ] Searched for similar existing code in the codebase
+- [ ] Identified patterns already used
+- [ ] Checked core/types crates for reusable utilities
+
+## 2. Is the Code Properly Factorized?
+- [ ] No duplicated logic between HTTP and Native backends
+- [ ] Shared logic lives in `diesel-clickhouse-core`
+- [ ] Backend implementations only contain transport-specific code
+- [ ] No copy-pasted code blocks (3+ similar lines → extract)
+
+## 3. Is It Idiomatic Rust?
+- [ ] Using iterator combinators instead of manual loops
+- [ ] Using `?` operator for error propagation
+- [ ] Using `From`/`Into` traits for conversions
+- [ ] Using `Option`/`Result` methods (`map`, `and_then`, `unwrap_or`)
+- [ ] No `.unwrap()` or `.expect()` in library code
+- [ ] Following naming conventions (`is_*`, `as_*`, `into_*`)
+
+## 4. Is It Performant?
+- [ ] No unnecessary `.clone()`
+- [ ] Using references (`&T`) where ownership not needed
+- [ ] Collections pre-allocated with `with_capacity`
+- [ ] No O(n) lookups inside loops (use HashMap/HashSet)
+- [ ] Iterators chained without intermediate `collect()`
+- [ ] Async I/O parallelized where appropriate
+
+## 5. Does It Compile Clean?
+- [ ] `cargo clippy --all --all-features` passes
+- [ ] `cargo test --all` passes
+- [ ] No new warnings introduced
+
+---
+
+*Write it right the first time. Read the codebase. Follow the patterns.*

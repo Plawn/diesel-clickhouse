@@ -34,7 +34,9 @@
 //! ```
 
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(feature = "native")]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::Mutex;
 
@@ -228,6 +230,118 @@ impl AsyncInsertConfig {
 }
 
 // =============================================================================
+// AsyncInsertable Trait - Backend abstraction for batch inserts
+// =============================================================================
+
+/// Trait for types that can be batch-inserted using async insert mode.
+///
+/// This trait abstracts over the backend-specific insert logic, allowing
+/// a single `AsyncInserter` implementation to work with both HTTP and Native backends.
+///
+/// # Implementors
+///
+/// This trait is automatically implemented for row types based on enabled features:
+/// - HTTP: Types implementing `clickhouse::Row + Serialize`
+/// - Native: Types implementing `ToNativeBlock`
+/// - Both: Types implementing all of the above
+#[allow(async_fn_in_trait)]
+pub trait AsyncInsertable<T: Table>: Sized + Send {
+    /// Insert a batch of rows using the appropriate backend mechanism.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - The connection to use for insertion
+    /// * `config` - Async insert configuration
+    /// * `rows` - The rows to insert
+    /// * `settings_applied` - Atomic flag for native backend settings (ignored by HTTP)
+    async fn batch_insert(
+        conn: &Connection,
+        config: &AsyncInsertConfig,
+        rows: &[Self],
+        #[cfg(feature = "native")] settings_applied: &AtomicBool,
+    ) -> QueryResult<()>;
+}
+
+// HTTP + Native implementation
+#[cfg(all(feature = "http", feature = "native"))]
+impl<T, R> AsyncInsertable<T> for R
+where
+    T: Table,
+    R: clickhouse::Row + serde::Serialize + crate::native::ToNativeBlock + Send + Sync,
+    for<'a> R: clickhouse::Row<Value<'a> = R>,
+    for<'a> <R as clickhouse::Row>::Value<'a>: serde::Serialize,
+{
+    async fn batch_insert(
+        conn: &Connection,
+        config: &AsyncInsertConfig,
+        rows: &[Self],
+        settings_applied: &AtomicBool,
+    ) -> QueryResult<()> {
+        match conn {
+            Connection::Http(http_conn) => {
+                http_conn.async_insert_rows::<T, R>(config, rows).await
+            }
+            Connection::Native(native_conn) => {
+                // Apply settings once per inserter
+                if !settings_applied.swap(true, Ordering::SeqCst) {
+                    for cmd in config.to_native_set_commands() {
+                        native_conn.execute_raw(&cmd).await?;
+                    }
+                }
+                let block = R::rows_to_block(rows)?;
+                native_conn.insert(T::table_name(), block).await
+            }
+        }
+    }
+}
+
+// HTTP-only implementation
+#[cfg(all(feature = "http", not(feature = "native")))]
+impl<T, R> AsyncInsertable<T> for R
+where
+    T: Table,
+    R: clickhouse::Row + serde::Serialize + Send + Sync,
+    for<'a> R: clickhouse::Row<Value<'a> = R>,
+    for<'a> <R as clickhouse::Row>::Value<'a>: serde::Serialize,
+{
+    async fn batch_insert(
+        conn: &Connection,
+        config: &AsyncInsertConfig,
+        rows: &[Self],
+    ) -> QueryResult<()> {
+        let Connection::Http(http_conn) = conn;
+        http_conn.async_insert_rows::<T, R>(config, rows).await
+    }
+}
+
+// Native-only implementation
+#[cfg(all(feature = "native", not(feature = "http")))]
+impl<T, R> AsyncInsertable<T> for R
+where
+    T: Table,
+    R: crate::native::ToNativeBlock + Send,
+{
+    async fn batch_insert(
+        conn: &Connection,
+        config: &AsyncInsertConfig,
+        rows: &[Self],
+        settings_applied: &AtomicBool,
+    ) -> QueryResult<()> {
+        let Connection::Native(native_conn) = conn;
+
+        // Apply settings once per inserter
+        if !settings_applied.swap(true, Ordering::SeqCst) {
+            for cmd in config.to_native_set_commands() {
+                native_conn.execute_raw(&cmd).await?;
+            }
+        }
+
+        let block = R::rows_to_block(rows)?;
+        native_conn.insert(T::table_name(), block).await
+    }
+}
+
+// =============================================================================
 // AsyncInserter
 // =============================================================================
 
@@ -319,14 +433,11 @@ where
     }
 }
 
-// HTTP + Native
-#[cfg(all(feature = "http", feature = "native"))]
+// Unified implementation using AsyncInsertable trait
 impl<T, R> AsyncInserter<T, R>
 where
     T: Table,
-    R: clickhouse::Row + serde::Serialize + crate::native::ToNativeBlock + Send + Sync,
-    for<'a> R: clickhouse::Row<Value<'a> = R>,
-    for<'a> <R as clickhouse::Row>::Value<'a>: serde::Serialize,
+    R: AsyncInsertable<T>,
 {
     /// Write a single row to the local buffer.
     ///
@@ -352,21 +463,14 @@ where
             return Ok(());
         }
 
-        match &self.conn {
-            Connection::Http(conn) => {
-                conn.async_insert_rows::<T, R>(&self.config, &rows).await?;
-            }
-            Connection::Native(conn) => {
-                // Apply settings once per inserter
-                if !self.settings_applied.swap(true, Ordering::SeqCst) {
-                    for cmd in self.config.to_native_set_commands() {
-                        conn.execute_raw(&cmd).await?;
-                    }
-                }
-                let block = R::rows_to_block(&rows)?;
-                conn.insert(T::table_name(), block).await?;
-            }
-        }
+        R::batch_insert(
+            &self.conn,
+            &self.config,
+            &rows,
+            #[cfg(feature = "native")]
+            &self.settings_applied,
+        )
+        .await?;
 
         self.sent_count.fetch_add(rows.len() as u64, Ordering::Relaxed);
         Ok(())
@@ -375,91 +479,6 @@ where
     /// Flush local buffer and then flush server's async insert queue.
     ///
     /// Use this when you need data to be immediately queryable.
-    pub async fn flush_all(&self) -> QueryResult<()> {
-        self.flush().await?;
-        self.flush_server().await
-    }
-}
-
-// HTTP only
-#[cfg(all(feature = "http", not(feature = "native")))]
-impl<T, R> AsyncInserter<T, R>
-where
-    T: Table,
-    R: clickhouse::Row + serde::Serialize + Send + Sync,
-    for<'a> R: clickhouse::Row<Value<'a> = R>,
-    for<'a> <R as clickhouse::Row>::Value<'a>: serde::Serialize,
-{
-    /// Write a single row to the local buffer.
-    pub async fn write(&self, row: R) {
-        self.buffer.lock().await.push(row);
-    }
-
-    /// Write multiple rows to the local buffer.
-    pub async fn write_many(&self, rows: impl IntoIterator<Item = R>) {
-        self.buffer.lock().await.extend(rows);
-    }
-
-    /// Flush the local buffer to the server.
-    pub async fn flush(&self) -> QueryResult<()> {
-        let rows = std::mem::take(&mut *self.buffer.lock().await);
-        if rows.is_empty() {
-            return Ok(());
-        }
-
-        let Connection::Http(conn) = &self.conn;
-        conn.async_insert_rows::<T, R>(&self.config, &rows).await?;
-        self.sent_count.fetch_add(rows.len() as u64, Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// Flush local buffer and then flush server's async insert queue.
-    pub async fn flush_all(&self) -> QueryResult<()> {
-        self.flush().await?;
-        self.flush_server().await
-    }
-}
-
-// Native only
-#[cfg(all(feature = "native", not(feature = "http")))]
-impl<T, R> AsyncInserter<T, R>
-where
-    T: Table,
-    R: crate::native::ToNativeBlock + Send,
-{
-    /// Write a single row to the local buffer.
-    pub async fn write(&self, row: R) {
-        self.buffer.lock().await.push(row);
-    }
-
-    /// Write multiple rows to the local buffer.
-    pub async fn write_many(&self, rows: impl IntoIterator<Item = R>) {
-        self.buffer.lock().await.extend(rows);
-    }
-
-    /// Flush the local buffer to the server.
-    pub async fn flush(&self) -> QueryResult<()> {
-        let rows = std::mem::take(&mut *self.buffer.lock().await);
-        if rows.is_empty() {
-            return Ok(());
-        }
-
-        let Connection::Native(conn) = &self.conn;
-
-        // Apply settings once per inserter
-        if !self.settings_applied.swap(true, Ordering::SeqCst) {
-            for cmd in self.config.to_native_set_commands() {
-                conn.execute_raw(&cmd).await?;
-            }
-        }
-
-        let block = R::rows_to_block(&rows)?;
-        conn.insert(T::table_name(), block).await?;
-        self.sent_count.fetch_add(rows.len() as u64, Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// Flush local buffer and then flush server's async insert queue.
     pub async fn flush_all(&self) -> QueryResult<()> {
         self.flush().await?;
         self.flush_server().await
