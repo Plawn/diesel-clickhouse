@@ -16,20 +16,25 @@
 //! ```rust,ignore
 //! use diesel_clickhouse::async_insert::{AsyncInsertConfig, AsyncInsertExt};
 //!
-//! // Fire-and-forget mode (highest throughput)
-//! let config = AsyncInsertConfig::fire_and_forget();
-//! let inserter = conn.async_inserter::<events::table, NewEvent>(config);
-//! inserter.insert(&event).await?;
+//! // Create an inserter (buffers locally)
+//! let inserter = conn.clone().async_inserter::<events::table, NewEvent>(
+//!     AsyncInsertConfig::fire_and_forget()
+//! );
 //!
-//! // Synchronous mode (highest durability)
-//! let config = AsyncInsertConfig::synchronous();
-//! let inserter = conn.async_inserter::<events::table, NewEvent>(config);
-//! inserter.insert(&event).await?;
+//! // Write rows (buffered locally, not sent yet)
+//! inserter.write(event1).await;
+//! inserter.write(event2).await;
+//! inserter.write(event3).await;
+//!
+//! // Send buffered rows to server
+//! inserter.flush().await?;
+//!
+//! // Force server to write its async buffer to disk (optional)
+//! inserter.flush_server().await?;
 //! ```
 
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
@@ -226,11 +231,10 @@ impl AsyncInsertConfig {
 // AsyncInserter
 // =============================================================================
 
-/// Async inserter that wraps a connection with async insert configuration.
+/// Buffered async inserter with local batching.
 ///
-/// This provides a convenient API for repeated async inserts with the same
-/// configuration. For Native backend, it caches the settings application
-/// to avoid re-sending SET commands on every insert.
+/// Rows are buffered locally and only sent to the server when `flush()` is called.
+/// This provides true client-side batching combined with server-side async insert mode.
 ///
 /// # Example
 ///
@@ -242,19 +246,23 @@ impl AsyncInsertConfig {
 ///     AsyncInsertConfig::fire_and_forget(),
 /// );
 ///
-/// // Insert multiple batches
-/// inserter.insert_many(&batch1).await?;
-/// inserter.insert_many(&batch2).await?;
+/// // Write rows (buffered locally)
+/// inserter.write(event1).await;
+/// inserter.write(event2).await;
 ///
-/// println!("Inserted {} rows", inserter.insert_count());
+/// // Send to server
+/// inserter.flush().await?;
+///
+/// println!("Sent {} rows", inserter.sent_count());
 /// ```
 pub struct AsyncInserter<T, R> {
     conn: Connection,
     config: AsyncInsertConfig,
-    insert_count: AtomicU64,
+    buffer: Mutex<Vec<R>>,
+    sent_count: AtomicU64,
     #[cfg(feature = "native")]
     settings_applied: AtomicBool,
-    _marker: PhantomData<(T, R)>,
+    _marker: PhantomData<T>,
 }
 
 impl<T, R> AsyncInserter<T, R>
@@ -266,16 +274,35 @@ where
         Self {
             conn,
             config,
-            insert_count: AtomicU64::new(0),
+            buffer: Mutex::new(Vec::new()),
+            sent_count: AtomicU64::new(0),
             #[cfg(feature = "native")]
             settings_applied: AtomicBool::new(false),
             _marker: PhantomData,
         }
     }
 
-    /// Get the number of rows inserted.
-    pub fn insert_count(&self) -> u64 {
-        self.insert_count.load(Ordering::Relaxed)
+    /// Create a new async inserter with pre-allocated buffer capacity.
+    pub fn with_capacity(conn: Connection, config: AsyncInsertConfig, capacity: usize) -> Self {
+        Self {
+            conn,
+            config,
+            buffer: Mutex::new(Vec::with_capacity(capacity)),
+            sent_count: AtomicU64::new(0),
+            #[cfg(feature = "native")]
+            settings_applied: AtomicBool::new(false),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Get the number of rows currently buffered locally.
+    pub async fn buffered_count(&self) -> usize {
+        self.buffer.lock().await.len()
+    }
+
+    /// Get the total number of rows sent to the server.
+    pub fn sent_count(&self) -> u64 {
+        self.sent_count.load(Ordering::Relaxed)
     }
 
     /// Get the configuration.
@@ -283,8 +310,11 @@ where
         &self.config
     }
 
-    /// Force the server to flush its async insert buffer.
-    pub async fn flush(&self) -> QueryResult<()> {
+    /// Force the server to flush its async insert buffer to disk.
+    ///
+    /// This is useful when you need to query data immediately after inserting.
+    /// Note: This flushes ALL async insert buffers on the server, not just yours.
+    pub async fn flush_server(&self) -> QueryResult<()> {
         self.conn.execute("SYSTEM FLUSH ASYNC INSERT QUEUE").await
     }
 }
@@ -298,20 +328,33 @@ where
     for<'a> R: clickhouse::Row<Value<'a> = R>,
     for<'a> <R as clickhouse::Row>::Value<'a>: serde::Serialize,
 {
-    /// Insert a single row.
-    pub async fn insert(&self, row: &R) -> QueryResult<()> {
-        self.insert_many(std::slice::from_ref(row)).await
+    /// Write a single row to the local buffer.
+    ///
+    /// The row is not sent to the server until `flush()` is called.
+    pub async fn write(&self, row: R) {
+        self.buffer.lock().await.push(row);
     }
 
-    /// Insert multiple rows.
-    pub async fn insert_many(&self, rows: &[R]) -> QueryResult<()> {
+    /// Write multiple rows to the local buffer.
+    ///
+    /// The rows are not sent to the server until `flush()` is called.
+    pub async fn write_many(&self, rows: impl IntoIterator<Item = R>) {
+        self.buffer.lock().await.extend(rows);
+    }
+
+    /// Flush the local buffer to the server.
+    ///
+    /// Sends all buffered rows using the configured async insert settings.
+    /// After this call, the local buffer is empty.
+    pub async fn flush(&self) -> QueryResult<()> {
+        let rows = std::mem::take(&mut *self.buffer.lock().await);
         if rows.is_empty() {
             return Ok(());
         }
 
         match &self.conn {
             Connection::Http(conn) => {
-                conn.async_insert_rows::<T, R>(&self.config, rows).await?;
+                conn.async_insert_rows::<T, R>(&self.config, &rows).await?;
             }
             Connection::Native(conn) => {
                 // Apply settings once per inserter
@@ -320,13 +363,21 @@ where
                         conn.execute_raw(&cmd).await?;
                     }
                 }
-                let block = R::rows_to_block(rows)?;
+                let block = R::rows_to_block(&rows)?;
                 conn.insert(T::table_name(), block).await?;
             }
         }
 
-        self.insert_count.fetch_add(rows.len() as u64, Ordering::Relaxed);
+        self.sent_count.fetch_add(rows.len() as u64, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Flush local buffer and then flush server's async insert queue.
+    ///
+    /// Use this when you need data to be immediately queryable.
+    pub async fn flush_all(&self) -> QueryResult<()> {
+        self.flush().await?;
+        self.flush_server().await
     }
 }
 
@@ -339,21 +390,33 @@ where
     for<'a> R: clickhouse::Row<Value<'a> = R>,
     for<'a> <R as clickhouse::Row>::Value<'a>: serde::Serialize,
 {
-    /// Insert a single row.
-    pub async fn insert(&self, row: &R) -> QueryResult<()> {
-        self.insert_many(std::slice::from_ref(row)).await
+    /// Write a single row to the local buffer.
+    pub async fn write(&self, row: R) {
+        self.buffer.lock().await.push(row);
     }
 
-    /// Insert multiple rows.
-    pub async fn insert_many(&self, rows: &[R]) -> QueryResult<()> {
+    /// Write multiple rows to the local buffer.
+    pub async fn write_many(&self, rows: impl IntoIterator<Item = R>) {
+        self.buffer.lock().await.extend(rows);
+    }
+
+    /// Flush the local buffer to the server.
+    pub async fn flush(&self) -> QueryResult<()> {
+        let rows = std::mem::take(&mut *self.buffer.lock().await);
         if rows.is_empty() {
             return Ok(());
         }
 
         let Connection::Http(conn) = &self.conn;
-        conn.async_insert_rows::<T, R>(&self.config, rows).await?;
-        self.insert_count.fetch_add(rows.len() as u64, Ordering::Relaxed);
+        conn.async_insert_rows::<T, R>(&self.config, &rows).await?;
+        self.sent_count.fetch_add(rows.len() as u64, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Flush local buffer and then flush server's async insert queue.
+    pub async fn flush_all(&self) -> QueryResult<()> {
+        self.flush().await?;
+        self.flush_server().await
     }
 }
 
@@ -364,13 +427,19 @@ where
     T: Table,
     R: crate::native::ToNativeBlock + Send,
 {
-    /// Insert a single row.
-    pub async fn insert(&self, row: &R) -> QueryResult<()> {
-        self.insert_many(std::slice::from_ref(row)).await
+    /// Write a single row to the local buffer.
+    pub async fn write(&self, row: R) {
+        self.buffer.lock().await.push(row);
     }
 
-    /// Insert multiple rows.
-    pub async fn insert_many(&self, rows: &[R]) -> QueryResult<()> {
+    /// Write multiple rows to the local buffer.
+    pub async fn write_many(&self, rows: impl IntoIterator<Item = R>) {
+        self.buffer.lock().await.extend(rows);
+    }
+
+    /// Flush the local buffer to the server.
+    pub async fn flush(&self) -> QueryResult<()> {
+        let rows = std::mem::take(&mut *self.buffer.lock().await);
         if rows.is_empty() {
             return Ok(());
         }
@@ -384,204 +453,16 @@ where
             }
         }
 
-        let block = R::rows_to_block(rows)?;
+        let block = R::rows_to_block(&rows)?;
         conn.insert(T::table_name(), block).await?;
-        self.insert_count.fetch_add(rows.len() as u64, Ordering::Relaxed);
-        Ok(())
-    }
-}
-
-// =============================================================================
-// BufferedAsyncInserter
-// =============================================================================
-
-/// A buffered async inserter with local batching.
-///
-/// Buffers rows locally before sending them to the server,
-/// reducing network round-trips while still using async insert mode.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use diesel_clickhouse::async_insert::{AsyncInsertConfig, BufferedAsyncInserter};
-///
-/// let inserter = BufferedAsyncInserter::<events::table, NewEvent>::new(
-///     conn.clone(),
-///     AsyncInsertConfig::fire_and_forget(),
-///     1000, // buffer size
-/// );
-///
-/// // Push rows one at a time - they're batched locally
-/// for event in events {
-///     inserter.push(event).await?;
-/// }
-///
-/// // Flush remaining rows
-/// inserter.flush_all().await?;
-/// ```
-pub struct BufferedAsyncInserter<T, R> {
-    inner: AsyncInserter<T, R>,
-    buffer: Arc<Mutex<Vec<R>>>,
-    buffer_size: usize,
-}
-
-impl<T, R> BufferedAsyncInserter<T, R>
-where
-    T: Table,
-    R: Clone,
-{
-    /// Get the number of rows currently in the local buffer.
-    pub async fn buffered_count(&self) -> usize {
-        self.buffer.lock().await.len()
-    }
-
-    /// Get the total number of rows sent to the server.
-    pub fn insert_count(&self) -> u64 {
-        self.inner.insert_count()
-    }
-
-    /// Get the configuration.
-    pub fn config(&self) -> &AsyncInsertConfig {
-        self.inner.config()
-    }
-}
-
-// HTTP + Native
-#[cfg(all(feature = "http", feature = "native"))]
-impl<T, R> BufferedAsyncInserter<T, R>
-where
-    T: Table,
-    R: clickhouse::Row + serde::Serialize + crate::native::ToNativeBlock + Clone + Send + Sync,
-    for<'a> R: clickhouse::Row<Value<'a> = R>,
-    for<'a> <R as clickhouse::Row>::Value<'a>: serde::Serialize,
-{
-    /// Create a new buffered async inserter.
-    pub fn new(conn: Connection, config: AsyncInsertConfig, buffer_size: usize) -> Self {
-        Self {
-            inner: AsyncInserter::new(conn, config),
-            buffer: Arc::new(Mutex::new(Vec::with_capacity(buffer_size))),
-            buffer_size,
-        }
-    }
-
-    /// Push a row to the local buffer, flushing if buffer is full.
-    pub async fn push(&self, row: R) -> QueryResult<()> {
-        let should_flush = {
-            let mut buffer = self.buffer.lock().await;
-            buffer.push(row);
-            buffer.len() >= self.buffer_size
-        };
-        if should_flush {
-            self.flush_buffer().await?;
-        }
+        self.sent_count.fetch_add(rows.len() as u64, Ordering::Relaxed);
         Ok(())
     }
 
-    /// Flush the local buffer to the server.
-    pub async fn flush_buffer(&self) -> QueryResult<()> {
-        let rows = std::mem::take(&mut *self.buffer.lock().await);
-        if !rows.is_empty() {
-            self.inner.insert_many(&rows).await?;
-        }
-        Ok(())
-    }
-
-    /// Flush both local buffer and server async insert queue.
+    /// Flush local buffer and then flush server's async insert queue.
     pub async fn flush_all(&self) -> QueryResult<()> {
-        self.flush_buffer().await?;
-        self.inner.flush().await
-    }
-}
-
-// HTTP only
-#[cfg(all(feature = "http", not(feature = "native")))]
-impl<T, R> BufferedAsyncInserter<T, R>
-where
-    T: Table,
-    R: clickhouse::Row + serde::Serialize + Clone + Send + Sync,
-    for<'a> R: clickhouse::Row<Value<'a> = R>,
-    for<'a> <R as clickhouse::Row>::Value<'a>: serde::Serialize,
-{
-    /// Create a new buffered async inserter.
-    pub fn new(conn: Connection, config: AsyncInsertConfig, buffer_size: usize) -> Self {
-        Self {
-            inner: AsyncInserter::new(conn, config),
-            buffer: Arc::new(Mutex::new(Vec::with_capacity(buffer_size))),
-            buffer_size,
-        }
-    }
-
-    /// Push a row to the local buffer, flushing if buffer is full.
-    pub async fn push(&self, row: R) -> QueryResult<()> {
-        let should_flush = {
-            let mut buffer = self.buffer.lock().await;
-            buffer.push(row);
-            buffer.len() >= self.buffer_size
-        };
-        if should_flush {
-            self.flush_buffer().await?;
-        }
-        Ok(())
-    }
-
-    /// Flush the local buffer to the server.
-    pub async fn flush_buffer(&self) -> QueryResult<()> {
-        let rows = std::mem::take(&mut *self.buffer.lock().await);
-        if !rows.is_empty() {
-            self.inner.insert_many(&rows).await?;
-        }
-        Ok(())
-    }
-
-    /// Flush both local buffer and server async insert queue.
-    pub async fn flush_all(&self) -> QueryResult<()> {
-        self.flush_buffer().await?;
-        self.inner.flush().await
-    }
-}
-
-// Native only
-#[cfg(all(feature = "native", not(feature = "http")))]
-impl<T, R> BufferedAsyncInserter<T, R>
-where
-    T: Table,
-    R: crate::native::ToNativeBlock + Clone + Send,
-{
-    /// Create a new buffered async inserter.
-    pub fn new(conn: Connection, config: AsyncInsertConfig, buffer_size: usize) -> Self {
-        Self {
-            inner: AsyncInserter::new(conn, config),
-            buffer: Arc::new(Mutex::new(Vec::with_capacity(buffer_size))),
-            buffer_size,
-        }
-    }
-
-    /// Push a row to the local buffer, flushing if buffer is full.
-    pub async fn push(&self, row: R) -> QueryResult<()> {
-        let should_flush = {
-            let mut buffer = self.buffer.lock().await;
-            buffer.push(row);
-            buffer.len() >= self.buffer_size
-        };
-        if should_flush {
-            self.flush_buffer().await?;
-        }
-        Ok(())
-    }
-
-    /// Flush the local buffer to the server.
-    pub async fn flush_buffer(&self) -> QueryResult<()> {
-        let rows = std::mem::take(&mut *self.buffer.lock().await);
-        if !rows.is_empty() {
-            self.inner.insert_many(&rows).await?;
-        }
-        Ok(())
-    }
-
-    /// Flush both local buffer and server async insert queue.
-    pub async fn flush_all(&self) -> QueryResult<()> {
-        self.flush_buffer().await?;
-        self.inner.flush().await
+        self.flush().await?;
+        self.flush_server().await
     }
 }
 
@@ -593,29 +474,36 @@ where
 pub trait AsyncInsertExt {
     /// Create an async inserter for a table.
     ///
+    /// The inserter buffers rows locally until `flush()` is called.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
     /// use diesel_clickhouse::async_insert::{AsyncInsertConfig, AsyncInsertExt};
     ///
-    /// let inserter = conn.async_inserter::<events::table, NewEvent>(
+    /// let inserter = conn.clone().async_inserter::<events::table, NewEvent>(
     ///     AsyncInsertConfig::fire_and_forget()
     /// );
-    /// inserter.insert(&event).await?;
+    ///
+    /// // Buffer rows locally
+    /// inserter.write(event1).await;
+    /// inserter.write(event2).await;
+    ///
+    /// // Send to server
+    /// inserter.flush().await?;
     /// ```
     fn async_inserter<T, R>(self, config: AsyncInsertConfig) -> AsyncInserter<T, R>
     where
         T: Table;
 
-    /// Create a buffered async inserter for a table.
-    fn buffered_async_inserter<T, R>(
+    /// Create an async inserter with pre-allocated buffer capacity.
+    fn async_inserter_with_capacity<T, R>(
         self,
         config: AsyncInsertConfig,
-        buffer_size: usize,
-    ) -> BufferedAsyncInserter<T, R>
+        capacity: usize,
+    ) -> AsyncInserter<T, R>
     where
-        T: Table,
-        R: Clone;
+        T: Table;
 }
 
 impl AsyncInsertExt for Connection {
@@ -626,19 +514,14 @@ impl AsyncInsertExt for Connection {
         AsyncInserter::new(self, config)
     }
 
-    fn buffered_async_inserter<T, R>(
+    fn async_inserter_with_capacity<T, R>(
         self,
         config: AsyncInsertConfig,
-        buffer_size: usize,
-    ) -> BufferedAsyncInserter<T, R>
+        capacity: usize,
+    ) -> AsyncInserter<T, R>
     where
         T: Table,
-        R: Clone,
     {
-        BufferedAsyncInserter {
-            inner: AsyncInserter::new(self, config),
-            buffer: Arc::new(Mutex::new(Vec::with_capacity(buffer_size))),
-            buffer_size,
-        }
+        AsyncInserter::with_capacity(self, config, capacity)
     }
 }

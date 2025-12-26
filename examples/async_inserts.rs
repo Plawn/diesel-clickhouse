@@ -12,9 +12,7 @@
 //!
 //! Prerequisites: docker-compose up -d
 
-use diesel_clickhouse::async_insert::{
-    AsyncInsertConfig, AsyncInsertExt, AsyncInserter, BufferedAsyncInserter,
-};
+use diesel_clickhouse::async_insert::{AsyncInsertConfig, AsyncInsertExt, AsyncInserter};
 use diesel_clickhouse::prelude::*;
 use diesel_clickhouse::Connection;
 use diesel_clickhouse::ConnectionBuilder;
@@ -168,15 +166,14 @@ async fn main() -> anyhow::Result<()> {
     println!("Table 'events' ready\n");
 
     // -------------------------------------------------------------------------
-    // Example 1: Basic AsyncInserter with fire-and-forget mode
+    // Example 1: Basic AsyncInserter - write() buffers locally, flush() sends
     // -------------------------------------------------------------------------
-    println!("1. AsyncInserter with fire-and-forget mode (highest throughput):");
+    println!("1. AsyncInserter with local buffering (write + flush):");
 
-    let config = AsyncInsertConfig::fire_and_forget().async_insert_busy_timeout_ms(100); // Fast flush for demo
-
+    let config = AsyncInsertConfig::fire_and_forget().async_insert_busy_timeout_ms(100);
     let inserter: AsyncInserter<events::table, NewEvent> = conn.clone().async_inserter(config);
 
-    // Insert events one by one - they're buffered server-side
+    // Write events - they're buffered locally, NOT sent yet
     for i in 1..=5 {
         let event = NewEvent {
             id: i,
@@ -184,26 +181,34 @@ async fn main() -> anyhow::Result<()> {
             event_type: "click".to_string(),
             value: i as f64 * 1.5,
         };
-        inserter.insert(&event).await?;
+        inserter.write(event).await;
     }
     println!(
-        "   Inserted {} events (fire-and-forget)",
-        inserter.insert_count()
+        "   Buffered {} events locally (not sent yet)",
+        inserter.buffered_count().await
     );
 
-    // Force flush the server queue to ensure data is written
+    // Now send all buffered rows to the server
     inserter.flush().await?;
-    println!("   Flushed server queue\n");
+    println!(
+        "   Flushed to server: sent={}, buffered={}",
+        inserter.sent_count(),
+        inserter.buffered_count().await
+    );
+
+    // Force server to write async buffer to disk
+    inserter.flush_server().await?;
+    println!("   Flushed server queue to disk\n");
 
     // -------------------------------------------------------------------------
-    // Example 2: AsyncInserter with synchronous mode (wait for confirmation)
+    // Example 2: write_many() for batch writes
     // -------------------------------------------------------------------------
-    println!("2. AsyncInserter with synchronous mode (highest durability):");
+    println!("2. Batch writes with write_many():");
 
     let config = AsyncInsertConfig::synchronous();
     let inserter: AsyncInserter<events::table, NewEvent> = conn.clone().async_inserter(config);
 
-    // Insert batch - waits for server confirmation
+    // Create a batch of events
     let batch: Vec<NewEvent> = (6..=10)
         .map(|i| NewEvent {
             id: i,
@@ -213,23 +218,24 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
 
-    inserter.insert_many(&batch).await?;
-    println!(
-        "   Inserted {} events (synchronous, confirmed)\n",
-        inserter.insert_count()
-    );
+    // Write batch to local buffer
+    inserter.write_many(batch).await;
+    println!("   Buffered {} events", inserter.buffered_count().await);
+
+    // Flush to server (synchronous mode waits for confirmation)
+    inserter.flush().await?;
+    println!("   Sent {} events (synchronous, confirmed)\n", inserter.sent_count());
 
     // -------------------------------------------------------------------------
-    // Example 3: BufferedAsyncInserter (local batching + server async)
+    // Example 3: Incremental buffering with periodic flush
     // -------------------------------------------------------------------------
-    println!("3. BufferedAsyncInserter (local batching + server async):");
+    println!("3. Incremental buffering with manual flush:");
 
     let config = AsyncInsertConfig::fire_and_forget();
-    let buffer_size = 5; // Flush every 5 events locally
-    let buffered: BufferedAsyncInserter<events::table, NewEvent> =
-        conn.clone().buffered_async_inserter(config, buffer_size);
+    let inserter: AsyncInserter<events::table, NewEvent> =
+        conn.clone().async_inserter_with_capacity(config, 10);
 
-    // Push events - auto-flushes when buffer is full
+    // Write events, flush every 5
     for i in 11..=23 {
         let event = NewEvent {
             id: i,
@@ -237,28 +243,30 @@ async fn main() -> anyhow::Result<()> {
             event_type: "view".to_string(),
             value: i as f64 * 0.5,
         };
-        buffered.push(event).await?;
+        inserter.write(event).await;
 
-        if i % 5 == 0 {
+        // Flush every 5 events
+        if inserter.buffered_count().await >= 5 {
+            inserter.flush().await?;
             println!(
-                "   After event {}: buffered={}, sent={}",
+                "   After event {}: flushed! buffered={}, sent={}",
                 i,
-                buffered.buffered_count().await,
-                buffered.insert_count()
+                inserter.buffered_count().await,
+                inserter.sent_count()
             );
         }
     }
 
-    // Flush remaining events in local buffer
-    buffered.flush_buffer().await?;
+    // Flush remaining events
+    inserter.flush().await?;
     println!(
         "   Final: buffered={}, total sent={}",
-        buffered.buffered_count().await,
-        buffered.insert_count()
+        inserter.buffered_count().await,
+        inserter.sent_count()
     );
 
-    // Flush server queue
-    buffered.flush_all().await?;
+    // Flush server queue and wait
+    inserter.flush_all().await?;
     println!("   Flushed all (local + server)\n");
 
     // -------------------------------------------------------------------------
@@ -276,14 +284,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Insert using custom config via AsyncInserter
     let inserter: AsyncInserter<events::table, NewEvent> = conn.clone().async_inserter(config);
-    inserter
-        .insert(&NewEvent {
-            id: 100,
-            user_id: 999,
-            event_type: "custom".to_string(),
-            value: 42.0,
-        })
-        .await?;
+    inserter.write(NewEvent {
+        id: 100,
+        user_id: 999,
+        event_type: "custom".to_string(),
+        value: 42.0,
+    }).await;
+    inserter.flush().await?;
     println!("   Inserted event with custom high-throughput config\n");
 
     // -------------------------------------------------------------------------

@@ -390,4 +390,4 @@ pub mod migrations {
 pub mod async_insert;
 
 #[cfg(any(feature = "http", feature = "native"))]
-pub use async_insert::{AsyncInsertConfig, AsyncInserter, BufferedAsyncInserter, AsyncInsertExt};
+pub use async_insert::{AsyncInsertConfig, AsyncInserter, AsyncInsertExt};
