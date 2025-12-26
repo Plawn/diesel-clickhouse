@@ -44,3 +44,4 @@ Le PR #39906 a étendu le protocole natif pour supporter les query parameters �
 - verifier les perfos d'insert
 
 - insert natif, generattion des blocks optimisée
+- update(execute) fait du interpolated par ddefaut

@@ -286,23 +286,34 @@ impl<T: 'static + Send + Sync> HasSqlType for JsonTyped<T> {
 }
 
 // Serde implementations for JsonTyped
+//
+// IMPORTANT: For RowBinary format used by the clickhouse crate, JSON columns
+// must be serialized as a JSON string, not as a nested struct. This ensures
+// the value is treated as a single column rather than flattening struct fields.
 #[cfg(feature = "json")]
 impl<T: serde::Serialize> serde::Serialize for JsonTyped<T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        self.0.serialize(serializer)
+        // Serialize the inner value to a JSON string
+        let json_string = serde_json::to_string(&self.0)
+            .map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&json_string)
     }
 }
 
 #[cfg(feature = "json")]
-impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for JsonTyped<T> {
+impl<'de, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for JsonTyped<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        T::deserialize(deserializer).map(JsonTyped)
+        // Deserialize from a JSON string
+        let json_string = String::deserialize(deserializer)?;
+        let value = serde_json::from_str(&json_string)
+            .map_err(serde::de::Error::custom)?;
+        Ok(JsonTyped(value))
     }
 }
 
