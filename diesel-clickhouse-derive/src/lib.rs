@@ -180,7 +180,6 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let vis = &input.vis;
     let attrs = &input.attrs;
     let generics = &input.generics;
-    let where_clause = &generics.where_clause;
 
     // Extract fields
     let fields = match &input.fields {
@@ -199,135 +198,16 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    // Collect field info
-    let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
-    let field_types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
-    let field_attrs: Vec<Vec<_>> = fields.iter().map(|f| {
-        // Keep non-column_name attributes
-        f.attrs.iter().filter(|a| !a.path().is_ident("column_name")).collect()
-    }).collect();
-    let field_vis: Vec<_> = fields.iter().map(|f| &f.vis).collect();
+    // Parse field information
+    let field_info = RowFieldInfo::from_fields(fields);
 
-    let column_names: Vec<String> = fields.iter()
-        .map(|f| get_column_name(f).unwrap_or_else(|| {
-            f.ident.as_ref()
-                .expect("Named fields always have identifiers")
-                .to_string()
-        }))
-        .collect();
-
-    // Generate serde rename attributes for fields that have different column names
-    let serde_renames: Vec<_> = column_names.iter().zip(field_names.iter()).map(|(col, field)| {
-        let field_str = field.as_ref()
-            .expect("Named fields always have identifiers")
-            .to_string();
-        if col != &field_str {
-            quote! { #[serde(rename = #col)] }
-        } else {
-            quote! {}
-        }
-    }).collect();
-
-    // Generate column vector variable names for ToNativeBlock
-    let col_var_names: Vec<_> = field_names.iter()
-        .map(|f| format_ident!("col_{}", f.as_ref().expect("Named fields always have identifiers")))
-        .collect();
+    // Generate code using shared helpers
+    let struct_def = generate_struct_with_serde(attrs, vis, name, generics, &field_info);
+    let native_impls = generate_native_block_impls(name, &field_info);
 
     let expanded = quote! {
-        // Re-emit the struct with clickhouse::Row derive for HTTP backend
-        // Serialize is needed for RowWrite (insert), Deserialize for RowRead (select)
-        #(#attrs)*
-        #[cfg_attr(feature = "http", derive(::diesel_clickhouse::clickhouse::Row))]
-        #[cfg_attr(feature = "http", derive(::serde::Serialize, ::serde::Deserialize))]
-        #vis struct #name #generics #where_clause {
-            #(
-                #(#field_attrs)*
-                #serde_renames
-                #field_vis #field_names: #field_types,
-            )*
-        }
-
-        // Generate FromNativeBlock for Native backend
-        #[cfg(feature = "native")]
-        impl ::diesel_clickhouse::native::FromNativeBlock for #name {
-            fn from_block_row(
-                block: &::diesel_clickhouse::native::ComplexBlock,
-                row_idx: usize,
-            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
-                Ok(Self {
-                    #(
-                        #field_names: ::diesel_clickhouse::native::BlockValue::get_value(block, row_idx, #column_names)?,
-                    )*
-                })
-            }
-        }
-
-        // Generate FromAnyBlock for Native backend streaming
-        #[cfg(feature = "native")]
-        impl ::diesel_clickhouse::native::FromAnyBlock for #name {
-            fn from_any_block<K: ::diesel_clickhouse::native::types::ColumnType>(
-                block: &::diesel_clickhouse::native::NativeBlock<K>,
-                row_idx: usize,
-            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
-                Ok(Self {
-                    #(
-                        #field_names: <#field_types as ::diesel_clickhouse::native::BlockValue<K>>::get_value(block, row_idx, #column_names)?,
-                    )*
-                })
-            }
-        }
-
-        // Generate ToNativeBlock for Native backend (optimized INSERT)
-        #[cfg(feature = "native")]
-        impl ::diesel_clickhouse::native::ToNativeBlock for #name {
-            fn column_names() -> &'static [&'static str] {
-                &[#(#column_names),*]
-            }
-
-            fn rows_to_block(rows: &[Self]) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
-                // Use extend() pattern - allows LLVM to vectorize each column independently
-                // Each extend() call can use SIMD for Copy types
-                // Trade-off: reads rows N times, but with L2 cache hits this is often faster
-                #(
-                    let #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
-                        rows.iter()
-                            .map(|row| <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::to_column_value(&row.#field_names))
-                            .collect();
-                )*
-
-                // Build block
-                let block = ::diesel_clickhouse::native::NativeBlock::new();
-                #(
-                    let block = <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::add_column_to_block(block, #column_names, #col_var_names);
-                )*
-
-                Ok(block)
-            }
-
-            fn rows_into_block(rows: Vec<Self>) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
-                // Pre-allocate column vectors with known capacity for better performance
-                let capacity = rows.len();
-                #(
-                    let mut #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
-                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::new_column_with_capacity(capacity);
-                )*
-
-                // Populate column vectors (takes ownership, avoids cloning String/Vec fields)
-                for row in rows {
-                    #(
-                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumnOwned>::push_to_column_owned(row.#field_names, &mut #col_var_names);
-                    )*
-                }
-
-                // Build block
-                let block = ::diesel_clickhouse::native::NativeBlock::new();
-                #(
-                    let block = <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::add_column_to_block(block, #column_names, #col_var_names);
-                )*
-
-                Ok(block)
-            }
-        }
+        #struct_def
+        #native_impls
     };
 
     TokenStream::from(expanded)
@@ -374,7 +254,6 @@ pub fn typed_row(attr: TokenStream, item: TokenStream) -> TokenStream {
     let vis = &input.vis;
     let attrs = &input.attrs;
     let generics = &input.generics;
-    let where_clause = &generics.where_clause;
 
     // Parse the table attribute: table = path::to::table
     let table_path: syn::Path = match syn::parse::<TypedRowAttr>(attr) {
@@ -399,163 +278,20 @@ pub fn typed_row(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    // Collect field info
-    let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
-    let field_types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
-    let field_attrs: Vec<Vec<_>> = fields.iter().map(|f| {
-        f.attrs.iter().filter(|a| !a.path().is_ident("column_name")).collect()
-    }).collect();
-    let field_vis: Vec<_> = fields.iter().map(|f| &f.vis).collect();
+    // Parse field information using shared helper
+    let field_info = RowFieldInfo::from_fields(fields);
 
-    let column_names: Vec<String> = fields.iter()
-        .map(|f| get_column_name(f).unwrap_or_else(|| {
-            f.ident.as_ref()
-                .expect("Named fields always have identifiers")
-                .to_string()
-        }))
-        .collect();
+    // Generate shared code using helpers
+    let struct_def = generate_struct_with_serde(attrs, vis, name, generics, &field_info);
+    let native_impls = generate_native_block_impls(name, &field_info);
 
-    // Generate serde rename attributes
-    let serde_renames: Vec<_> = column_names.iter().zip(field_names.iter()).map(|(col, field)| {
-        let field_str = field.as_ref()
-            .expect("Named fields always have identifiers")
-            .to_string();
-        if col != &field_str {
-            quote! { #[serde(rename = #col)] }
-        } else {
-            quote! {}
-        }
-    }).collect();
-
-    // Generate column vector variable names for ToNativeBlock
-    let col_var_names: Vec<_> = field_names.iter()
-        .map(|f| format_ident!("col_{}", f.as_ref().expect("Named fields always have identifiers")))
-        .collect();
-
-    // Generate field indices for Queryable::build
-    let field_indices: Vec<syn::Index> = (0..field_names.len())
-        .map(syn::Index::from)
-        .collect();
-
-    // Generate column name identifiers for compile-time verification
-    let column_idents: Vec<Ident> = column_names.iter()
-        .map(|name| format_ident!("{}", name))
-        .collect();
+    // Generate typed_row-specific code: column verification and Queryable impl
+    let typed_row_extras = generate_typed_row_extras(name, &table_path, &field_info);
 
     let expanded = quote! {
-        // Re-emit the struct with clickhouse::Row derive for HTTP backend
-        #(#attrs)*
-        #[cfg_attr(feature = "http", derive(::diesel_clickhouse::clickhouse::Row))]
-        #[cfg_attr(feature = "http", derive(::serde::Serialize, ::serde::Deserialize))]
-        #vis struct #name #generics #where_clause {
-            #(
-                #(#field_attrs)*
-                #serde_renames
-                #field_vis #field_names: #field_types,
-            )*
-        }
-
-        // Compile-time verification that all field/column names exist in the table
-        // This will produce a clear compile error if a field name doesn't match a table column
-        const _: () = {
-            #[allow(unused)]
-            fn _verify_column_names_for_struct() {
-                // Each reference to table::column_name will fail if column doesn't exist
-                #(
-                    let _ = #table_path::#column_idents;
-                )*
-            }
-        };
-
-        // Generate Queryable implementation for compile-time type checking
-        impl ::diesel_clickhouse::core::deserialize::Queryable<
-            <#table_path::table as ::diesel_clickhouse::core::query_source::Table>::AllColumnsSqlType
-        > for #name {
-            type Row = (#(#field_types,)*);
-
-            fn build(row: Self::Row) -> ::diesel_clickhouse::core::result::QueryResult<Self> {
-                Ok(Self {
-                    #(#field_names: row.#field_indices,)*
-                })
-            }
-        }
-
-        // Generate FromNativeBlock for Native backend
-        #[cfg(feature = "native")]
-        impl ::diesel_clickhouse::native::FromNativeBlock for #name {
-            fn from_block_row(
-                block: &::diesel_clickhouse::native::ComplexBlock,
-                row_idx: usize,
-            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
-                Ok(Self {
-                    #(
-                        #field_names: ::diesel_clickhouse::native::BlockValue::get_value(block, row_idx, #column_names)?,
-                    )*
-                })
-            }
-        }
-
-        // Generate FromAnyBlock for Native backend streaming
-        #[cfg(feature = "native")]
-        impl ::diesel_clickhouse::native::FromAnyBlock for #name {
-            fn from_any_block<K: ::diesel_clickhouse::native::types::ColumnType>(
-                block: &::diesel_clickhouse::native::NativeBlock<K>,
-                row_idx: usize,
-            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
-                Ok(Self {
-                    #(
-                        #field_names: <#field_types as ::diesel_clickhouse::native::BlockValue<K>>::get_value(block, row_idx, #column_names)?,
-                    )*
-                })
-            }
-        }
-
-        // Generate ToNativeBlock for Native backend (optimized INSERT)
-        #[cfg(feature = "native")]
-        impl ::diesel_clickhouse::native::ToNativeBlock for #name {
-            fn column_names() -> &'static [&'static str] {
-                &[#(#column_names),*]
-            }
-
-            fn rows_to_block(rows: &[Self]) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
-                // Use extend() pattern - allows LLVM to vectorize each column independently
-                #(
-                    let #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
-                        rows.iter()
-                            .map(|row| <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::to_column_value(&row.#field_names))
-                            .collect();
-                )*
-
-                let block = ::diesel_clickhouse::native::NativeBlock::new();
-                #(
-                    let block = <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::add_column_to_block(block, #column_names, #col_var_names);
-                )*
-
-                Ok(block)
-            }
-
-            fn rows_into_block(rows: Vec<Self>) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
-                // Single pass - we consume ownership, can't iterate multiple times
-                let capacity = rows.len();
-                #(
-                    let mut #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
-                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::new_column_with_capacity(capacity);
-                )*
-
-                for row in rows {
-                    #(
-                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumnOwned>::push_to_column_owned(row.#field_names, &mut #col_var_names);
-                    )*
-                }
-
-                let block = ::diesel_clickhouse::native::NativeBlock::new();
-                #(
-                    let block = <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::add_column_to_block(block, #column_names, #col_var_names);
-                )*
-
-                Ok(block)
-            }
-        }
+        #struct_def
+        #typed_row_extras
+        #native_impls
     };
 
     TokenStream::from(expanded)
@@ -1135,4 +871,226 @@ fn get_table_attribute(attrs: &[Attribute]) -> Option<syn::Path> {
         }
     }
     None
+}
+
+// =============================================================================
+// Shared Code Generation Helpers for #[row] and #[typed_row]
+// =============================================================================
+
+use proc_macro2::TokenStream as TokenStream2;
+
+/// Parsed field information for code generation.
+struct RowFieldInfo<'a> {
+    /// Field identifiers (e.g., `id`, `name`)
+    names: Vec<&'a Option<Ident>>,
+    /// Field types (e.g., `u64`, `String`)
+    types: Vec<&'a syn::Type>,
+    /// Field visibility (e.g., `pub`)
+    vis: Vec<&'a syn::Visibility>,
+    /// Non-column_name attributes to preserve
+    attrs: Vec<Vec<&'a Attribute>>,
+    /// Database column names (from field name or #[column_name])
+    column_names: Vec<String>,
+    /// Serde rename attributes for fields with different column names
+    serde_renames: Vec<TokenStream2>,
+    /// Variable names for column vectors in ToNativeBlock
+    col_var_names: Vec<Ident>,
+}
+
+impl<'a> RowFieldInfo<'a> {
+    /// Parse field information from a struct's named fields.
+    fn from_fields(fields: &'a syn::punctuated::Punctuated<syn::Field, syn::Token![,]>) -> Self {
+        let names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
+        let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
+        let vis: Vec<_> = fields.iter().map(|f| &f.vis).collect();
+        let attrs: Vec<Vec<_>> = fields.iter().map(|f| {
+            f.attrs.iter().filter(|a| !a.path().is_ident("column_name")).collect()
+        }).collect();
+
+        let column_names: Vec<String> = fields.iter()
+            .map(|f| get_column_name(f).unwrap_or_else(|| {
+                f.ident.as_ref()
+                    .expect("Named fields always have identifiers")
+                    .to_string()
+            }))
+            .collect();
+
+        let serde_renames: Vec<_> = column_names.iter().zip(names.iter()).map(|(col, field)| {
+            let field_str = field.as_ref()
+                .expect("Named fields always have identifiers")
+                .to_string();
+            if col != &field_str {
+                quote! { #[serde(rename = #col)] }
+            } else {
+                quote! {}
+            }
+        }).collect();
+
+        let col_var_names: Vec<_> = names.iter()
+            .map(|f| format_ident!("col_{}", f.as_ref().expect("Named fields always have identifiers")))
+            .collect();
+
+        Self { names, types, vis, attrs, column_names, serde_renames, col_var_names }
+    }
+}
+
+/// Generate struct definition with serde and clickhouse::Row derives.
+fn generate_struct_with_serde(
+    attrs: &[Attribute],
+    vis: &syn::Visibility,
+    name: &Ident,
+    generics: &syn::Generics,
+    field_info: &RowFieldInfo<'_>,
+) -> TokenStream2 {
+    let where_clause = &generics.where_clause;
+    let field_names = &field_info.names;
+    let field_types = &field_info.types;
+    let field_attrs = &field_info.attrs;
+    let field_vis = &field_info.vis;
+    let serde_renames = &field_info.serde_renames;
+
+    quote! {
+        #(#attrs)*
+        #[cfg_attr(feature = "http", derive(::diesel_clickhouse::clickhouse::Row))]
+        #[cfg_attr(feature = "http", derive(::serde::Serialize, ::serde::Deserialize))]
+        #vis struct #name #generics #where_clause {
+            #(
+                #(#field_attrs)*
+                #serde_renames
+                #field_vis #field_names: #field_types,
+            )*
+        }
+    }
+}
+
+/// Generate typed_row-specific code: column verification and Queryable impl.
+fn generate_typed_row_extras(
+    name: &Ident,
+    table_path: &syn::Path,
+    field_info: &RowFieldInfo<'_>,
+) -> TokenStream2 {
+    let field_names = &field_info.names;
+    let field_types = &field_info.types;
+    let column_names = &field_info.column_names;
+
+    // Generate field indices for Queryable::build
+    let field_indices: Vec<syn::Index> = (0..field_names.len())
+        .map(syn::Index::from)
+        .collect();
+
+    // Generate column name identifiers for compile-time verification
+    let column_idents: Vec<Ident> = column_names.iter()
+        .map(|name| format_ident!("{}", name))
+        .collect();
+
+    quote! {
+        // Compile-time verification that all field/column names exist in the table
+        const _: () = {
+            #[allow(unused)]
+            fn _verify_column_names_for_struct() {
+                #(
+                    let _ = #table_path::#column_idents;
+                )*
+            }
+        };
+
+        // Generate Queryable implementation for compile-time type checking
+        impl ::diesel_clickhouse::core::deserialize::Queryable<
+            <#table_path::table as ::diesel_clickhouse::core::query_source::Table>::AllColumnsSqlType
+        > for #name {
+            type Row = (#(#field_types,)*);
+
+            fn build(row: Self::Row) -> ::diesel_clickhouse::core::result::QueryResult<Self> {
+                Ok(Self {
+                    #(#field_names: row.#field_indices,)*
+                })
+            }
+        }
+    }
+}
+
+/// Generate FromNativeBlock, FromAnyBlock, and ToNativeBlock implementations.
+fn generate_native_block_impls(name: &Ident, field_info: &RowFieldInfo<'_>) -> TokenStream2 {
+    let field_names = &field_info.names;
+    let field_types = &field_info.types;
+    let column_names = &field_info.column_names;
+    let col_var_names = &field_info.col_var_names;
+
+    quote! {
+        // Generate FromNativeBlock for Native backend
+        #[cfg(feature = "native")]
+        impl ::diesel_clickhouse::native::FromNativeBlock for #name {
+            fn from_block_row(
+                block: &::diesel_clickhouse::native::ComplexBlock,
+                row_idx: usize,
+            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
+                Ok(Self {
+                    #(
+                        #field_names: ::diesel_clickhouse::native::BlockValue::get_value(block, row_idx, #column_names)?,
+                    )*
+                })
+            }
+        }
+
+        // Generate FromAnyBlock for Native backend streaming
+        #[cfg(feature = "native")]
+        impl ::diesel_clickhouse::native::FromAnyBlock for #name {
+            fn from_any_block<K: ::diesel_clickhouse::native::types::ColumnType>(
+                block: &::diesel_clickhouse::native::NativeBlock<K>,
+                row_idx: usize,
+            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
+                Ok(Self {
+                    #(
+                        #field_names: <#field_types as ::diesel_clickhouse::native::BlockValue<K>>::get_value(block, row_idx, #column_names)?,
+                    )*
+                })
+            }
+        }
+
+        // Generate ToNativeBlock for Native backend (optimized INSERT)
+        #[cfg(feature = "native")]
+        impl ::diesel_clickhouse::native::ToNativeBlock for #name {
+            fn column_names() -> &'static [&'static str] {
+                &[#(#column_names),*]
+            }
+
+            fn rows_to_block(rows: &[Self]) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
+                // Use extend() pattern - allows LLVM to vectorize each column independently
+                #(
+                    let #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
+                        rows.iter()
+                            .map(|row| <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::to_column_value(&row.#field_names))
+                            .collect();
+                )*
+
+                let block = ::diesel_clickhouse::native::NativeBlock::new();
+                #(
+                    let block = <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::add_column_to_block(block, #column_names, #col_var_names);
+                )*
+
+                Ok(block)
+            }
+
+            fn rows_into_block(rows: Vec<Self>) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
+                let capacity = rows.len();
+                #(
+                    let mut #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
+                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::new_column_with_capacity(capacity);
+                )*
+
+                for row in rows {
+                    #(
+                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumnOwned>::push_to_column_owned(row.#field_names, &mut #col_var_names);
+                    )*
+                }
+
+                let block = ::diesel_clickhouse::native::NativeBlock::new();
+                #(
+                    let block = <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::add_column_to_block(block, #column_names, #col_var_names);
+                )*
+
+                Ok(block)
+            }
+        }
+    }
 }

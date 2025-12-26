@@ -40,15 +40,8 @@ pub use sql::{build_sql, build_sql_native, BindableValue, NativeCompiledQuery, C
 // Re-export clickhouse Row for convenience (for users who need direct clickhouse crate access)
 pub use clickhouse::Row as NativeClickHouseRow;
 
-/// Compression mode for HTTP requests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Compression {
-    /// No compression (default for small payloads).
-    #[default]
-    None,
-    /// LZ4 compression (recommended for large INSERTs).
-    Lz4,
-}
+// Re-export Compression from core for unified API
+pub use crate::core::connection::Compression;
 
 // =============================================================================
 // Connection
@@ -85,10 +78,17 @@ impl ClickHouseConnection {
         }
     }
 
-    /// Enable LZ4 compression for this connection.
+    /// Enable compression for this connection.
     ///
     /// Compression is beneficial for large INSERT operations (>1KB payload).
     /// For small queries, the compression overhead may outweigh the benefits.
+    ///
+    /// # Supported modes
+    ///
+    /// - `Compression::None` - No compression
+    /// - `Compression::Lz4` - LZ4 compression (recommended)
+    /// - `Compression::Lz4Hc` - Falls back to LZ4 (Lz4Hc is deprecated in clickhouse crate)
+    /// - `Compression::Zstd` - Not supported, falls back to None
     ///
     /// # Example
     ///
@@ -100,8 +100,14 @@ impl ClickHouseConnection {
     pub fn with_compression(mut self, compression: Compression) -> Self {
         self.compression = compression;
         // Update client with compression setting
-        if compression == Compression::Lz4 {
-            self.client = self.client.clone().with_compression(clickhouse::Compression::Lz4);
+        // Note: Lz4Hc falls back to Lz4, Zstd is not supported
+        match compression {
+            Compression::Lz4 | Compression::Lz4Hc => {
+                self.client = self.client.clone().with_compression(clickhouse::Compression::Lz4);
+            }
+            Compression::None | Compression::Zstd => {
+                // Zstd not supported by clickhouse crate, use no compression
+            }
         }
         self
     }

@@ -151,6 +151,41 @@
 //! | `load()` | All in memory | All in memory | O(n) |
 //! | `stream()` | True streaming | True streaming | O(1) / O(block_size) |
 //! | `stream_for_each()` | True streaming | True streaming | O(1) / O(block_size) |
+//!
+//! ## Backend API Differences
+//!
+//! While the unified `Connection` API covers most use cases, some methods are
+//! backend-specific due to protocol differences:
+//!
+//! ### HTTP-Only Methods
+//!
+//! | Method | Description |
+//! |--------|-------------|
+//! | `load_compiled()` | Execute pre-compiled query with bindings |
+//! | `load_arrow()` | Load results as Apache Arrow batches |
+//! | `stream_arrow()` | Stream results as Arrow batches |
+//! | `load_zero_copy()` | Zero-copy Arrow processing |
+//! | `inserter()` | Get clickhouse crate's native inserter |
+//!
+//! ### Native-Only Methods
+//!
+//! | Method | Description |
+//! |--------|-------------|
+//! | `insert_native()` | Insert using optimized Block format |
+//! | `query_raw()` | Get raw Block for manual processing |
+//!
+//! ### Compression Support
+//!
+//! Both backends use the unified `Compression` enum, but support differs:
+//!
+//! | Mode | HTTP | Native |
+//! |------|------|--------|
+//! | `None` | ✓ | ✓ |
+//! | `Lz4` | ✓ | ✓ |
+//! | `Lz4Hc` | → Lz4 | → Lz4 |
+//! | `Zstd` | → None | → None |
+//!
+//! Unsupported modes fall back to the closest supported alternative.
 
 use std::borrow::Cow;
 

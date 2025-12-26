@@ -145,27 +145,34 @@ impl AsyncInsertConfig {
 
     /// Generate the SQL SETTINGS string for this configuration.
     pub fn to_settings_sql(&self) -> String {
-        let mut parts = vec![String::from("async_insert=1")];
-        parts.push(format!(
-            "wait_for_async_insert={}",
+        use std::fmt::Write;
+
+        // Pre-allocate for typical settings length
+        let mut result = String::with_capacity(150);
+
+        write!(
+            result,
+            "SETTINGS async_insert=1, wait_for_async_insert={}",
             if self.wait { 1 } else { 0 }
-        ));
+        ).ok();
+
         if let Some(ms) = self.busy_timeout_ms {
-            parts.push(format!("async_insert_busy_timeout_ms={}", ms));
+            write!(result, ", async_insert_busy_timeout_ms={}", ms).ok();
         }
         if let Some(size) = self.max_data_size {
-            parts.push(format!("async_insert_max_data_size={}", size));
+            write!(result, ", async_insert_max_data_size={}", size).ok();
         }
         if let Some(count) = self.max_query_number {
-            parts.push(format!("async_insert_max_query_number={}", count));
+            write!(result, ", async_insert_max_query_number={}", count).ok();
         }
         if let Some(dedup) = self.deduplicate_materialized_views {
-            parts.push(format!(
-                "async_insert_deduplicate={}",
+            write!(
+                result,
+                ", async_insert_deduplicate={}",
                 if dedup { 1 } else { 0 }
-            ));
+            ).ok();
         }
-        format!("SETTINGS {}", parts.join(", "))
+        result
     }
 }
 
@@ -200,32 +207,38 @@ impl AsyncInsertConfig {
 // Native-specific configuration methods
 #[cfg(feature = "native")]
 impl AsyncInsertConfig {
-    /// Generate SET commands for session-level async insert settings (Native backend).
-    pub fn to_native_set_commands(&self) -> Vec<String> {
-        let mut commands = vec![
-            "SET async_insert = 1".to_string(),
-            format!(
-                "SET wait_for_async_insert = {}",
-                if self.wait { 1 } else { 0 }
-            ),
-        ];
+    /// Generate a single combined SET command for session-level async insert settings.
+    ///
+    /// This batches all settings into one command to reduce network round-trips.
+    pub fn to_native_set_command(&self) -> String {
+        use std::fmt::Write;
+
+        // Pre-allocate for typical command length
+        let mut result = String::with_capacity(200);
+
+        write!(
+            result,
+            "SET async_insert = 1, wait_for_async_insert = {}",
+            if self.wait { 1 } else { 0 }
+        ).ok();
 
         if let Some(ms) = self.busy_timeout_ms {
-            commands.push(format!("SET async_insert_busy_timeout_ms = {}", ms));
+            write!(result, ", async_insert_busy_timeout_ms = {}", ms).ok();
         }
         if let Some(size) = self.max_data_size {
-            commands.push(format!("SET async_insert_max_data_size = {}", size));
+            write!(result, ", async_insert_max_data_size = {}", size).ok();
         }
         if let Some(count) = self.max_query_number {
-            commands.push(format!("SET async_insert_max_query_number = {}", count));
+            write!(result, ", async_insert_max_query_number = {}", count).ok();
         }
         if let Some(dedup) = self.deduplicate_materialized_views {
-            commands.push(format!(
-                "SET async_insert_deduplicate = {}",
+            write!(
+                result,
+                ", async_insert_deduplicate = {}",
                 if dedup { 1 } else { 0 }
-            ));
+            ).ok();
         }
-        commands
+        result
     }
 }
 
@@ -282,11 +295,9 @@ where
                 http_conn.async_insert_rows::<T, R>(config, rows).await
             }
             Connection::Native(native_conn) => {
-                // Apply settings once per inserter
+                // Apply settings once per inserter (single batched command)
                 if !settings_applied.swap(true, Ordering::SeqCst) {
-                    for cmd in config.to_native_set_commands() {
-                        native_conn.execute_raw(&cmd).await?;
-                    }
+                    native_conn.execute_raw(&config.to_native_set_command()).await?;
                 }
                 let block = R::rows_to_block(rows)?;
                 native_conn.insert(T::table_name(), block).await
@@ -329,11 +340,9 @@ where
     ) -> QueryResult<()> {
         let Connection::Native(native_conn) = conn;
 
-        // Apply settings once per inserter
+        // Apply settings once per inserter (single batched command)
         if !settings_applied.swap(true, Ordering::SeqCst) {
-            for cmd in config.to_native_set_commands() {
-                native_conn.execute_raw(&cmd).await?;
-            }
+            native_conn.execute_raw(&config.to_native_set_command()).await?;
         }
 
         let block = R::rows_to_block(rows)?;

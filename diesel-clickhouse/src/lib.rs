@@ -281,7 +281,7 @@ pub mod native;
 pub use native::NativeConnection;
 
 #[cfg(feature = "native")]
-pub use native::{NativeClientBuilder, NativeCompression};
+pub use native::NativeClientBuilder;
 
 /// Unified connection interface.
 ///

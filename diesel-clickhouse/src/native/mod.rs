@@ -52,6 +52,8 @@ mod builder;
 mod column;
 
 use std::borrow::Cow;
+#[cfg(feature = "json")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use clickhouse_rs::{Pool, ClientHandle, Block, types::Complex};
@@ -78,19 +80,13 @@ pub use column::{ToNativeBlock, IntoBlockColumn, IntoBlockColumnOwned};
 // Re-export clickhouse-rs types for convenience
 pub use clickhouse_rs::{Block as NativeBlock, row, types};
 
-// =============================================================================
-// Compression Mode
-// =============================================================================
+// Re-export Compression from core for unified API
+pub use crate::core::connection::Compression;
 
-/// Compression mode for native protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum NativeCompression {
-    /// No compression (default).
-    #[default]
-    None,
-    /// LZ4 compression.
-    Lz4,
-}
+/// Deprecated: Use `Compression` instead.
+/// This type alias is kept for backward compatibility.
+#[deprecated(since = "0.2.0", note = "Use `Compression` instead")]
+pub type NativeCompression = Compression;
 
 // =============================================================================
 // Native Connection
@@ -122,12 +118,27 @@ pub enum NativeCompression {
 ///
 /// - **Port 9000**: Plain TCP (default)
 /// - **Port 9440**: TLS-encrypted TCP (use `.secure(true)`)
-#[derive(Clone)]
 pub struct NativeConnection {
     pool: Pool,
     database: String,
     /// Server address (host:port) for Arrow connection
     server_addr: String,
+    /// Tracks if JSON support has been enabled for pool connections.
+    /// Set to true after first get_handle() to avoid redundant SET commands.
+    #[cfg(feature = "json")]
+    json_initialized: AtomicBool,
+}
+
+impl Clone for NativeConnection {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            database: self.database.clone(),
+            server_addr: self.server_addr.clone(),
+            #[cfg(feature = "json")]
+            json_initialized: AtomicBool::new(self.json_initialized.load(Ordering::Relaxed)),
+        }
+    }
 }
 
 impl NativeConnection {
@@ -141,6 +152,25 @@ impl NativeConnection {
             pool,
             database: database.into(),
             server_addr: server_addr.into(),
+            #[cfg(feature = "json")]
+            json_initialized: AtomicBool::new(false),
+        }
+    }
+
+    /// Create a connection from an existing pool with JSON support pre-initialized.
+    ///
+    /// Used by the builder when JSON support has already been enabled during connection setup.
+    #[cfg(feature = "json")]
+    pub(crate) fn from_pool_json_initialized(
+        pool: Pool,
+        database: impl Into<String>,
+        server_addr: impl Into<String>,
+    ) -> Self {
+        Self {
+            pool,
+            database: database.into(),
+            server_addr: server_addr.into(),
+            json_initialized: AtomicBool::new(true),
         }
     }
 
@@ -162,17 +192,18 @@ impl NativeConnection {
     /// Get a client handle from the pool.
     ///
     /// When the `json` feature is enabled, this automatically applies the
-    /// `output_format_native_write_json_as_string` setting to ensure JSON
-    /// columns are serialized as strings.
+    /// `output_format_native_write_json_as_string` setting on first use
+    /// to ensure JSON columns are serialized as strings.
     pub async fn get_handle(&self) -> QueryResult<ClientHandle> {
         let mut handle = self.pool
             .get_handle()
             .await
             .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to get handle: {}", e))))?;
 
-        // Apply JSON-as-string setting for each new handle
+        // Apply JSON-as-string setting once per connection instance.
+        // Uses swap to atomically check-and-set, avoiding redundant SET commands.
         #[cfg(feature = "json")]
-        {
+        if !self.json_initialized.swap(true, Ordering::Relaxed) {
             handle
                 .execute("SET output_format_native_write_json_as_string = 1")
                 .await
@@ -201,6 +232,7 @@ impl NativeConnection {
     /// ```
     #[cfg(feature = "json")]
     pub async fn enable_json_support(&self) -> QueryResult<()> {
+        self.json_initialized.store(true, Ordering::Relaxed);
         self.execute_raw("SET output_format_native_write_json_as_string = 1").await
     }
 
@@ -724,10 +756,8 @@ impl NativeConnection {
             return Ok(());
         }
 
-        // Apply async insert settings
-        for cmd in config.to_native_set_commands() {
-            self.execute_raw(&cmd).await?;
-        }
+        // Apply async insert settings (single batched command)
+        self.execute_raw(&config.to_native_set_command()).await?;
 
         let block = R::rows_to_block(rows)?;
         self.insert(T::table_name(), block).await

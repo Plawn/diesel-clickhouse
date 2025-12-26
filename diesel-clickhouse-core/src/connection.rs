@@ -163,15 +163,31 @@ impl Default for ConnectionSettings {
     }
 }
 
-/// Compression algorithm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Compression algorithm for ClickHouse connections.
+///
+/// This is the unified compression enum used by both HTTP and Native backends.
+/// Note that not all compression modes are supported by all backends:
+///
+/// | Mode | HTTP Backend | Native Backend |
+/// |------|--------------|----------------|
+/// | `None` | ✓ | ✓ |
+/// | `Lz4` | ✓ | ✓ |
+/// | `Lz4Hc` | ✓ (deprecated in clickhouse crate) | ✗ (falls back to Lz4) |
+/// | `Zstd` | ✗ (not supported) | ✗ (not supported) |
+///
+/// When an unsupported compression mode is used, backends will either fall back
+/// to the closest supported mode or return an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Compression {
     /// No compression.
+    #[default]
     None,
-    /// LZ4 compression (recommended).
+    /// LZ4 compression (recommended for most use cases).
     Lz4,
-    /// LZ4 high compression.
+    /// LZ4 high compression (higher ratio, slower).
+    /// Note: Deprecated in HTTP backend, falls back to Lz4 in Native backend.
     Lz4Hc,
     /// Zstandard compression.
+    /// Note: Not currently supported by either backend.
     Zstd,
 }

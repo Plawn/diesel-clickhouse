@@ -90,7 +90,7 @@ async fn establish_from_url(url_str: &str) -> Result<Connection> {
             match key.as_ref() {
                 "secure" if value == "true" => builder = builder.secure(true),
                 "compression" if value == "lz4" => {
-                    builder = builder.compression(diesel_clickhouse::native::NativeCompression::Lz4)
+                    builder = builder.compression(diesel_clickhouse::Compression::Lz4)
                 }
                 _ => {}
             }

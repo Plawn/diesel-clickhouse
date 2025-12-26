@@ -99,8 +99,15 @@ impl HttpClientBuilder {
             .with_user(&validated.user)
             .with_password(&validated.password);
 
-        if self.compression == Compression::Lz4 {
-            client = client.with_compression(clickhouse::Compression::Lz4);
+        // Apply compression setting
+        // Note: Lz4Hc falls back to Lz4, Zstd is not supported
+        match self.compression {
+            Compression::Lz4 | Compression::Lz4Hc => {
+                client = client.with_compression(clickhouse::Compression::Lz4);
+            }
+            Compression::None | Compression::Zstd => {
+                // Zstd not supported by clickhouse crate, use no compression
+            }
         }
 
         for (key, value) in &self.options {
