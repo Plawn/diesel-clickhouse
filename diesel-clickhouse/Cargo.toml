@@ -70,6 +70,9 @@ async-stream = { version = "0.3", optional = true }
 # Zero-copy parsing
 smallvec = "1.11"
 
+# Efficient locking for sharded buffers
+parking_lot = { workspace = true }
+
 # Lock-free pool
 crossbeam-queue = "0.3"
 

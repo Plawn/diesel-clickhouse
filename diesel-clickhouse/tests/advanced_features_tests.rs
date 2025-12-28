@@ -11,15 +11,14 @@
 
 #[cfg(feature = "arrow")]
 mod arrow_row_tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     use arrow::array::{Int64Array, Float64Array, StringArray, BooleanArray, RecordBatch};
     use arrow::datatypes::{DataType, Field, Schema};
 
-    use diesel_clickhouse::arrow::{ArrowRow, build_column_index, for_each_row};
+    use diesel_clickhouse::arrow::{ArrowRow, ColumnIndex, build_column_index, for_each_row};
 
-    fn create_test_batch() -> (RecordBatch, HashMap<Arc<str>, usize>) {
+    fn create_test_batch() -> (RecordBatch, ColumnIndex) {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("name", DataType::Utf8, false),
@@ -133,13 +132,16 @@ mod arrow_row_tests {
 
         let indices = build_column_index(&schema);
 
-        let key_a: Arc<str> = Arc::from("a");
-        let key_b: Arc<str> = Arc::from("b");
-        let key_c: Arc<str> = Arc::from("c");
+        // ColumnIndex uses SmallVec with linear search, so use iter().find()
+        let find_index = |name: &str| -> Option<usize> {
+            indices.iter()
+                .find(|(n, _)| n.as_ref() == name)
+                .map(|(_, idx)| *idx)
+        };
 
-        assert_eq!(indices.get(&key_a), Some(&0));
-        assert_eq!(indices.get(&key_b), Some(&1));
-        assert_eq!(indices.get(&key_c), Some(&2));
+        assert_eq!(find_index("a"), Some(0));
+        assert_eq!(find_index("b"), Some(1));
+        assert_eq!(find_index("c"), Some(2));
     }
 
     #[test]

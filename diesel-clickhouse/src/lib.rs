@@ -364,7 +364,7 @@ pub use stream::RowStream;
 pub mod arrow;
 
 #[cfg(feature = "arrow")]
-pub use arrow::{ArrowResult, ArrowRow, parse_arrow_stream, build_column_index, for_each_row};
+pub use arrow::{ArrowResult, ArrowRow, ColumnIndex, parse_arrow_stream, build_column_index, for_each_row};
 
 /// Connection pooling.
 ///

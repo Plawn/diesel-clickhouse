@@ -91,6 +91,32 @@ impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for String {
     }
 }
 
+/// BlockValue implementation for `Cow<'static, str>`.
+///
+/// # Note on Zero-Copy
+///
+/// Due to the trait design, this implementation produces an owned `Cow::Owned` variant.
+/// The string data is copied from the block because the current trait signature doesn't
+/// support lifetime parameters that would tie the borrowed data to the block's lifetime.
+///
+/// For true zero-copy string access, use the block's native `get()` method directly:
+/// ```rust,ignore
+/// let borrowed: &str = block.get(row_idx, "column_name")?;
+/// ```
+///
+/// # Use Case
+///
+/// This implementation is useful when you have an API that accepts `Cow<'_, str>` and
+/// you want to use it with `FromNativeBlock` derived types. The `Cow` wrapper provides
+/// a consistent API even though the data is always owned in this context.
+impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for Cow<'static, str> {
+    fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
+        let s: &str = block.get(row_idx, column)
+            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get Cow<str> column '{}': {}", column, e))))?;
+        Ok(Cow::Owned(s.to_string()))
+    }
+}
+
 #[cfg(feature = "chrono")]
 impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for chrono::DateTime<chrono_tz::Tz> {
     fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {

@@ -869,6 +869,7 @@ dependencies = [
  "diesel-clickhouse-types",
  "futures",
  "itoa",
+ "parking_lot",
  "percent-encoding",
  "reqwest",
  "serde",

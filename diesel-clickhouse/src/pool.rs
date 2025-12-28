@@ -475,14 +475,21 @@ impl Pool {
             });
         }
 
-        // Create a new connection
-        let conn = self.inner.factory.create().await?;
-        self.inner.total_created.fetch_add(1, Ordering::Relaxed);
-
-        Ok(PooledConnection {
-            conn: Some(conn),
-            pool: Arc::clone(&self.inner),
-        })
+        // Create a new connection - recover permit on failure to prevent pool exhaustion
+        match self.inner.factory.create().await {
+            Ok(conn) => {
+                self.inner.total_created.fetch_add(1, Ordering::Relaxed);
+                Ok(PooledConnection {
+                    conn: Some(conn),
+                    pool: Arc::clone(&self.inner),
+                })
+            }
+            Err(e) => {
+                // Return the permit so another caller can use the slot
+                self.inner.available.add_permits(1);
+                Err(e)
+            }
+        }
     }
 
     /// Try to get a connection without waiting.
@@ -500,7 +507,7 @@ impl Pool {
             }));
         }
 
-        // Create a new connection
+        // Create a new connection - recover permit on failure to prevent pool exhaustion
         match self.inner.factory.create().await {
             Ok(conn) => {
                 self.inner.total_created.fetch_add(1, Ordering::Relaxed);
@@ -509,7 +516,11 @@ impl Pool {
                     pool: Arc::clone(&self.inner),
                 }))
             }
-            Err(e) => Some(Err(e)),
+            Err(e) => {
+                // Return the permit so another caller can use the slot
+                self.inner.available.add_permits(1);
+                Some(Err(e))
+            }
         }
     }
 

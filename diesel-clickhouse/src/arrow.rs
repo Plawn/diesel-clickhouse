@@ -58,9 +58,10 @@
 //! | JSON   | O(n) tokenization | O(n) | No | Yes |
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
+
+use smallvec::SmallVec;
 
 use arrow::array::{
     Array, BinaryArray, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
@@ -334,6 +335,13 @@ impl<'a> ArrowValue<'a> for &'a [u8] {
 // ArrowRow - Row-by-row access to Arrow data
 // =============================================================================
 
+/// Column index type optimized for typical schema sizes (up to 16 columns inline).
+///
+/// Uses SmallVec for cache-friendly linear search on small schemas, which is
+/// faster than HashMap for typical query results with 10-15 columns.
+/// Falls back to heap allocation for larger schemas.
+pub type ColumnIndex = SmallVec<[(Arc<str>, usize); 16]>;
+
 /// A zero-copy view into a single row of an Arrow RecordBatch.
 ///
 /// This type provides a familiar row-oriented API on top of Arrow's columnar
@@ -360,7 +368,7 @@ impl<'a> ArrowValue<'a> for &'a [u8] {
 pub struct ArrowRow<'a> {
     batch: &'a RecordBatch,
     row_index: usize,
-    column_indices: &'a HashMap<Arc<str>, usize>,
+    column_indices: &'a ColumnIndex,
 }
 
 impl<'a> ArrowRow<'a> {
@@ -369,7 +377,7 @@ impl<'a> ArrowRow<'a> {
     pub fn new(
         batch: &'a RecordBatch,
         row_index: usize,
-        column_indices: &'a HashMap<Arc<str>, usize>,
+        column_indices: &'a ColumnIndex,
     ) -> Self {
         Self {
             batch,
@@ -385,11 +393,15 @@ impl<'a> ArrowRow<'a> {
     }
 
     /// Get column index by name.
+    ///
+    /// Uses linear search which is faster than HashMap for typical schemas
+    /// with fewer than 20 columns due to better cache locality.
     #[inline]
     fn column_index(&self, name: &str) -> QueryResult<usize> {
         self.column_indices
-            .get(name)
-            .copied()
+            .iter()
+            .find(|(n, _)| n.as_ref() == name)
+            .map(|(_, idx)| *idx)
             .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' not found", name))))
     }
 
@@ -554,7 +566,10 @@ impl<'a> ArrowRow<'a> {
 }
 
 /// Helper to build column name index for ArrowRow.
-pub fn build_column_index(schema: &Schema) -> HashMap<Arc<str>, usize> {
+///
+/// Returns a SmallVec-based index that provides faster lookups than HashMap
+/// for typical schema sizes (< 20 columns) due to cache locality.
+pub fn build_column_index(schema: &Schema) -> ColumnIndex {
     schema
         .fields()
         .iter()
@@ -566,7 +581,7 @@ pub fn build_column_index(schema: &Schema) -> HashMap<Arc<str>, usize> {
 /// Iterate over rows in a RecordBatch, calling a callback for each row.
 pub fn for_each_row<F>(
     batch: &RecordBatch,
-    column_indices: &HashMap<Arc<str>, usize>,
+    column_indices: &ColumnIndex,
     mut callback: F,
 ) -> QueryResult<usize>
 where

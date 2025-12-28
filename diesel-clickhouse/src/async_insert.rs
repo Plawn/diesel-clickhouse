@@ -38,11 +38,16 @@ use std::marker::PhantomData;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tokio::sync::Mutex;
+use parking_lot::Mutex;
 
 use crate::core::query_source::Table;
 use crate::core::result::QueryResult;
 use crate::Connection;
+
+/// Number of shards for the async inserter buffer.
+/// Using 8 shards provides good parallelism while minimizing memory overhead.
+/// This reduces lock contention when multiple tasks write concurrently.
+const SHARD_COUNT: usize = 8;
 
 // =============================================================================
 // AsyncInsertConfig
@@ -354,10 +359,17 @@ where
 // AsyncInserter
 // =============================================================================
 
-/// Buffered async inserter with local batching.
+/// Buffered async inserter with local batching and sharded locking.
 ///
-/// Rows are buffered locally and only sent to the server when `flush()` is called.
-/// This provides true client-side batching combined with server-side async insert mode.
+/// Rows are buffered locally across multiple shards to reduce lock contention
+/// when multiple tasks write concurrently. Data is only sent to the server when
+/// `flush()` is called.
+///
+/// # Performance
+///
+/// The sharded buffer design reduces lock contention under high concurrency by
+/// distributing writes across 8 independent locks. Each write acquires only
+/// one shard's lock, allowing multiple tasks to write in parallel.
 ///
 /// # Example
 ///
@@ -369,7 +381,7 @@ where
 ///     AsyncInsertConfig::fire_and_forget(),
 /// );
 ///
-/// // Write rows (buffered locally)
+/// // Write rows (buffered locally, low contention)
 /// inserter.write(event1).await;
 /// inserter.write(event2).await;
 ///
@@ -381,23 +393,38 @@ where
 pub struct AsyncInserter<T, R> {
     conn: Connection,
     config: AsyncInsertConfig,
-    buffer: Mutex<Vec<R>>,
+    /// Sharded buffers for reduced lock contention under high concurrency.
+    /// Each shard is independently locked, allowing parallel writes.
+    shards: Box<[Mutex<Vec<R>>; SHARD_COUNT]>,
+    /// Round-robin counter for shard selection.
+    shard_counter: AtomicU64,
     sent_count: AtomicU64,
     #[cfg(feature = "native")]
     settings_applied: AtomicBool,
     _marker: PhantomData<T>,
 }
 
+/// Helper to create initialized shard array
+fn create_shards<R>() -> Box<[Mutex<Vec<R>>; SHARD_COUNT]> {
+    Box::new(std::array::from_fn(|_| Mutex::new(Vec::new())))
+}
+
+/// Helper to create initialized shard array with capacity per shard
+fn create_shards_with_capacity<R>(capacity_per_shard: usize) -> Box<[Mutex<Vec<R>>; SHARD_COUNT]> {
+    Box::new(std::array::from_fn(|_| Mutex::new(Vec::with_capacity(capacity_per_shard))))
+}
+
 impl<T, R> AsyncInserter<T, R>
 where
     T: Table,
 {
-    /// Create a new async inserter.
+    /// Create a new async inserter with sharded buffering.
     pub fn new(conn: Connection, config: AsyncInsertConfig) -> Self {
         Self {
             conn,
             config,
-            buffer: Mutex::new(Vec::new()),
+            shards: create_shards(),
+            shard_counter: AtomicU64::new(0),
             sent_count: AtomicU64::new(0),
             #[cfg(feature = "native")]
             settings_applied: AtomicBool::new(false),
@@ -406,11 +433,15 @@ where
     }
 
     /// Create a new async inserter with pre-allocated buffer capacity.
+    ///
+    /// The capacity is distributed across all shards.
     pub fn with_capacity(conn: Connection, config: AsyncInsertConfig, capacity: usize) -> Self {
+        let capacity_per_shard = capacity.div_ceil(SHARD_COUNT);
         Self {
             conn,
             config,
-            buffer: Mutex::new(Vec::with_capacity(capacity)),
+            shards: create_shards_with_capacity(capacity_per_shard),
+            shard_counter: AtomicU64::new(0),
             sent_count: AtomicU64::new(0),
             #[cfg(feature = "native")]
             settings_applied: AtomicBool::new(false),
@@ -418,9 +449,15 @@ where
         }
     }
 
-    /// Get the number of rows currently buffered locally.
-    pub async fn buffered_count(&self) -> usize {
-        self.buffer.lock().await.len()
+    /// Select a shard using round-robin distribution.
+    #[inline]
+    fn select_shard(&self) -> usize {
+        (self.shard_counter.fetch_add(1, Ordering::Relaxed) as usize) % SHARD_COUNT
+    }
+
+    /// Get the number of rows currently buffered locally across all shards.
+    pub fn buffered_count(&self) -> usize {
+        self.shards.iter().map(|s| s.lock().len()).sum()
     }
 
     /// Get the total number of rows sent to the server.
@@ -450,26 +487,38 @@ where
 {
     /// Write a single row to the local buffer.
     ///
+    /// Uses sharded locking to reduce contention when multiple tasks write concurrently.
     /// The row is not sent to the server until `flush()` is called.
-    pub async fn write(&self, row: R) {
-        self.buffer.lock().await.push(row);
+    pub fn write(&self, row: R) {
+        let shard = self.select_shard();
+        self.shards[shard].lock().push(row);
     }
 
     /// Write multiple rows to the local buffer.
     ///
+    /// Uses sharded locking to reduce contention. All rows go to the same shard
+    /// for efficiency (avoiding multiple lock acquisitions).
     /// The rows are not sent to the server until `flush()` is called.
-    pub async fn write_many(&self, rows: impl IntoIterator<Item = R>) {
-        self.buffer.lock().await.extend(rows);
+    pub fn write_many(&self, rows: impl IntoIterator<Item = R>) {
+        let shard = self.select_shard();
+        self.shards[shard].lock().extend(rows);
     }
 
     /// Flush the local buffer to the server.
     ///
-    /// Sends all buffered rows using the configured async insert settings.
-    /// After this call, the local buffer is empty.
+    /// Collects all buffered rows from all shards and sends them using the
+    /// configured async insert settings. After this call, all shard buffers are empty.
     pub async fn flush(&self) -> QueryResult<()> {
-        let rows = std::mem::take(&mut *self.buffer.lock().await);
-        if rows.is_empty() {
+        // Collect rows from all shards
+        // Pre-calculate total capacity for efficient allocation
+        let total_len: usize = self.shards.iter().map(|s| s.lock().len()).sum();
+        if total_len == 0 {
             return Ok(());
+        }
+
+        let mut rows = Vec::with_capacity(total_len);
+        for shard in self.shards.iter() {
+            rows.append(&mut *shard.lock());
         }
 
         R::batch_insert(

@@ -181,11 +181,11 @@ async fn main() -> anyhow::Result<()> {
             event_type: "click".to_string(),
             value: i as f64 * 1.5,
         };
-        inserter.write(event).await;
+        inserter.write(event);
     }
     println!(
         "   Buffered {} events locally (not sent yet)",
-        inserter.buffered_count().await
+        inserter.buffered_count()
     );
 
     // Now send all buffered rows to the server
@@ -193,7 +193,7 @@ async fn main() -> anyhow::Result<()> {
     println!(
         "   Flushed to server: sent={}, buffered={}",
         inserter.sent_count(),
-        inserter.buffered_count().await
+        inserter.buffered_count()
     );
 
     // Force server to write async buffer to disk
@@ -219,8 +219,8 @@ async fn main() -> anyhow::Result<()> {
         .collect();
 
     // Write batch to local buffer
-    inserter.write_many(batch).await;
-    println!("   Buffered {} events", inserter.buffered_count().await);
+    inserter.write_many(batch);
+    println!("   Buffered {} events", inserter.buffered_count());
 
     // Flush to server (synchronous mode waits for confirmation)
     inserter.flush().await?;
@@ -243,15 +243,15 @@ async fn main() -> anyhow::Result<()> {
             event_type: "view".to_string(),
             value: i as f64 * 0.5,
         };
-        inserter.write(event).await;
+        inserter.write(event);
 
         // Flush every 5 events
-        if inserter.buffered_count().await >= 5 {
+        if inserter.buffered_count() >= 5 {
             inserter.flush().await?;
             println!(
                 "   After event {}: flushed! buffered={}, sent={}",
                 i,
-                inserter.buffered_count().await,
+                inserter.buffered_count(),
                 inserter.sent_count()
             );
         }
@@ -261,7 +261,7 @@ async fn main() -> anyhow::Result<()> {
     inserter.flush().await?;
     println!(
         "   Final: buffered={}, total sent={}",
-        inserter.buffered_count().await,
+        inserter.buffered_count(),
         inserter.sent_count()
     );
 
@@ -289,7 +289,7 @@ async fn main() -> anyhow::Result<()> {
         user_id: 999,
         event_type: "custom".to_string(),
         value: 42.0,
-    }).await;
+    });
     inserter.flush().await?;
     println!("   Inserted event with custom high-throughput config\n");
 
