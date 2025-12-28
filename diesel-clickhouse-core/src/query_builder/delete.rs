@@ -70,13 +70,16 @@ where
 
 /// Helper to create a delete statement.
 pub fn delete<T: Table>(table: T) -> DeleteTarget<T> {
-    DeleteTarget { table }
+    DeleteTarget { _table: table }
 }
 
 /// A target for a DELETE statement.
+///
+/// The table type `T` is carried in the generic and used via `PhantomData`
+/// in `DeleteStatement`. The `_table` field exists to satisfy type constraints.
 pub struct DeleteTarget<T> {
-    #[allow(dead_code)]
-    table: T,
+    /// Table instance (type used via PhantomData in DeleteStatement).
+    _table: T,
 }
 
 impl<T: Table> DeleteTarget<T> {

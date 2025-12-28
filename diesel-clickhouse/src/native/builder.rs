@@ -127,7 +127,7 @@ impl NativeClientBuilder {
         self
     }
 
-    /// Build and establish the connection.
+    /// Build and establish the connection (consuming version).
     ///
     /// Returns a unified `Connection` that can be used with all interfaces.
     ///
@@ -137,11 +137,25 @@ impl NativeClientBuilder {
     /// - Required fields (host, port, database, user, password) are not set
     /// - Connection to the server fails
     pub async fn build(self) -> QueryResult<crate::Connection> {
+        self.build_ref().await
+    }
+
+    /// Build and establish the connection (borrowing version).
+    ///
+    /// This is more efficient for connection pooling as it only clones the
+    /// required fields (host, database, user, password) rather than the entire builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Required fields (host, port, database, user, password) are not set
+    /// - Connection to the server fails
+    pub async fn build_ref(&self) -> QueryResult<crate::Connection> {
         use clickhouse_rs::Pool;
 
         use std::fmt::Write;
 
-        let validated = self.params.validate()?;
+        let validated = self.params.validate_ref()?;
 
         // URL-encode user, password, and database to handle special characters
         // Only encode characters that have special meaning in URLs

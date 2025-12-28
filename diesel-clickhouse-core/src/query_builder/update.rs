@@ -243,7 +243,7 @@ impl<T: Table> UpdateTarget<T> {
         P: Expression,
     {
         FilteredUpdateTarget {
-            table: self.table,
+            _table: self.table,
             filter: predicate,
         }
     }
@@ -262,9 +262,12 @@ impl<T: Table> UpdateTarget<T> {
 }
 
 /// A filtered update target.
-#[allow(dead_code)]
+///
+/// The table type `T` is carried in the generic and used via `PhantomData`
+/// in `UpdateStatement`. The `_table` field exists to satisfy type constraints.
 pub struct FilteredUpdateTarget<T, P> {
-    table: T,
+    /// Table instance (type used via PhantomData in UpdateStatement).
+    _table: T,
     filter: P,
 }
 

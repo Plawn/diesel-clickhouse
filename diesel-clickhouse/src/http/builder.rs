@@ -78,7 +78,7 @@ impl HttpClientBuilder {
         self
     }
 
-    /// Build and establish the connection.
+    /// Build and establish the connection (consuming version).
     ///
     /// Returns a unified `Connection` that can be used with all interfaces.
     ///
@@ -88,7 +88,21 @@ impl HttpClientBuilder {
     /// - Required fields (host, port, database, user, password) are not set
     /// - Connection to the server fails
     pub async fn build(self) -> QueryResult<crate::Connection> {
-        let validated = self.params.validate()?;
+        self.build_ref().await
+    }
+
+    /// Build and establish the connection (borrowing version).
+    ///
+    /// This is more efficient for connection pooling as it only clones the
+    /// required fields (host, database, user, password) rather than the entire builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Required fields (host, port, database, user, password) are not set
+    /// - Connection to the server fails
+    pub async fn build_ref(&self) -> QueryResult<crate::Connection> {
+        let validated = self.params.validate_ref()?;
 
         let scheme = if self.https { "https" } else { "http" };
 

@@ -230,7 +230,8 @@ fn write_varint(mut value: u64, out: &mut Vec<u8>) {
 }
 
 /// Read a variable-length integer.
-#[allow(dead_code)]
+/// Currently only used in tests for verifying write_varint output.
+#[cfg(test)]
 fn read_varint(data: &[u8]) -> Result<(u64, usize), DeserializeError> {
     let mut result: u64 = 0;
     let mut shift = 0;

@@ -108,10 +108,9 @@ pub trait ConnectionFactory: Send + Sync + 'static {
 #[cfg(feature = "http")]
 impl ConnectionFactory for crate::http::HttpClientBuilder {
     fn create(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = QueryResult<Connection>> + Send + '_>> {
-        let builder = self.clone();
-        Box::pin(async move {
-            builder.build().await
-        })
+        // Use build_ref to avoid cloning the entire builder.
+        // Only the required fields (host, database, user, password) are cloned internally.
+        Box::pin(self.build_ref())
     }
 }
 
@@ -119,10 +118,9 @@ impl ConnectionFactory for crate::http::HttpClientBuilder {
 #[cfg(feature = "native")]
 impl ConnectionFactory for crate::native::NativeClientBuilder {
     fn create(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = QueryResult<Connection>> + Send + '_>> {
-        let builder = self.clone();
-        Box::pin(async move {
-            builder.build().await
-        })
+        // Use build_ref to avoid cloning the entire builder.
+        // Only the required fields (host, database, user, password) are cloned internally.
+        Box::pin(self.build_ref())
     }
 }
 

@@ -99,7 +99,7 @@ impl ConnectionParams {
         self
     }
 
-    /// Validate that all required fields are present.
+    /// Validate that all required fields are present (consuming version).
     ///
     /// # Errors
     ///
@@ -120,6 +120,40 @@ impl ConnectionParams {
         let password = self.password.ok_or_else(|| {
             Error::ConnectionError(Cow::Borrowed("password is required"))
         })?;
+
+        Ok(ValidatedConnectionParams {
+            host,
+            port,
+            database,
+            user,
+            password,
+        })
+    }
+
+    /// Validate that all required fields are present (borrowing version).
+    ///
+    /// This clones the values but doesn't consume self, allowing repeated
+    /// calls (useful for connection pooling).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any required field is missing.
+    pub fn validate_ref(&self) -> QueryResult<ValidatedConnectionParams> {
+        let host = self.host.as_ref().ok_or_else(|| {
+            Error::ConnectionError(Cow::Borrowed("host is required"))
+        })?.clone();
+        let port = self.port.ok_or_else(|| {
+            Error::ConnectionError(Cow::Borrowed("port is required"))
+        })?;
+        let database = self.database.as_ref().ok_or_else(|| {
+            Error::ConnectionError(Cow::Borrowed("database is required"))
+        })?.clone();
+        let user = self.user.as_ref().ok_or_else(|| {
+            Error::ConnectionError(Cow::Borrowed("user is required"))
+        })?.clone();
+        let password = self.password.as_ref().ok_or_else(|| {
+            Error::ConnectionError(Cow::Borrowed("password is required"))
+        })?.clone();
 
         Ok(ValidatedConnectionParams {
             host,

@@ -327,22 +327,11 @@ impl<T, DB: Backend> QueryFragment<DB> for Star<T> {
 }
 
 // =============================================================================
-// Aliased expression
+// Aliased expression - see query_builder::modifiers::Alias for implementation
 // =============================================================================
 
-/// An expression with an alias (AS clause).
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct Aliased<E, A> {
-    expression: E,
-    alias: A,
-}
-
-impl<E: Expression, A> Expression for Aliased<E, A> {
-    type SqlType = E::SqlType;
-}
-
-impl<E: SelectableExpression<QS>, A, QS> SelectableExpression<QS> for Aliased<E, A> {}
+// NOTE: Alias functionality is provided by `AliasDsl` trait in query_builder/modifiers.rs.
+// Use `.alias("name")` or `.as_("name")` on any expression.
 
 /// Extension trait for adding an alias to an expression.
 #[allow(clippy::wrong_self_convention)] // Intentional: fluent API consumes self

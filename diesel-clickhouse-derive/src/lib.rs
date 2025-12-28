@@ -380,102 +380,16 @@ pub fn derive_row(input: TokenStream) -> TokenStream {
         Err(err) => return err,
     };
 
-    // Collect field info
-    let field_count = fields.len();
-    let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
-    let field_types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
-    let column_names: Vec<String> = fields.iter()
-        .map(|f| get_column_name(f).unwrap_or_else(|| {
-            f.ident.as_ref()
-                .expect("Named fields always have identifiers")
-                .to_string()
-        }))
-        .collect();
+    // Use shared RowFieldInfo helper
+    let field_info = RowFieldInfo::from_fields(fields);
 
-    // Generate serde rename attributes for Deserialize
-    let serde_field_attrs: Vec<_> = column_names.iter().zip(field_names.iter()).map(|(col, field)| {
-        let field_str = field.as_ref()
-            .expect("Named fields always have identifiers")
-            .to_string();
-        if col != &field_str {
-            quote! { #[serde(rename = #col)] }
-        } else {
-            quote! {}
-        }
-    }).collect();
+    // Generate implementations using shared helpers
+    let serde_impls = generate_serde_impls(name, &field_info, where_clause);
+    let native_impls = generate_from_native_impls(name, &field_info);
 
     let expanded = quote! {
-        // Implement serde::Deserialize by delegation
-        impl<'de> ::serde::Deserialize<'de> for #name #where_clause
-        where
-            #(#field_types: ::serde::Deserialize<'de>,)*
-        {
-            fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-            where
-                D: ::serde::Deserializer<'de>,
-            {
-                #[derive(::serde::Deserialize)]
-                struct __DieselClickhouseRowHelper {
-                    #(
-                        #serde_field_attrs
-                        #field_names: #field_types,
-                    )*
-                }
-
-                let helper = __DieselClickhouseRowHelper::deserialize(deserializer)?;
-                ::std::result::Result::Ok(Self {
-                    #(#field_names: helper.#field_names,)*
-                })
-            }
-        }
-
-        // Implement serde::Serialize
-        impl ::serde::Serialize for #name #where_clause
-        where
-            #(#field_types: ::serde::Serialize,)*
-        {
-            fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
-            where
-                S: ::serde::Serializer,
-            {
-                use ::serde::ser::SerializeStruct;
-                let mut state = serializer.serialize_struct(stringify!(#name), #field_count)?;
-                #(
-                    state.serialize_field(#column_names, &self.#field_names)?;
-                )*
-                state.end()
-            }
-        }
-
-        // Implement FromNativeBlock for direct Native backend deserialization
-        #[cfg(feature = "native")]
-        impl ::diesel_clickhouse::native::FromNativeBlock for #name {
-            fn from_block_row(
-                block: &::diesel_clickhouse::native::ComplexBlock,
-                row_idx: usize,
-            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
-                Ok(Self {
-                    #(
-                        #field_names: ::diesel_clickhouse::native::BlockValue::get_value(block, row_idx, #column_names)?,
-                    )*
-                })
-            }
-        }
-
-        // Implement FromAnyBlock for Native backend streaming
-        #[cfg(feature = "native")]
-        impl ::diesel_clickhouse::native::FromAnyBlock for #name {
-            fn from_any_block<K: ::diesel_clickhouse::native::types::ColumnType>(
-                block: &::diesel_clickhouse::native::NativeBlock<K>,
-                row_idx: usize,
-            ) -> ::diesel_clickhouse::result::QueryResult<Self> {
-                Ok(Self {
-                    #(
-                        #field_names: <#field_types as ::diesel_clickhouse::native::BlockValue<K>>::get_value(block, row_idx, #column_names)?,
-                    )*
-                })
-            }
-        }
+        #serde_impls
+        #native_impls
     };
 
     TokenStream::from(expanded)
@@ -1009,12 +923,11 @@ fn generate_typed_row_extras(
     }
 }
 
-/// Generate FromNativeBlock, FromAnyBlock, and ToNativeBlock implementations.
-fn generate_native_block_impls(name: &Ident, field_info: &RowFieldInfo<'_>) -> TokenStream2 {
+/// Generate FromNativeBlock and FromAnyBlock implementations (for reading).
+fn generate_from_native_impls(name: &Ident, field_info: &RowFieldInfo<'_>) -> TokenStream2 {
     let field_names = &field_info.names;
     let field_types = &field_info.types;
     let column_names = &field_info.column_names;
-    let col_var_names = &field_info.col_var_names;
 
     quote! {
         // Generate FromNativeBlock for Native backend
@@ -1046,7 +959,17 @@ fn generate_native_block_impls(name: &Ident, field_info: &RowFieldInfo<'_>) -> T
                 })
             }
         }
+    }
+}
 
+/// Generate ToNativeBlock implementation (for writing/INSERT).
+fn generate_to_native_impl(name: &Ident, field_info: &RowFieldInfo<'_>) -> TokenStream2 {
+    let field_names = &field_info.names;
+    let field_types = &field_info.types;
+    let column_names = &field_info.column_names;
+    let col_var_names = &field_info.col_var_names;
+
+    quote! {
         // Generate ToNativeBlock for Native backend (optimized INSERT)
         #[cfg(feature = "native")]
         impl ::diesel_clickhouse::native::ToNativeBlock for #name {
@@ -1090,6 +1013,70 @@ fn generate_native_block_impls(name: &Ident, field_info: &RowFieldInfo<'_>) -> T
                 )*
 
                 Ok(block)
+            }
+        }
+    }
+}
+
+/// Generate FromNativeBlock, FromAnyBlock, and ToNativeBlock implementations.
+fn generate_native_block_impls(name: &Ident, field_info: &RowFieldInfo<'_>) -> TokenStream2 {
+    let from_impls = generate_from_native_impls(name, field_info);
+    let to_impl = generate_to_native_impl(name, field_info);
+
+    quote! {
+        #from_impls
+        #to_impl
+    }
+}
+
+/// Generate serde::Serialize and serde::Deserialize implementations.
+fn generate_serde_impls(name: &Ident, field_info: &RowFieldInfo<'_>, where_clause: Option<&syn::WhereClause>) -> TokenStream2 {
+    let field_names = &field_info.names;
+    let field_types = &field_info.types;
+    let column_names = &field_info.column_names;
+    let serde_renames = &field_info.serde_renames;
+    let field_count = field_names.len();
+
+    quote! {
+        // Implement serde::Deserialize by delegation
+        impl<'de> ::serde::Deserialize<'de> for #name #where_clause
+        where
+            #(#field_types: ::serde::Deserialize<'de>,)*
+        {
+            fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                #[derive(::serde::Deserialize)]
+                struct __DieselClickhouseRowHelper {
+                    #(
+                        #serde_renames
+                        #field_names: #field_types,
+                    )*
+                }
+
+                let helper = __DieselClickhouseRowHelper::deserialize(deserializer)?;
+                ::std::result::Result::Ok(Self {
+                    #(#field_names: helper.#field_names,)*
+                })
+            }
+        }
+
+        // Implement serde::Serialize
+        impl ::serde::Serialize for #name #where_clause
+        where
+            #(#field_types: ::serde::Serialize,)*
+        {
+            fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
+            where
+                S: ::serde::Serializer,
+            {
+                use ::serde::ser::SerializeStruct;
+                let mut state = serializer.serialize_struct(stringify!(#name), #field_count)?;
+                #(
+                    state.serialize_field(#column_names, &self.#field_names)?;
+                )*
+                state.end()
             }
         }
     }

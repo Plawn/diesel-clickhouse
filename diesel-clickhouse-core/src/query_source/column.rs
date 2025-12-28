@@ -67,17 +67,21 @@ impl<T: Table, ST: SqlType, DB: Backend> QueryFragment<DB> for ColumnRef<T, ST> 
 }
 
 /// A fully qualified column reference (table.column).
+///
+/// The `table` and `column` fields carry type information used by
+/// `QueryFragment` via `T::table_name()` and `C::column_name()`.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct QualifiedColumn<T: Table, C: Column<Table = T>> {
-    table: T,
-    column: C,
+    /// Table instance (type carries table name via `T::table_name()`).
+    _table: T,
+    /// Column instance (type carries column name via `C::column_name()`).
+    _column: C,
 }
 
 impl<T: Table, C: Column<Table = T>> QualifiedColumn<T, C> {
     /// Create a new qualified column reference.
     pub fn new(table: T, column: C) -> Self {
-        Self { table, column }
+        Self { _table: table, _column: column }
     }
 }
 

@@ -10,14 +10,20 @@ use syn::{
 };
 
 /// Parse a table definition.
-#[allow(dead_code)]
 struct TableDefinition {
+    /// Table-level attributes like `#[engine = MergeTree]`.
+    /// Currently parsed but not used in code generation.
+    /// Future: Generate engine-specific DDL or validation.
+    #[allow(dead_code)]
     attrs: Vec<TableAttribute>,
     name: Ident,
     primary_key: Vec<Ident>,
     columns: Vec<ColumnDefinition>,
 }
 
+/// A table attribute like `#[engine = MergeTree]`.
+/// Currently parsed but not used in code generation.
+/// Future: Generate engine-specific DDL or validation.
 #[allow(dead_code)]
 struct TableAttribute {
     name: Ident,
