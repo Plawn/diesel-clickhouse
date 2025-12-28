@@ -43,6 +43,10 @@ pub mod type_parser;
 /// SQL building utilities (shared across backends).
 pub mod sql_builder;
 
+/// Test utilities for query building tests.
+/// Always available - zero cost when unused due to dead code elimination.
+pub mod test_utils;
+
 // Re-export types crate
 pub use diesel_clickhouse_types as types;
 

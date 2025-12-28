@@ -773,21 +773,11 @@ impl NativeConnection {
 mod tests {
     use super::*;
     use crate::core::query_builder::SelectStatement;
+    use crate::core::test_utils::RawTable;
 
     #[test]
     fn test_build_sql() {
-        struct TestTable;
-        impl QueryFragment<ClickHouse> for TestTable {
-            fn walk_ast<'b>(
-                &'b self,
-                mut pass: AstPass<'_, 'b, ClickHouse>,
-            ) -> QueryResult<()> {
-                pass.push_sql("test_table");
-                Ok(())
-            }
-        }
-
-        let query = SelectStatement::new(TestTable);
+        let query = SelectStatement::new(RawTable("test_table"));
         let result = build_sql(&query).expect("failed to build SQL");
         assert_eq!(result, "SELECT * FROM test_table");
     }

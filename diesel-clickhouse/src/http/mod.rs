@@ -1012,26 +1012,15 @@ mod tests {
     use super::*;
     use crate::core::expression::sql as sql_literal;
     use crate::core::query_builder::SelectStatement;
+    use crate::core::test_utils::RawTable;
 
     #[test]
     fn test_build_sql() {
-        // Simple table wrapper for testing
-        struct TestTable;
-        impl QueryFragment<ClickHouse> for TestTable {
-            fn walk_ast<'b>(
-                &'b self,
-                mut pass: crate::core::query_builder::AstPass<'_, 'b, ClickHouse>,
-            ) -> QueryResult<()> {
-                pass.push_sql("test_table");
-                Ok(())
-            }
-        }
-
-        let query = SelectStatement::new(TestTable);
+        let query = SelectStatement::new(RawTable("test_table"));
         let result = build_sql(&query).expect("failed to build SQL");
         assert_eq!(result, "SELECT * FROM test_table");
 
-        let query = SelectStatement::new(TestTable)
+        let query = SelectStatement::new(RawTable("test_table"))
             .filter(sql_literal::<diesel_clickhouse_types::Bool>("id > 10"))
             .limit(100);
         let result = build_sql(&query).expect("failed to build SQL");

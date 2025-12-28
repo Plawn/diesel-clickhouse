@@ -5,6 +5,9 @@
 //!
 //! Run with: `cargo test --test integration_tests`
 //! Run integration tests: `cargo test --test integration_tests --features integration`
+//!
+//! Alternatively, use testcontainers for automatic Docker management:
+//! `cargo test --test testcontainers_tests --features testcontainers`
 
 // =============================================================================
 // Type System Integration Tests
@@ -73,58 +76,22 @@ mod type_tests {
 // =============================================================================
 
 mod query_builder_tests {
-    use diesel_clickhouse_core::backend::*;
     use diesel_clickhouse_core::expression::*;
     use diesel_clickhouse_core::query_builder::*;
+    use diesel_clickhouse_core::test_utils::{build_sql_inlined, TestTable};
     use diesel_clickhouse_types::*;
-
-    fn build_sql<T: QueryFragment<ClickHouse>>(fragment: &T) -> String {
-        let mut builder = GenericQueryBuilder::default();
-        let mut collector = GenericBindCollector::default();
-        let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-        fragment.walk_ast(pass).unwrap();
-
-        // Inline bindings into the SQL for easier test assertions
-        // GenericQueryBuilder uses '?' as placeholder
-        let mut sql = builder.finish();
-        for binding in collector.bindable_values().iter().rev() {
-            if let Some(pos) = sql.rfind('?') {
-                sql.replace_range(pos..pos + 1, &binding.sql_literal());
-            }
-        }
-        sql
-    }
-
-    // Simple table representation for tests
-    struct UsersTable;
-    impl QueryFragment<ClickHouse> for UsersTable {
-        fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, ClickHouse>) -> diesel_clickhouse_core::result::QueryResult<()> {
-            pass.push_identifier("users");
-            Ok(())
-        }
-    }
-
-    struct EventsTable;
-    impl QueryFragment<ClickHouse> for EventsTable {
-        fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, ClickHouse>) -> diesel_clickhouse_core::result::QueryResult<()> {
-            pass.push_identifier("events");
-            Ok(())
-        }
-    }
 
     #[test]
     fn test_simple_select_query() {
-        let stmt = SelectStatement::new(UsersTable);
-        let sql = build_sql(&stmt);
-        assert_eq!(sql, "SELECT * FROM `users`");
+        let stmt = SelectStatement::new(TestTable("users"));
+        assert_eq!(build_sql_inlined(&stmt), "SELECT * FROM `users`");
     }
 
     #[test]
     fn test_select_with_filter() {
         let predicate: SqlLiteral<Bool> = sql("id > 100");
-        let stmt = SelectStatement::new(UsersTable).filter(predicate);
-        let sql = build_sql(&stmt);
-        assert_eq!(sql, "SELECT * FROM `users` WHERE id > 100");
+        let stmt = SelectStatement::new(TestTable("users")).filter(predicate);
+        assert_eq!(build_sql_inlined(&stmt), "SELECT * FROM `users` WHERE id > 100");
     }
 
     #[test]
@@ -133,14 +100,13 @@ mod query_builder_tests {
         let predicate: SqlLiteral<Bool> = sql("active = 1");
         let order: SqlLiteral<UInt64> = sql("created_at DESC");
 
-        let stmt = SelectStatement::new(UsersTable)
+        let stmt = SelectStatement::new(TestTable("users"))
             .select(columns)
             .filter(predicate)
             .order_by(order)
             .limit(100);
 
-        let sql = build_sql(&stmt);
-        assert_eq!(sql, "SELECT id, name, created_at FROM `users` WHERE active = 1 ORDER BY created_at DESC LIMIT 100");
+        assert_eq!(build_sql_inlined(&stmt), "SELECT id, name, created_at FROM `users` WHERE active = 1 ORDER BY created_at DESC LIMIT 100");
     }
 
     #[test]
@@ -150,30 +116,27 @@ mod query_builder_tests {
         let having: SqlLiteral<Bool> = sql("cnt > 10");
         let order: SqlLiteral<UInt64> = sql("cnt DESC");
 
-        let stmt = SelectStatement::new(UsersTable)
+        let stmt = SelectStatement::new(TestTable("users"))
             .select(columns)
             .group_by(group)
             .having(having)
             .order_by(order);
 
-        let sql = build_sql(&stmt);
-        assert_eq!(sql, "SELECT country, count(*) as cnt FROM `users` GROUP BY country HAVING cnt > 10 ORDER BY cnt DESC");
+        assert_eq!(build_sql_inlined(&stmt), "SELECT country, count(*) as cnt FROM `users` GROUP BY country HAVING cnt > 10 ORDER BY cnt DESC");
     }
 
     #[test]
     fn test_clickhouse_final() {
         let base: SqlLiteral<UInt64> = sql("SELECT * FROM events");
         let query = base.final_();
-        let sql = build_sql(&query);
-        assert_eq!(sql, "SELECT * FROM events FINAL");
+        assert_eq!(build_sql_inlined(&query), "SELECT * FROM events FINAL");
     }
 
     #[test]
     fn test_clickhouse_sample() {
         let base: SqlLiteral<UInt64> = sql("SELECT count() FROM events");
         let query = base.sample(0.01);
-        let sql = build_sql(&query);
-        assert_eq!(sql, "SELECT count() FROM events SAMPLE 0.01");
+        assert_eq!(build_sql_inlined(&query), "SELECT count() FROM events SAMPLE 0.01");
     }
 
     #[test]
@@ -181,8 +144,7 @@ mod query_builder_tests {
         let base: SqlLiteral<UInt64> = sql("SELECT * FROM events");
         let pred: SqlLiteral<Bool> = sql("toDate(timestamp) = today()");
         let query = Prewhere::new(base, pred);
-        let sql = build_sql(&query);
-        assert_eq!(sql, "SELECT * FROM events PREWHERE toDate(timestamp) = today()");
+        assert_eq!(build_sql_inlined(&query), "SELECT * FROM events PREWHERE toDate(timestamp) = today()");
     }
 
     #[test]
@@ -191,29 +153,25 @@ mod query_builder_tests {
         let query = base.settings()
             .set("max_threads", "4")
             .set("max_memory_usage", "10000000000");
-        let sql = build_sql(&query);
-        assert_eq!(sql, "SELECT * FROM events SETTINGS max_threads = 4, max_memory_usage = 10000000000");
+        assert_eq!(build_sql_inlined(&query), "SELECT * FROM events SETTINGS max_threads = 4, max_memory_usage = 10000000000");
     }
 
     #[test]
     fn test_clickhouse_format() {
         let base: SqlLiteral<UInt64> = sql("SELECT * FROM events");
         let query = base.format("JSONEachRow");
-        let sql = build_sql(&query);
-        assert_eq!(sql, "SELECT * FROM events FORMAT JSONEachRow");
+        assert_eq!(build_sql_inlined(&query), "SELECT * FROM events FORMAT JSONEachRow");
     }
 
     #[test]
     fn test_with_totals() {
         let base: SqlLiteral<UInt64> = sql("SELECT type, count() FROM events GROUP BY type");
         let query = base.with_totals();
-        let sql = build_sql(&query);
-        assert_eq!(sql, "SELECT type, count() FROM events GROUP BY type WITH TOTALS");
+        assert_eq!(build_sql_inlined(&query), "SELECT type, count() FROM events GROUP BY type WITH TOTALS");
     }
 
     #[test]
     fn test_combined_clickhouse_features() {
-        // This is the kind of query you might run in production
         let base: SqlLiteral<UInt64> = sql("SELECT user_id, count() as event_count FROM events");
         let pred: SqlLiteral<Bool> = sql("toDate(timestamp) >= today() - 7");
 
@@ -223,9 +181,8 @@ mod query_builder_tests {
             .settings()
             .set("max_threads", "8");
 
-        let sql = build_sql(&query);
         assert_eq!(
-            sql,
+            build_sql_inlined(&query),
             "SELECT user_id, count() as event_count FROM events PREWHERE toDate(timestamp) >= today() - 7 SAMPLE 0.1 FINAL SETTINGS max_threads = 8"
         );
     }
@@ -236,27 +193,9 @@ mod query_builder_tests {
 // =============================================================================
 
 mod expression_tests {
-    use diesel_clickhouse_core::backend::*;
     use diesel_clickhouse_core::expression::*;
-    use diesel_clickhouse_core::query_builder::*;
+    use diesel_clickhouse_core::test_utils::build_sql_inlined;
     use diesel_clickhouse_types::*;
-
-    fn build_sql<T: QueryFragment<ClickHouse>>(fragment: &T) -> String {
-        let mut builder = GenericQueryBuilder::default();
-        let mut collector = GenericBindCollector::default();
-        let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-        fragment.walk_ast(pass).unwrap();
-
-        // Inline bindings into the SQL for easier test assertions
-        // GenericQueryBuilder uses '?' as placeholder
-        let mut sql = builder.finish();
-        for binding in collector.bindable_values().iter().rev() {
-            if let Some(pos) = sql.rfind('?') {
-                sql.replace_range(pos..pos + 1, &binding.sql_literal());
-            }
-        }
-        sql
-    }
 
     #[test]
     fn test_complex_where_clause() {
@@ -274,8 +213,7 @@ mod expression_tests {
             right: role_check,
         };
 
-        let sql = build_sql(&or_clause);
-        assert_eq!(sql, "((status = 'active' AND age >= 18) OR role = 'admin')");
+        assert_eq!(build_sql_inlined(&or_clause), "((status = 'active' AND age >= 18) OR role = 'admin')");
     }
 
     #[test]
@@ -283,12 +221,12 @@ mod expression_tests {
         let a: SqlLiteral<UInt64> = sql("a");
         let b: SqlLiteral<UInt64> = sql("b");
 
-        assert_eq!(build_sql(&Eq { left: a.clone(), right: b.clone() }), "a = b");
-        assert_eq!(build_sql(&NotEq { left: a.clone(), right: b.clone() }), "a != b");
-        assert_eq!(build_sql(&Gt { left: a.clone(), right: b.clone() }), "a > b");
-        assert_eq!(build_sql(&Lt { left: a.clone(), right: b.clone() }), "a < b");
-        assert_eq!(build_sql(&GtEq { left: a.clone(), right: b.clone() }), "a >= b");
-        assert_eq!(build_sql(&LtEq { left: a, right: b }), "a <= b");
+        assert_eq!(build_sql_inlined(&Eq { left: a.clone(), right: b.clone() }), "a = b");
+        assert_eq!(build_sql_inlined(&NotEq { left: a.clone(), right: b.clone() }), "a != b");
+        assert_eq!(build_sql_inlined(&Gt { left: a.clone(), right: b.clone() }), "a > b");
+        assert_eq!(build_sql_inlined(&Lt { left: a.clone(), right: b.clone() }), "a < b");
+        assert_eq!(build_sql_inlined(&GtEq { left: a.clone(), right: b.clone() }), "a >= b");
+        assert_eq!(build_sql_inlined(&LtEq { left: a, right: b }), "a <= b");
     }
 
     #[test]
@@ -298,8 +236,8 @@ mod expression_tests {
         let is_null = IsNull { expr: col.clone() };
         let is_not_null = IsNotNull { expr: col };
 
-        assert_eq!(build_sql(&is_null), "optional_field IS NULL");
-        assert_eq!(build_sql(&is_not_null), "optional_field IS NOT NULL");
+        assert_eq!(build_sql_inlined(&is_null), "optional_field IS NULL");
+        assert_eq!(build_sql_inlined(&is_not_null), "optional_field IS NOT NULL");
     }
 
     #[test]
@@ -309,7 +247,7 @@ mod expression_tests {
         let high: SqlLiteral<UInt64> = sql("1000");
 
         let between = Between { expr, low, high };
-        assert_eq!(build_sql(&between), "price BETWEEN 100 AND 1000");
+        assert_eq!(build_sql_inlined(&between), "price BETWEEN 100 AND 1000");
     }
 
     #[test]
@@ -323,15 +261,15 @@ mod expression_tests {
         };
         let ilike = ILike { left: name, right: pattern };
 
-        assert_eq!(build_sql(&like), "name LIKE '%test%'");
-        assert_eq!(build_sql(&ilike), "name ILIKE '%test%'");
+        assert_eq!(build_sql_inlined(&like), "name LIKE '%test%'");
+        assert_eq!(build_sql_inlined(&ilike), "name ILIKE '%test%'");
     }
 
     #[test]
     fn test_not_expression() {
         let expr: SqlLiteral<Bool> = sql("is_deleted");
         let not_expr = Not { expr };
-        assert_eq!(build_sql(&not_expr), "NOT (is_deleted)");
+        assert_eq!(build_sql_inlined(&not_expr), "NOT (is_deleted)");
     }
 }
 

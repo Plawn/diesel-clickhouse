@@ -7,9 +7,24 @@ cargo build --all                              # Full workspace
 cargo build -p diesel-clickhouse --features http   # HTTP backend only
 cargo build -p diesel-clickhouse --features native # Native backend only
 cargo test --all                               # Unit tests
-docker-compose up -d && cargo test --all --features integration  # Integration tests
+docker-compose up -d && cargo test --all --features integration  # Integration tests (manual Docker)
+cargo test -p diesel-clickhouse --features testcontainers         # Integration tests (auto Docker)
 cargo clippy --all --all-features              # Lint
 ```
+
+### Testcontainers (Recommended for Integration Tests)
+
+The `testcontainers` feature automatically manages a ClickHouse Docker container:
+
+```bash
+# Run all integration tests with automatic Docker management
+cargo test -p diesel-clickhouse --features testcontainers
+
+# Run specific test
+cargo test -p diesel-clickhouse --features testcontainers test_http_basic_query
+```
+
+**Requirements:** Docker must be running. No manual `docker-compose up` needed.
 
 ## Architecture
 

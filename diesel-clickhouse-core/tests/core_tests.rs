@@ -3,7 +3,7 @@
 use diesel_clickhouse_core::backend::*;
 use diesel_clickhouse_core::expression::*;
 use diesel_clickhouse_core::query_builder::*;
-use diesel_clickhouse_core::result::QueryResult;
+use diesel_clickhouse_core::test_utils::{build_sql_inlined, TestTable};
 use diesel_clickhouse_types::*;
 
 // =============================================================================
@@ -143,31 +143,12 @@ mod expression_tests {
 mod operator_tests {
     use super::*;
 
-    fn build_sql<T: QueryFragment<ClickHouse>>(fragment: &T) -> String {
-        let mut builder = GenericQueryBuilder::default();
-        let mut collector = GenericBindCollector::default();
-        let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-        fragment.walk_ast(pass).unwrap();
-
-        // Inline bindings into the SQL for easier test assertions
-        // GenericQueryBuilder uses '?' as placeholder
-        let mut sql = builder.finish();
-        for binding in collector.bindable_values().iter().rev() {
-            if let Some(pos) = sql.rfind('?') {
-                sql.replace_range(pos..pos + 1, &binding.sql_literal());
-            }
-        }
-        sql
-    }
-
     #[test]
     fn test_eq_operator() {
         let left: SqlLiteral<UInt64> = sql("a");
         let right: SqlLiteral<UInt64> = sql("b");
         let eq = Eq { left, right };
-
-        let sql_str = build_sql(&eq);
-        assert_eq!(sql_str, "a = b");
+        assert_eq!(build_sql_inlined(&eq), "a = b");
     }
 
     #[test]
@@ -175,9 +156,7 @@ mod operator_tests {
         let left: SqlLiteral<UInt64> = sql("a");
         let right: SqlLiteral<UInt64> = sql("b");
         let ne = NotEq { left, right };
-
-        let sql_str = build_sql(&ne);
-        assert_eq!(sql_str, "a != b");
+        assert_eq!(build_sql_inlined(&ne), "a != b");
     }
 
     #[test]
@@ -185,9 +164,7 @@ mod operator_tests {
         let left: SqlLiteral<UInt64> = sql("x");
         let right: SqlLiteral<UInt64> = sql("10");
         let gt = Gt { left, right };
-
-        let sql_str = build_sql(&gt);
-        assert_eq!(sql_str, "x > 10");
+        assert_eq!(build_sql_inlined(&gt), "x > 10");
     }
 
     #[test]
@@ -195,9 +172,7 @@ mod operator_tests {
         let left: SqlLiteral<UInt64> = sql("x");
         let right: SqlLiteral<UInt64> = sql("10");
         let lt = Lt { left, right };
-
-        let sql_str = build_sql(&lt);
-        assert_eq!(sql_str, "x < 10");
+        assert_eq!(build_sql_inlined(&lt), "x < 10");
     }
 
     #[test]
@@ -205,9 +180,7 @@ mod operator_tests {
         let left: SqlLiteral<UInt64> = sql("x");
         let right: SqlLiteral<UInt64> = sql("10");
         let gte = GtEq { left, right };
-
-        let sql_str = build_sql(&gte);
-        assert_eq!(sql_str, "x >= 10");
+        assert_eq!(build_sql_inlined(&gte), "x >= 10");
     }
 
     #[test]
@@ -215,9 +188,7 @@ mod operator_tests {
         let left: SqlLiteral<UInt64> = sql("x");
         let right: SqlLiteral<UInt64> = sql("10");
         let lte = LtEq { left, right };
-
-        let sql_str = build_sql(&lte);
-        assert_eq!(sql_str, "x <= 10");
+        assert_eq!(build_sql_inlined(&lte), "x <= 10");
     }
 
     #[test]
@@ -225,9 +196,7 @@ mod operator_tests {
         let left: SqlLiteral<Bool> = sql("a = 1");
         let right: SqlLiteral<Bool> = sql("b = 2");
         let and = And { left, right };
-
-        let sql_str = build_sql(&and);
-        assert_eq!(sql_str, "(a = 1 AND b = 2)");
+        assert_eq!(build_sql_inlined(&and), "(a = 1 AND b = 2)");
     }
 
     #[test]
@@ -235,36 +204,28 @@ mod operator_tests {
         let left: SqlLiteral<Bool> = sql("a = 1");
         let right: SqlLiteral<Bool> = sql("b = 2");
         let or = Or { left, right };
-
-        let sql_str = build_sql(&or);
-        assert_eq!(sql_str, "(a = 1 OR b = 2)");
+        assert_eq!(build_sql_inlined(&or), "(a = 1 OR b = 2)");
     }
 
     #[test]
     fn test_not_operator() {
         let expr: SqlLiteral<Bool> = sql("active");
         let not = Not { expr };
-
-        let sql_str = build_sql(&not);
-        assert_eq!(sql_str, "NOT (active)");
+        assert_eq!(build_sql_inlined(&not), "NOT (active)");
     }
 
     #[test]
     fn test_is_null() {
         let expr: SqlLiteral<UInt64> = sql("column_name");
         let is_null = IsNull { expr };
-
-        let sql_str = build_sql(&is_null);
-        assert_eq!(sql_str, "column_name IS NULL");
+        assert_eq!(build_sql_inlined(&is_null), "column_name IS NULL");
     }
 
     #[test]
     fn test_is_not_null() {
         let expr: SqlLiteral<UInt64> = sql("column_name");
         let is_not_null = IsNotNull { expr };
-
-        let sql_str = build_sql(&is_not_null);
-        assert_eq!(sql_str, "column_name IS NOT NULL");
+        assert_eq!(build_sql_inlined(&is_not_null), "column_name IS NOT NULL");
     }
 
     #[test]
@@ -272,9 +233,7 @@ mod operator_tests {
         let left: SqlLiteral<CHString> = sql("name");
         let right: SqlLiteral<CHString> = sql("'%test%'");
         let like = Like { left, right };
-
-        let sql_str = build_sql(&like);
-        assert_eq!(sql_str, "name LIKE '%test%'");
+        assert_eq!(build_sql_inlined(&like), "name LIKE '%test%'");
     }
 
     #[test]
@@ -282,9 +241,7 @@ mod operator_tests {
         let left: SqlLiteral<CHString> = sql("name");
         let right: SqlLiteral<CHString> = sql("'%TEST%'");
         let ilike = ILike { left, right };
-
-        let sql_str = build_sql(&ilike);
-        assert_eq!(sql_str, "name ILIKE '%TEST%'");
+        assert_eq!(build_sql_inlined(&ilike), "name ILIKE '%TEST%'");
     }
 
     #[test]
@@ -293,9 +250,7 @@ mod operator_tests {
         let low: SqlLiteral<UInt64> = sql("18");
         let high: SqlLiteral<UInt64> = sql("65");
         let between = Between { expr, low, high };
-
-        let sql_str = build_sql(&between);
-        assert_eq!(sql_str, "age BETWEEN 18 AND 65");
+        assert_eq!(build_sql_inlined(&between), "age BETWEEN 18 AND 65");
     }
 
     #[test]
@@ -318,9 +273,7 @@ mod operator_tests {
             right: sql("3"),
         };
         let or = Or { left: and, right: eq3 };
-
-        let sql_str = build_sql(&or);
-        assert_eq!(sql_str, "((a = 1 AND b = 2) OR c = 3)");
+        assert_eq!(build_sql_inlined(&or), "((a = 1 AND b = 2) OR c = 3)");
     }
 }
 
@@ -331,66 +284,39 @@ mod operator_tests {
 mod clickhouse_extension_tests {
     use super::*;
 
-    fn build_sql<T: QueryFragment<ClickHouse>>(fragment: &T) -> String {
-        let mut builder = GenericQueryBuilder::default();
-        let mut collector = GenericBindCollector::default();
-        let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-        fragment.walk_ast(pass).unwrap();
-
-        // Inline bindings into the SQL for easier test assertions
-        // GenericQueryBuilder uses '?' as placeholder
-        let mut sql = builder.finish();
-        for binding in collector.bindable_values().iter().rev() {
-            if let Some(pos) = sql.rfind('?') {
-                sql.replace_range(pos..pos + 1, &binding.sql_literal());
-            }
-        }
-        sql
-    }
-
     #[test]
     fn test_final_modifier() {
         let base: SqlLiteral<UInt64> = sql("SELECT * FROM users");
         let final_query = base.final_();
-
-        let sql_str = build_sql(&final_query);
-        assert_eq!(sql_str, "SELECT * FROM users FINAL");
+        assert_eq!(build_sql_inlined(&final_query), "SELECT * FROM users FINAL");
     }
 
     #[test]
     fn test_sample_modifier() {
         let base: SqlLiteral<UInt64> = sql("SELECT * FROM events");
         let sampled = base.sample(0.1);
-
-        let sql_str = build_sql(&sampled);
-        assert_eq!(sql_str, "SELECT * FROM events SAMPLE 0.1");
+        assert_eq!(build_sql_inlined(&sampled), "SELECT * FROM events SAMPLE 0.1");
     }
 
     #[test]
     fn test_sample_with_offset() {
         let base: SqlLiteral<UInt64> = sql("SELECT * FROM events");
         let sampled = base.sample_with_offset(0.1, 0.5);
-
-        let sql_str = build_sql(&sampled);
-        assert_eq!(sql_str, "SELECT * FROM events SAMPLE 0.1 OFFSET 0.5");
+        assert_eq!(build_sql_inlined(&sampled), "SELECT * FROM events SAMPLE 0.1 OFFSET 0.5");
     }
 
     #[test]
     fn test_with_totals() {
         let base: SqlLiteral<UInt64> = sql("SELECT count() FROM events GROUP BY type");
         let with_totals = base.with_totals();
-
-        let sql_str = build_sql(&with_totals);
-        assert_eq!(sql_str, "SELECT count() FROM events GROUP BY type WITH TOTALS");
+        assert_eq!(build_sql_inlined(&with_totals), "SELECT count() FROM events GROUP BY type WITH TOTALS");
     }
 
     #[test]
     fn test_format() {
         let base: SqlLiteral<UInt64> = sql("SELECT * FROM users");
         let formatted = base.format("JSONEachRow");
-
-        let sql_str = build_sql(&formatted);
-        assert_eq!(sql_str, "SELECT * FROM users FORMAT JSONEachRow");
+        assert_eq!(build_sql_inlined(&formatted), "SELECT * FROM users FORMAT JSONEachRow");
     }
 
     #[test]
@@ -399,9 +325,7 @@ mod clickhouse_extension_tests {
         let with_settings = base.settings()
             .set("max_threads", "4")
             .set("optimize_read_in_order", "1");
-
-        let sql_str = build_sql(&with_settings);
-        assert_eq!(sql_str, "SELECT * FROM users SETTINGS max_threads = 4, optimize_read_in_order = 1");
+        assert_eq!(build_sql_inlined(&with_settings), "SELECT * FROM users SETTINGS max_threads = 4, optimize_read_in_order = 1");
     }
 
     #[test]
@@ -411,9 +335,7 @@ mod clickhouse_extension_tests {
             .sample(0.5)
             .final_()
             .format("TabSeparated");
-
-        let sql_str = build_sql(&query);
-        assert_eq!(sql_str, "SELECT * FROM events SAMPLE 0.5 FINAL FORMAT TabSeparated");
+        assert_eq!(build_sql_inlined(&query), "SELECT * FROM events SAMPLE 0.5 FINAL FORMAT TabSeparated");
     }
 }
 
@@ -424,94 +346,60 @@ mod clickhouse_extension_tests {
 mod select_statement_tests {
     use super::*;
 
-    fn build_sql<T: QueryFragment<ClickHouse>>(fragment: &T) -> String {
-        let mut builder = GenericQueryBuilder::default();
-        let mut collector = GenericBindCollector::default();
-        let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-        fragment.walk_ast(pass).unwrap();
-
-        // Inline bindings into the SQL for easier test assertions
-        // GenericQueryBuilder uses '?' as placeholder
-        let mut sql = builder.finish();
-        for binding in collector.bindable_values().iter().rev() {
-            if let Some(pos) = sql.rfind('?') {
-                sql.replace_range(pos..pos + 1, &binding.sql_literal());
-            }
-        }
-        sql
-    }
-
-    // Helper to create a simple table fragment
-    struct TestTable;
-    impl QueryFragment<ClickHouse> for TestTable {
-        fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, ClickHouse>) -> QueryResult<()> {
-            pass.push_identifier("users");
-            Ok(())
-        }
-    }
-
     #[test]
     fn test_simple_select() {
-        let stmt = SelectStatement::new(TestTable);
-        let sql_str = build_sql(&stmt);
-        assert_eq!(sql_str, "SELECT * FROM `users`");
+        let stmt = SelectStatement::new(TestTable("users"));
+        assert_eq!(build_sql_inlined(&stmt), "SELECT * FROM `users`");
     }
 
     #[test]
     fn test_select_with_columns() {
         let columns: SqlLiteral<UInt64> = sql("id, name");
-        let stmt = SelectStatement::new(TestTable).select(columns);
-        let sql_str = build_sql(&stmt);
-        assert_eq!(sql_str, "SELECT id, name FROM `users`");
+        let stmt = SelectStatement::new(TestTable("users")).select(columns);
+        assert_eq!(build_sql_inlined(&stmt), "SELECT id, name FROM `users`");
     }
 
     #[test]
     fn test_select_with_where() {
         let predicate: SqlLiteral<Bool> = sql("id > 10");
-        let stmt = SelectStatement::new(TestTable).filter(predicate);
-        let sql_str = build_sql(&stmt);
-        assert_eq!(sql_str, "SELECT * FROM `users` WHERE id > 10");
+        let stmt = SelectStatement::new(TestTable("users")).filter(predicate);
+        assert_eq!(build_sql_inlined(&stmt), "SELECT * FROM `users` WHERE id > 10");
     }
 
     #[test]
     fn test_select_with_order_by() {
         let order: SqlLiteral<UInt64> = sql("created_at DESC");
-        let stmt = SelectStatement::new(TestTable).order_by(order);
-        let sql_str = build_sql(&stmt);
-        assert_eq!(sql_str, "SELECT * FROM `users` ORDER BY created_at DESC");
+        let stmt = SelectStatement::new(TestTable("users")).order_by(order);
+        assert_eq!(build_sql_inlined(&stmt), "SELECT * FROM `users` ORDER BY created_at DESC");
     }
 
     #[test]
     fn test_select_with_limit() {
-        let stmt = SelectStatement::new(TestTable).limit(100);
-        let sql_str = build_sql(&stmt);
-        assert_eq!(sql_str, "SELECT * FROM `users` LIMIT 100");
+        let stmt = SelectStatement::new(TestTable("users")).limit(100);
+        assert_eq!(build_sql_inlined(&stmt), "SELECT * FROM `users` LIMIT 100");
     }
 
     #[test]
     fn test_select_with_offset() {
-        let stmt = SelectStatement::new(TestTable).offset(50);
-        let sql_str = build_sql(&stmt);
-        assert_eq!(sql_str, "SELECT * FROM `users` OFFSET 50");
+        let stmt = SelectStatement::new(TestTable("users")).offset(50);
+        assert_eq!(build_sql_inlined(&stmt), "SELECT * FROM `users` OFFSET 50");
     }
 
     #[test]
     fn test_select_with_group_by() {
         let group: SqlLiteral<CHString> = sql("country");
-        let stmt = SelectStatement::new(TestTable).group_by(group);
-        let sql_str = build_sql(&stmt);
-        assert_eq!(sql_str, "SELECT * FROM `users` GROUP BY country");
+        let stmt = SelectStatement::new(TestTable("users")).group_by(group);
+        assert_eq!(build_sql_inlined(&stmt), "SELECT * FROM `users` GROUP BY country");
     }
 
     #[test]
     fn test_select_with_having() {
         let group: SqlLiteral<CHString> = sql("country");
         let having: SqlLiteral<Bool> = sql("count(*) > 10");
-        let stmt = SelectStatement::new(TestTable)
+        let stmt = SelectStatement::new(TestTable("users"))
             .group_by(group)
             .having(having);
-        let sql_str = build_sql(&stmt);
-        assert_eq!(sql_str, "SELECT * FROM `users` GROUP BY country HAVING count(*) > 10");
+        assert_eq!(build_sql_inlined(&stmt), "SELECT * FROM `users` GROUP BY country HAVING count(*) > 10");
     }
 
     #[test]
@@ -522,7 +410,7 @@ mod select_statement_tests {
         let having: SqlLiteral<Bool> = sql("cnt > 5");
         let order: SqlLiteral<UInt64> = sql("cnt DESC");
 
-        let stmt = SelectStatement::new(TestTable)
+        let stmt = SelectStatement::new(TestTable("users"))
             .select(columns)
             .filter(predicate)
             .group_by(group)
@@ -531,9 +419,8 @@ mod select_statement_tests {
             .limit(10)
             .offset(0);
 
-        let sql_str = build_sql(&stmt);
         assert_eq!(
-            sql_str,
+            build_sql_inlined(&stmt),
             "SELECT country, count(*) as cnt FROM `users` WHERE active = 1 GROUP BY country HAVING cnt > 5 ORDER BY cnt DESC LIMIT 10 OFFSET 0"
         );
     }

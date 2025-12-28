@@ -831,30 +831,13 @@ pub fn date_diff<A: Expression, B: Expression>(unit: &'static str, start: A, end
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{ClickHouse, GenericQueryBuilder, GenericBindCollector, QueryBuilder};
-
-    fn build_sql<T: QueryFragment<ClickHouse>>(fragment: &T) -> String {
-        use crate::backend::BindCollector;
-        let mut builder = GenericQueryBuilder::default();
-        let mut collector = GenericBindCollector::default();
-        let pass: AstPass<'_, '_, ClickHouse> = AstPass::new(&mut builder, &mut collector);
-        fragment.walk_ast(pass).unwrap();
-
-        // Inline bindings into the SQL for easier test assertions
-        let mut sql = builder.finish();
-        for binding in collector.bindable_values().iter().rev() {
-            if let Some(pos) = sql.rfind('?') {
-                sql.replace_range(pos..pos + 1, &binding.sql_literal());
-            }
-        }
-        sql
-    }
+    use crate::test_utils::build_sql_inlined;
 
     #[test]
     fn test_nullary_functions() {
-        assert_eq!(build_sql(&count_star()), "count(*)");
-        assert_eq!(build_sql(&now()), "now()");
-        assert_eq!(build_sql(&today()), "today()");
+        assert_eq!(build_sql_inlined(&count_star()), "count(*)");
+        assert_eq!(build_sql_inlined(&now()), "now()");
+        assert_eq!(build_sql_inlined(&today()), "today()");
     }
 
     #[test]
@@ -864,7 +847,7 @@ mod tests {
 
         let expr: crate::expression::SqlLiteral<UInt64> = sql("value");
         let q = quantile(0.5, expr);
-        assert_eq!(build_sql(&q), "quantile(0.5)(value)");
+        assert_eq!(build_sql_inlined(&q), "quantile(0.5)(value)");
     }
 
     #[test]
@@ -874,6 +857,6 @@ mod tests {
 
         let expr: crate::expression::SqlLiteral<UInt64> = sql("value");
         let tk = top_k(10, expr);
-        assert_eq!(build_sql(&tk), "topK(10)(value)");
+        assert_eq!(build_sql_inlined(&tk), "topK(10)(value)");
     }
 }

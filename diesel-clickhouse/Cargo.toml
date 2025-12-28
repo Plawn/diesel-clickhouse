@@ -21,6 +21,9 @@ migrations = ["dep:diesel-clickhouse-migrations"]
 # For integration tests
 integration = []
 
+# For integration tests with testcontainers (auto-starts ClickHouse in Docker)
+testcontainers = ["integration", "dep:testcontainers", "dep:testcontainers-modules", "dep:reqwest"]
+
 # DateTime handling
 chrono = ["diesel-clickhouse-core/chrono", "dep:chrono", "dep:chrono-tz"]
 time = ["diesel-clickhouse-core/time"]
@@ -93,7 +96,12 @@ url = "2"
 # Optional - Migrations
 diesel-clickhouse-migrations = { workspace = true, optional = true }
 
+# Optional - Testcontainers for integration tests
+testcontainers = { version = "0.23", optional = true }
+testcontainers-modules = { version = "0.11", features = ["clickhouse"], optional = true }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls"] }
+
 [dev-dependencies]
 tempfile = "3"
-reqwest = { version = "0.11", features = ["blocking"] }
 diesel-clickhouse-migrations.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
