@@ -64,7 +64,7 @@ macro_rules! impl_block_value {
         impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for $ty {
             fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
                 block.get(row_idx, column)
-                    .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get {} column '{}': {}", $name, column, e))))
+                    .map_err(|e| Error::column_access($name, column, e))
             }
         }
     };
@@ -86,7 +86,7 @@ impl_block_value!(bool, "bool");
 impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for String {
     fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         let s: &str = block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get String column '{}': {}", column, e))))?;
+            .map_err(|e| Error::column_access("String", column, e))?;
         Ok(s.to_string())
     }
 }
@@ -112,7 +112,7 @@ impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for String {
 impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for Cow<'static, str> {
     fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         let s: &str = block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get Cow<str> column '{}': {}", column, e))))?;
+            .map_err(|e| Error::column_access("Cow<str>", column, e))?;
         Ok(Cow::Owned(s.to_string()))
     }
 }
@@ -121,7 +121,7 @@ impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for Cow<'static, str> {
 impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for chrono::DateTime<chrono_tz::Tz> {
     fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get DateTime column '{}': {}", column, e))))
+            .map_err(|e| Error::column_access("DateTime<Tz>", column, e))
     }
 }
 
@@ -130,7 +130,7 @@ impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for chrono::DateTime<chr
     fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         // Get as DateTime<Tz> and convert to FixedOffset
         let dt: chrono::DateTime<chrono_tz::Tz> = block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get DateTime column '{}': {}", column, e))))?;
+            .map_err(|e| Error::column_access("DateTime<FixedOffset>", column, e))?;
         Ok(dt.fixed_offset())
     }
 }
@@ -140,7 +140,7 @@ impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for chrono::DateTime<chr
     fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         // Get as DateTime<Tz> and convert to Utc
         let dt: chrono::DateTime<chrono_tz::Tz> = block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get DateTime column '{}': {}", column, e))))?;
+            .map_err(|e| Error::column_access("DateTime<Utc>", column, e))?;
         Ok(dt.with_timezone(&chrono::Utc))
     }
 }
@@ -162,7 +162,7 @@ where
 {
     fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(format!("Failed to get Vec column '{}': {}", column, e))))
+            .map_err(|e| Error::column_access("Vec", column, e))
     }
 }
 
@@ -178,13 +178,9 @@ where
 impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for serde_json::Value {
     fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         let json_str: &str = block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(
-                format!("Failed to get JSON column '{}': {}", column, e)
-            )))?;
+            .map_err(|e| Error::column_access("JSON", column, e))?;
         serde_json::from_str(json_str)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(
-                format!("Failed to parse JSON in column '{}': {}", column, e)
-            )))
+            .map_err(|e| Error::column_access("JSON (parse)", column, e))
     }
 }
 
@@ -195,13 +191,9 @@ impl<K: clickhouse_rs::types::ColumnType> BlockValue<K> for serde_json::Value {
 impl<K: clickhouse_rs::types::ColumnType, T: serde::de::DeserializeOwned> BlockValue<K> for diesel_clickhouse_types::JsonTyped<T> {
     fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
         let json_str: &str = block.get(row_idx, column)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(
-                format!("Failed to get JSON column '{}': {}", column, e)
-            )))?;
+            .map_err(|e| Error::column_access("JsonTyped", column, e))?;
         let inner: T = serde_json::from_str(json_str)
-            .map_err(|e| Error::DeserializationError(Cow::Owned(
-                format!("Failed to parse JSON in column '{}': {}", column, e)
-            )))?;
+            .map_err(|e| Error::column_access("JsonTyped (parse)", column, e))?;
         Ok(diesel_clickhouse_types::JsonTyped(inner))
     }
 }

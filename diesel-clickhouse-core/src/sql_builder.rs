@@ -70,16 +70,19 @@ pub struct CompiledQuery {
 
 impl CompiledQuery {
     /// Create a new compiled query.
+    #[inline]
     pub fn new(sql: String, bindings: Vec<BindableValue>) -> Self {
         Self { sql, bindings }
     }
 
     /// Get the number of bind parameters.
+    #[inline]
     pub fn param_count(&self) -> usize {
         self.bindings.len()
     }
 
     /// Check if there are any bind parameters.
+    #[inline]
     pub fn has_bindings(&self) -> bool {
         !self.bindings.is_empty()
     }
@@ -117,6 +120,7 @@ impl CompiledQuery {
 /// println!("SQL: {}", compiled.sql);
 /// println!("Bindings: {:?}", compiled.bindings);
 /// ```
+#[inline]
 pub fn compile_query<T: QueryFragment<ClickHouse> + ?Sized>(
     fragment: &T,
 ) -> QueryResult<CompiledQuery> {
@@ -127,6 +131,7 @@ pub fn compile_query<T: QueryFragment<ClickHouse> + ?Sized>(
 /// Replace `?` placeholders in SQL with actual bind values.
 ///
 /// Optimized to avoid per-binding allocations by writing directly to the output buffer.
+#[inline]
 fn interpolate_bindings(sql: &str, bindings: &[BindableValue]) -> QueryResult<String> {
     // Estimate capacity: original SQL + ~12 bytes per binding (average literal size)
     let mut result = String::with_capacity(sql.len() + bindings.len() * 12);
@@ -183,6 +188,7 @@ fn interpolate_bindings(sql: &str, bindings: &[BindableValue]) -> QueryResult<St
 /// let sql = build_sql(&users::table.filter(users::id.eq(42)))?;
 /// // Returns: "SELECT * FROM `users` WHERE `id` = ?"
 /// ```
+#[inline]
 pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
     let mut builder = GenericQueryBuilder::default();
     let mut collector = GenericBindCollector::default();
@@ -209,6 +215,7 @@ pub fn build_sql<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryRe
 /// // sql: "SELECT * FROM `users` WHERE `id` = ?"
 /// // bindings: [BindableValue::UInt64(42)]
 /// ```
+#[inline]
 pub fn build_sql_with_bindings<T: QueryFragment<ClickHouse> + ?Sized>(
     fragment: &T,
 ) -> QueryResult<(String, Vec<BindableValue>)> {

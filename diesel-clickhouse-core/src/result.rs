@@ -33,6 +33,20 @@ pub enum Error {
     #[error("Deserialization error: {0}")]
     DeserializationError(Cow<'static, str>),
 
+    /// Column access error during block deserialization.
+    ///
+    /// This variant avoids allocation by storing components separately
+    /// and formatting only when displayed.
+    #[error("Failed to get {type_name} column '{column}': {reason}")]
+    ColumnAccessError {
+        /// The expected type name (e.g., "u64", "String")
+        type_name: &'static str,
+        /// The column name being accessed
+        column: Cow<'static, str>,
+        /// The underlying error message
+        reason: Cow<'static, str>,
+    },
+
     /// Type mismatch between expected and actual types.
     #[error("Type mismatch: expected {expected}, got {actual}")]
     TypeMismatch {
@@ -153,6 +167,46 @@ impl Error {
         Error::TypeMismatch {
             expected: Cow::Owned(expected.into()),
             actual: Cow::Owned(actual.into()),
+        }
+    }
+
+    /// Create a column access error (optimized: deferred formatting).
+    ///
+    /// This is more efficient than using `DeserializationError` with `format!`
+    /// because it stores the components separately and only formats when displayed.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// block.get(row_idx, column)
+    ///     .map_err(|e| Error::column_access("u64", column, e))
+    /// ```
+    #[inline]
+    pub fn column_access(
+        type_name: &'static str,
+        column: impl Into<String>,
+        reason: impl std::fmt::Display,
+    ) -> Self {
+        Error::ColumnAccessError {
+            type_name,
+            column: Cow::Owned(column.into()),
+            reason: Cow::Owned(reason.to_string()),
+        }
+    }
+
+    /// Create a column access error with a static column name (zero allocation for column).
+    ///
+    /// Use this when the column name is a compile-time constant.
+    #[inline]
+    pub fn column_access_static(
+        type_name: &'static str,
+        column: &'static str,
+        reason: impl std::fmt::Display,
+    ) -> Self {
+        Error::ColumnAccessError {
+            type_name,
+            column: Cow::Borrowed(column),
+            reason: Cow::Owned(reason.to_string()),
         }
     }
 

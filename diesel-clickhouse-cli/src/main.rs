@@ -36,6 +36,13 @@ use diesel_clickhouse_migrations::{
 
 mod config;
 
+/// Escape a SQL string literal by doubling single quotes.
+/// This prevents SQL injection in string literals.
+#[inline]
+fn escape_sql_string(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
 /// Establish a connection from a URL string.
 ///
 /// Parses the URL and uses the appropriate builder (HTTP or Native).
@@ -514,7 +521,7 @@ async fn run_print_schema(
 async fn get_table_names(conn: &Connection, database: &str) -> Result<Vec<String>> {
     let sql = format!(
         "SELECT name FROM system.tables WHERE database = '{}' ORDER BY name",
-        database
+        escape_sql_string(database)
     );
 
     // Use HTTP connection (CLI only supports HTTP)
@@ -540,7 +547,8 @@ async fn get_columns(conn: &Connection, database: &str, table: &str) -> Result<V
          FROM system.columns \
          WHERE database = '{}' AND table = '{}' \
          ORDER BY position",
-        database, table
+        escape_sql_string(database),
+        escape_sql_string(table)
     );
 
     // Use HTTP connection (CLI only supports HTTP)

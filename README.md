@@ -507,3 +507,10 @@ at your option.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+
+# Tests
+
+```sh
+cargo test -p diesel-clickhouse --features testcontainers --test testcontainers_tests
+```

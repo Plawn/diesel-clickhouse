@@ -45,9 +45,45 @@ impl<'a, 'b, DB: Backend> AstPass<'a, 'b, DB> {
     /// This adds a `?` placeholder to the SQL and collects the typed value
     /// for native `.bind()` at execution time, enabling query plan caching
     /// on the ClickHouse server.
-    pub fn push_bindable<T: ToBindableValue>(&mut self, value: &T) -> crate::result::QueryResult<()> {
+    ///
+    /// # Performance Note
+    ///
+    /// For string literals known at compile time, use [`push_bindable_static_str`](Self::push_bindable_static_str)
+    /// instead to avoid heap allocation.
+    #[inline]
+    pub fn push_bindable<T: ToBindableValue + ?Sized>(&mut self, value: &T) -> crate::result::QueryResult<()> {
         self.builder.push_bind_param();
         self.collector.push_bindable_value(value.to_bindable_value())
+    }
+
+    /// Push a bind parameter with a static string literal (zero allocation).
+    ///
+    /// This is an optimized version of [`push_bindable`](Self::push_bindable) for
+    /// string literals that are known at compile time. It avoids heap allocation
+    /// by using `Cow::Borrowed`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Zero allocation - uses Cow::Borrowed internally
+    /// pass.push_bind_static("active")?;
+    ///
+    /// // Allocates - must clone the runtime string
+    /// let status = get_status();
+    /// pass.push_bindable(&status)?;
+    /// ```
+    #[inline]
+    pub fn push_bindable_static_str(&mut self, value: &'static str) -> crate::result::QueryResult<()> {
+        self.builder.push_bind_param();
+        self.collector.push_bindable_value(BindableValue::static_str(value))
+    }
+
+    /// Alias for [`push_bindable_static_str`](Self::push_bindable_static_str).
+    ///
+    /// Shorter name for convenience when binding string literals.
+    #[inline]
+    pub fn push_bind_static(&mut self, value: &'static str) -> crate::result::QueryResult<()> {
+        self.push_bindable_static_str(value)
     }
 
     /// Push a bind parameter with a pre-constructed BindableValue.

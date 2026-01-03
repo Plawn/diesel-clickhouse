@@ -685,7 +685,7 @@ pub fn derive_insertable(input: TokenStream) -> TokenStream {
             fn to_sql_values(&self) -> Vec<String> {
                 vec![
                     #(
-                        diesel_clickhouse::serialize::ToSqlLiteral::to_sql_literal(&self.#field_names),
+                        diesel_clickhouse::serialize::ToSqlLiteral::to_sql_literal(&self.#field_names).into_owned(),
                     )*
                 ]
             }

@@ -1,5 +1,7 @@
 //! Serialization traits for inserting data.
 
+use std::borrow::Cow;
+
 use compact_str::CompactString;
 
 use crate::backend::Backend;
@@ -80,22 +82,28 @@ impl WriteSqlValue for String {
 }
 
 impl WriteSqlValue for str {
+    #[inline]
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
-        pass.push_bindable(&self.to_string())
+        // Pass self directly - ToBindableValue for str handles the allocation
+        pass.push_bindable(self)
     }
 }
 
 impl WriteSqlValue for &str {
+    #[inline]
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
-        pass.push_bindable(&self.to_string())
+        // Dereference to &str - ToBindableValue for str handles the allocation
+        pass.push_bindable(*self)
     }
 }
 
 /// CompactString: inline string (up to 24 bytes on stack, heap otherwise).
 /// Zero allocation for small strings like column names, short values, etc.
 impl WriteSqlValue for CompactString {
+    #[inline]
     fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
-        pass.push_bindable(&self.to_string())
+        // Pass as str slice - avoids double allocation
+        pass.push_bindable(self.as_str())
     }
 }
 
@@ -316,101 +324,152 @@ pub trait ToSqlValues {
 }
 
 /// Helper function to format a value as a SQL literal.
-pub fn format_sql_literal<T: ToSqlLiteral>(value: &T) -> String {
+pub fn format_sql_literal<T: ToSqlLiteral>(value: &T) -> Cow<'static, str> {
     value.to_sql_literal()
 }
 
 /// Trait for formatting a value as a SQL literal string.
+///
+/// Returns `Cow<'static, str>` to avoid allocations for static strings
+/// like `"true"`, `"false"`, and `"NULL"`.
 pub trait ToSqlLiteral {
     /// Format as a SQL literal.
-    fn to_sql_literal(&self) -> String;
+    ///
+    /// Returns `Cow::Borrowed` for static values (bool, NULL) to avoid allocation.
+    /// Returns `Cow::Owned` for dynamic values (numbers, strings).
+    fn to_sql_literal(&self) -> Cow<'static, str>;
 }
 
-// Implement for common types
-macro_rules! impl_to_sql_literal_numeric {
+// Implement for integer types using itoa (faster than to_string())
+macro_rules! impl_to_sql_literal_int {
     ($($t:ty),*) => {
         $(
             impl ToSqlLiteral for $t {
-                fn to_sql_literal(&self) -> String {
-                    self.to_string()
+                #[inline]
+                fn to_sql_literal(&self) -> Cow<'static, str> {
+                    let mut buf = itoa::Buffer::new();
+                    Cow::Owned(buf.format(*self).to_owned())
                 }
             }
         )*
     };
 }
 
-impl_to_sql_literal_numeric!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64);
+impl_to_sql_literal_int!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128);
+
+// Implement for float types using ryu (faster than to_string())
+macro_rules! impl_to_sql_literal_float {
+    ($($t:ty),*) => {
+        $(
+            impl ToSqlLiteral for $t {
+                #[inline]
+                fn to_sql_literal(&self) -> Cow<'static, str> {
+                    let mut buf = ryu::Buffer::new();
+                    Cow::Owned(buf.format(*self).to_owned())
+                }
+            }
+        )*
+    };
+}
+
+impl_to_sql_literal_float!(f32, f64);
 
 impl ToSqlLiteral for bool {
-    fn to_sql_literal(&self) -> String {
-        if *self { "true".to_string() } else { "false".to_string() }
+    #[inline]
+    fn to_sql_literal(&self) -> Cow<'static, str> {
+        if *self { Cow::Borrowed("true") } else { Cow::Borrowed("false") }
     }
 }
 
 impl ToSqlLiteral for String {
-    fn to_sql_literal(&self) -> String {
-        format_sql_string(self)
+    #[inline]
+    fn to_sql_literal(&self) -> Cow<'static, str> {
+        Cow::Owned(format_sql_string(self))
     }
 }
 
 impl ToSqlLiteral for str {
-    fn to_sql_literal(&self) -> String {
-        format_sql_string(self)
+    #[inline]
+    fn to_sql_literal(&self) -> Cow<'static, str> {
+        Cow::Owned(format_sql_string(self))
     }
 }
 
 impl ToSqlLiteral for &str {
-    fn to_sql_literal(&self) -> String {
-        format_sql_string(self)
+    #[inline]
+    fn to_sql_literal(&self) -> Cow<'static, str> {
+        Cow::Owned(format_sql_string(self))
     }
 }
 
 impl<T: ToSqlLiteral> ToSqlLiteral for Option<T> {
-    fn to_sql_literal(&self) -> String {
+    #[inline]
+    fn to_sql_literal(&self) -> Cow<'static, str> {
         match self {
             Some(v) => v.to_sql_literal(),
-            None => "NULL".to_string(),
+            None => Cow::Borrowed("NULL"),
         }
     }
 }
 
 impl<T: ToSqlLiteral> ToSqlLiteral for &T {
-    fn to_sql_literal(&self) -> String {
+    #[inline]
+    fn to_sql_literal(&self) -> Cow<'static, str> {
         (*self).to_sql_literal()
     }
 }
 
 /// Format a string as a SQL string literal with proper escaping.
+///
+/// Optimized to avoid per-character branching for strings without special characters,
+/// which is the common case.
+#[inline]
 fn format_sql_string(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() + 2);
-    result.push('\'');
-    for c in s.chars() {
-        match c {
-            '\'' => result.push_str("''"),
-            '\\' => result.push_str("\\\\"),
-            _ => result.push(c),
+    // Fast path: check if escaping is needed at all using byte scan
+    let needs_escape = s.as_bytes().iter().any(|&b| b == b'\'' || b == b'\\');
+
+    if needs_escape {
+        // Slow path: escape special characters
+        // Estimate capacity: original + quotes + some extra for escapes
+        let mut result = String::with_capacity(s.len() + 2 + s.len() / 8);
+        result.push('\'');
+        for c in s.chars() {
+            match c {
+                '\'' => result.push_str("''"),
+                '\\' => result.push_str("\\\\"),
+                _ => result.push(c),
+            }
         }
+        result.push('\'');
+        result
+    } else {
+        // Fast path: no escaping needed, just wrap in quotes
+        let mut result = String::with_capacity(s.len() + 2);
+        result.push('\'');
+        result.push_str(s);
+        result.push('\'');
+        result
     }
-    result.push('\'');
-    result
 }
 
 #[cfg(feature = "json")]
 impl ToSqlLiteral for serde_json::Value {
-    fn to_sql_literal(&self) -> String {
+    #[inline]
+    fn to_sql_literal(&self) -> Cow<'static, str> {
         match serde_json::to_string(self) {
-            Ok(json_str) => format_sql_string(&json_str),
-            Err(_) => "NULL".to_string(),
+            Ok(json_str) => Cow::Owned(format_sql_string(&json_str)),
+            Err(_) => Cow::Borrowed("NULL"),
         }
     }
 }
 
 #[cfg(feature = "json")]
 impl<T: serde::Serialize> ToSqlLiteral for diesel_clickhouse_types::JsonTyped<T> {
-    fn to_sql_literal(&self) -> String {
+    #[inline]
+    fn to_sql_literal(&self) -> Cow<'static, str> {
         match serde_json::to_string(&self.0) {
-            Ok(json_str) => format_sql_string(&json_str),
-            Err(_) => "NULL".to_string(),
+            Ok(json_str) => Cow::Owned(format_sql_string(&json_str)),
+            Err(_) => Cow::Borrowed("NULL"),
         }
     }
 }

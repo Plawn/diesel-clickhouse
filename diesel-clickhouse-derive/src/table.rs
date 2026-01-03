@@ -11,23 +11,9 @@ use syn::{
 
 /// Parse a table definition.
 struct TableDefinition {
-    /// Table-level attributes like `#[engine = MergeTree]`.
-    /// Currently parsed but not used in code generation.
-    /// Future: Generate engine-specific DDL or validation.
-    #[allow(dead_code)]
-    attrs: Vec<TableAttribute>,
     name: Ident,
     primary_key: Vec<Ident>,
     columns: Vec<ColumnDefinition>,
-}
-
-/// A table attribute like `#[engine = MergeTree]`.
-/// Currently parsed but not used in code generation.
-/// Future: Generate engine-specific DDL or validation.
-#[allow(dead_code)]
-struct TableAttribute {
-    name: Ident,
-    value: Option<TokenStream2>,
 }
 
 struct ColumnDefinition {
@@ -54,21 +40,19 @@ fn is_json_type(ty: &Type) -> bool {
 
 impl Parse for TableDefinition {
     fn parse(input: ParseStream) -> Result<Self> {
-        // Parse optional attributes like #[engine = MergeTree]
-        let mut attrs = Vec::with_capacity(4);
+        // Skip optional attributes like #[engine = MergeTree]
+        // These are parsed for forward compatibility but not currently used.
+        // Future: Generate engine-specific DDL or validation (see issue tracking).
         while input.peek(Token![#]) {
             input.parse::<Token![#]>()?;
             let content;
             syn::bracketed!(content in input);
-            let name: Ident = content.parse()?;
-            let value = if content.peek(Token![=]) {
+            // Consume the attribute content without storing it
+            let _name: Ident = content.parse()?;
+            if content.peek(Token![=]) {
                 content.parse::<Token![=]>()?;
-                let tokens: TokenStream2 = content.parse()?;
-                Some(tokens)
-            } else {
-                None
-            };
-            attrs.push(TableAttribute { name, value });
+                let _tokens: TokenStream2 = content.parse()?;
+            }
         }
 
         // Parse table name
@@ -104,7 +88,6 @@ impl Parse for TableDefinition {
         }
 
         Ok(TableDefinition {
-            attrs,
             name,
             primary_key,
             columns,

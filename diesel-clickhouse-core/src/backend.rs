@@ -219,10 +219,18 @@ impl ToBindableValue for str {
 }
 
 impl ToBindableValue for &str {
+    /// Convert a string slice to a BindableValue.
+    ///
+    /// # Performance Note
+    ///
+    /// This allocates because `BindableValue` requires `Cow<'static, str>`.
+    /// For static string literals known at compile time, use one of these
+    /// zero-allocation alternatives:
+    ///
+    /// - `BindableValue::static_str("literal")` - direct construction
+    /// - `AstPass::push_bindable_static_str("literal")` - during query building
     #[inline]
     fn to_bindable_value(&self) -> BindableValue {
-        // Note: For static strings, use BindableValue::static_str() directly
-        // to avoid allocation
         BindableValue::String(Cow::Owned((*self).to_owned()))
     }
 }

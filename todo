@@ -31,3 +31,6 @@
 ## Notes
 - update(execute) uses interpolated SQL by default
 - LZ4 compression config needs cleanup in http.rs
+---
+
+Interner ? optimized

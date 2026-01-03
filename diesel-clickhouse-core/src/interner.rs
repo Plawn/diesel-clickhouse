@@ -23,9 +23,17 @@
 //! // Resolve back to string
 //! assert_eq!(interner.resolve(id_sym), Some("id"));
 //! ```
+//!
+//! # Performance Notes
+//!
+//! - Uses `BucketBackend` for optimal resolve performance (column names are read-heavy)
+//! - Prefer `with_resolved()` over `resolve()` to avoid allocations
+//! - For `InternedSchema`, use `find_column_cached()` for repeated lookups
 
 use parking_lot::RwLock;
-use string_interner::{DefaultSymbol, StringInterner, DefaultBackend};
+use std::collections::HashMap;
+use string_interner::backend::BucketBackend;
+use string_interner::{DefaultSymbol, StringInterner};
 
 /// A symbol representing an interned string.
 ///
@@ -43,8 +51,11 @@ pub type Symbol = DefaultSymbol;
 /// - Faster lock acquisition (no syscall for uncontended locks)
 /// - Fair scheduling to prevent writer starvation
 /// - No lock poisoning (panics don't leave locks in broken state)
+///
+/// Uses `BucketBackend` for optimal resolve performance, as column names
+/// are typically interned once but resolved many times (read-heavy workload).
 pub struct ColumnInterner {
-    inner: RwLock<StringInterner<DefaultBackend>>,
+    inner: RwLock<StringInterner<BucketBackend<Symbol>>>,
 }
 
 impl ColumnInterner {
@@ -122,7 +133,7 @@ impl ColumnInterner {
     ///
     /// Warning: This invalidates all existing symbols!
     pub fn clear(&self) {
-        *self.inner.write() = StringInterner::<DefaultBackend>::new();
+        *self.inner.write() = StringInterner::<BucketBackend<Symbol>>::new();
     }
 }
 
@@ -159,37 +170,51 @@ pub fn intern(s: &str) -> Symbol {
     global_interner().intern(s)
 }
 
-/// Resolve a symbol from the global interner.
-///
-/// Convenience function equivalent to `global_interner().resolve(sym)`.
-#[inline]
-pub fn resolve(sym: Symbol) -> Option<String> {
-    global_interner().resolve(sym)
-}
-
 /// A column schema with interned column names.
 ///
 /// This is useful for query results where the same column names
 /// are used across many rows.
+///
+/// Provides O(1) column lookup via an internal HashMap cache.
 #[derive(Debug, Clone)]
 pub struct InternedSchema {
     /// Interned column name symbols.
     columns: Vec<Symbol>,
+    /// Symbol -> index lookup for O(1) find_column.
+    lookup: HashMap<Symbol, usize>,
 }
 
 impl InternedSchema {
     /// Create a new interned schema from column names.
     pub fn new(column_names: &[&str]) -> Self {
         let interner = global_interner();
-        let columns = column_names.iter().map(|&name| interner.intern(name)).collect();
-        Self { columns }
+        let len = column_names.len();
+        let mut columns = Vec::with_capacity(len);
+        let mut lookup = HashMap::with_capacity(len);
+
+        for (idx, &name) in column_names.iter().enumerate() {
+            let sym = interner.intern(name);
+            columns.push(sym);
+            lookup.insert(sym, idx);
+        }
+
+        Self { columns, lookup }
     }
 
     /// Create from owned strings.
     pub fn from_strings(column_names: &[String]) -> Self {
         let interner = global_interner();
-        let columns = column_names.iter().map(|name| interner.intern(name)).collect();
-        Self { columns }
+        let len = column_names.len();
+        let mut columns = Vec::with_capacity(len);
+        let mut lookup = HashMap::with_capacity(len);
+
+        for (idx, name) in column_names.iter().enumerate() {
+            let sym = interner.intern(name);
+            columns.push(sym);
+            lookup.insert(sym, idx);
+        }
+
+        Self { columns, lookup }
     }
 
     /// Get the number of columns.
@@ -211,16 +236,18 @@ impl InternedSchema {
     }
 
     /// Get the column name by index.
+    ///
+    /// Note: This allocates a new String. For zero-allocation access,
+    /// use `global_interner().with_resolved(schema.get(index)?, |s| ...)`.
     pub fn column_name(&self, index: usize) -> Option<String> {
-        self.columns.get(index).and_then(|&sym| resolve(sym))
+        self.columns.get(index).and_then(|&sym| global_interner().resolve(sym))
     }
 
-    /// Find the index of a column by name.
+    /// Find the index of a column by name (O(1) lookup).
+    #[inline]
     pub fn find_column(&self, name: &str) -> Option<usize> {
         let interner = global_interner();
-        interner.get(name).and_then(|target_sym| {
-            self.columns.iter().position(|&sym| sym == target_sym)
-        })
+        interner.get(name).and_then(|sym| self.lookup.get(&sym).copied())
     }
 
     /// Iterate over column symbols.
@@ -229,8 +256,11 @@ impl InternedSchema {
     }
 
     /// Iterate over column names (allocates strings).
+    ///
+    /// Note: Each iteration allocates a new String. For zero-allocation access,
+    /// iterate over symbols with `iter()` and use `global_interner().with_resolved()`.
     pub fn names(&self) -> impl Iterator<Item = String> + '_ {
-        self.columns.iter().filter_map(|&sym| resolve(sym))
+        self.columns.iter().filter_map(|&sym| global_interner().resolve(sym))
     }
 }
 
@@ -328,6 +358,8 @@ mod tests {
         let sym1 = intern("global_test");
         let sym2 = intern("global_test");
         assert_eq!(sym1, sym2);
-        assert_eq!(resolve(sym1), Some("global_test".to_owned()));
+        // Use with_resolved for zero-allocation check
+        let matches = global_interner().with_resolved(sym1, |s| s == "global_test");
+        assert_eq!(matches, Some(true));
     }
 }

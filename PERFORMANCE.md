@@ -227,7 +227,7 @@ arena.reset();  // Reuse memory
 Reduce memory usage for repeated column names:
 
 ```rust
-use diesel_clickhouse::interner::{InternedSchema, InternedRow, intern, resolve};
+use diesel_clickhouse::interner::{InternedSchema, InternedRow, intern, global_interner};
 
 // Intern column schema once
 let schema = InternedSchema::new(&["id", "name", "email", "created_at"]);
@@ -245,6 +245,55 @@ for row_data in rows {
 - Column names stored once in memory
 - O(1) column name comparison
 - Reduced GC pressure
+
+### Zero-Allocation Parameter Binding
+
+When binding string parameters in custom `QueryFragment` implementations, use the optimized methods to avoid heap allocations for string literals:
+
+```rust
+use diesel_clickhouse::query_builder::AstPass;
+
+impl<DB: Backend> QueryFragment<DB> for MyExpression {
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+        // GOOD: Zero allocation for string literals
+        pass.push_bind_static("active")?;
+
+        // BAD: Allocates a new String (converts &str -> String)
+        pass.push_bindable("active")?;
+
+        // CORRECT: Runtime strings must use push_bindable
+        let status = &self.status;  // String field
+        pass.push_bindable(status)?;
+
+        // Numeric types don't allocate either way
+        pass.push_bindable(&42u64)?;
+
+        Ok(())
+    }
+}
+```
+
+**Method reference:**
+
+| Method | Use For | Allocation |
+|--------|---------|------------|
+| `push_bind_static("literal")` | String literals, `const` strings | None |
+| `push_bindable(&value)` | Runtime strings, variables | Yes (for strings) |
+| `push_bindable(&42u64)` | Numeric types | None |
+
+**Compiler enforcement:**
+
+The `push_bind_static` method requires `&'static str`, so the compiler will reject non-static strings:
+
+```rust
+let dynamic = String::from("hello");
+pass.push_bind_static(&dynamic);  // ERROR: expected `&'static str`
+pass.push_bindable(&dynamic);      // OK: uses the allocating path
+```
+
+**Finding optimization opportunities:**
+
+Search for patterns like `push_bindable("` in your code - these could be replaced with `push_bind_static("` for zero-allocation binding.
 
 ### Zero-Copy Parsing
 
