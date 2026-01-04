@@ -493,7 +493,9 @@ fn extract_second_arg(s: &str) -> Option<&str> {
 
 /// Split all top-level arguments (respecting nested parens).
 fn split_toplevel_args(s: &str) -> Vec<&str> {
-    let mut result = Vec::new();
+    // Pre-allocate based on comma count estimate
+    let estimated_count = s.bytes().filter(|&b| b == b',').count() + 1;
+    let mut result = Vec::with_capacity(estimated_count);
     let mut depth = 0;
     let mut start = 0;
 
@@ -522,10 +524,10 @@ where
     T: std::str::FromStr,
     T::Err: std::fmt::Display,
 {
-    let mut result = Vec::new();
-
     // Split on ", " but handle quoted strings
     let parts = split_enum_parts(raw);
+    // Pre-allocate based on known parts count
+    let mut result = Vec::with_capacity(parts.len());
 
     for part in parts {
         let part = part.trim();
@@ -554,7 +556,9 @@ where
 
 /// Split enum parts, handling quoted strings with commas inside.
 fn split_enum_parts(s: &str) -> Vec<&str> {
-    let mut result = Vec::new();
+    // Pre-allocate based on comma count estimate
+    let estimated_count = s.bytes().filter(|&b| b == b',').count() + 1;
+    let mut result = Vec::with_capacity(estimated_count);
     let mut in_quote = false;
     let mut start = 0;
 
@@ -578,9 +582,11 @@ fn split_enum_parts(s: &str) -> Vec<&str> {
 
 /// Parse Nested fields: "name Type, name2 Type2"
 fn parse_nested_fields(s: &str) -> QueryResult<Vec<(std::string::String, ClickHouseSqlType)>> {
-    let mut result = Vec::new();
+    let parts = split_toplevel_args(s);
+    // Pre-allocate based on known parts count
+    let mut result = Vec::with_capacity(parts.len());
 
-    for part in split_toplevel_args(s) {
+    for part in parts {
         let part = part.trim();
         if part.is_empty() {
             continue;
@@ -612,6 +618,25 @@ fn split_name_type(s: &str) -> Option<(&str, &str)> {
         }
     }
     None
+}
+
+/// Helper to join iterator items with a separator, writing directly to output.
+/// Avoids intermediate Vec allocation compared to `.collect::<Vec<_>>().join(sep)`.
+fn join_to_string<I, F>(iter: I, sep: &str, mut to_string: F) -> std::string::String
+where
+    I: IntoIterator,
+    F: FnMut(I::Item) -> std::string::String,
+{
+    let mut iter = iter.into_iter();
+    let mut result = match iter.next() {
+        Some(first) => to_string(first),
+        None => return std::string::String::new(),
+    };
+    for item in iter {
+        result.push_str(sep);
+        result.push_str(&to_string(item));
+    }
+    result
 }
 
 impl ClickHouseSqlType {
@@ -678,8 +703,8 @@ impl ClickHouseSqlType {
                 format!("std::collections::HashMap<{}, {}>", k.rust_type(), v.rust_type())
             }
             ClickHouseSqlType::Tuple(types) => {
-                let inner: Vec<_> = types.iter().map(|t| t.rust_type()).collect();
-                format!("({})", inner.join(", "))
+                let inner = join_to_string(types.iter(), ", ", |t| t.rust_type());
+                format!("({})", inner)
             }
             ClickHouseSqlType::Nested(_) => "Vec</* nested struct */>".into(),
             ClickHouseSqlType::JSON | ClickHouseSqlType::Object(_) => "serde_json::Value".into(),
@@ -730,15 +755,12 @@ impl ClickHouseSqlType {
                 format!("Map<{}, {}>", k.diesel_type(), v.diesel_type())
             }
             ClickHouseSqlType::Tuple(types) => {
-                let inner: Vec<_> = types.iter().map(|t| t.diesel_type()).collect();
-                format!("Tuple<({})>", inner.join(", "))
+                let inner = join_to_string(types.iter(), ", ", |t| t.diesel_type());
+                format!("Tuple<({})>", inner)
             }
             ClickHouseSqlType::Nested(fields) => {
-                let inner: Vec<_> = fields
-                    .iter()
-                    .map(|(_, t)| t.diesel_type())
-                    .collect();
-                format!("Nested<({})>", inner.join(", "))
+                let inner = join_to_string(fields.iter(), ", ", |(_, t)| t.diesel_type());
+                format!("Nested<({})>", inner)
             }
             ClickHouseSqlType::JSON | ClickHouseSqlType::Object(_) => "JSON".into(),
             ClickHouseSqlType::Unknown(s) => format!("/* unknown: {s} */"),

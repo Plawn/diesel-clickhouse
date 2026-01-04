@@ -29,7 +29,6 @@ pub use with::{
     WithDsl,
 };
 pub use modifiers::{
-    Distinct, DistinctOn, DistinctDsl,
     LimitBy, LimitOffsetBy, LimitByDsl,
     Alias, AliasDsl,
 };

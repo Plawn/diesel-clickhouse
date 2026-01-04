@@ -61,8 +61,6 @@ use std::borrow::Cow;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use smallvec::SmallVec;
-
 use arrow::array::{
     Array, BinaryArray, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
     Int64Array, Int8Array, RecordBatch, StringArray, UInt16Array, UInt32Array, UInt64Array,
@@ -70,6 +68,7 @@ use arrow::array::{
 };
 use arrow::ipc::reader::{StreamDecoder, StreamReader};
 
+use crate::core::interner::InternedSchema;
 use crate::core::result::{Error, QueryResult};
 
 // =============================================================================
@@ -335,12 +334,14 @@ impl<'a> ArrowValue<'a> for &'a [u8] {
 // ArrowRow - Row-by-row access to Arrow data
 // =============================================================================
 
-/// Column index type optimized for typical schema sizes (up to 16 columns inline).
+/// Column index type using interned strings for O(1) lookup.
 ///
-/// Uses SmallVec for cache-friendly linear search on small schemas, which is
-/// faster than HashMap for typical query results with 10-15 columns.
-/// Falls back to heap allocation for larger schemas.
-pub type ColumnIndex = SmallVec<[(Arc<str>, usize); 16]>;
+/// Uses `InternedSchema` which provides:
+/// - O(1) column name lookup via AHash-based HashMap
+/// - Interned strings (Symbol) for fast comparison
+/// - SmallVec storage for ≤16 columns (no heap allocation)
+/// - Global string deduplication across queries
+pub type ColumnIndex = InternedSchema;
 
 /// A zero-copy view into a single row of an Arrow RecordBatch.
 ///
@@ -394,14 +395,11 @@ impl<'a> ArrowRow<'a> {
 
     /// Get column index by name.
     ///
-    /// Uses linear search which is faster than HashMap for typical schemas
-    /// with fewer than 20 columns due to better cache locality.
+    /// Uses O(1) lookup via InternedSchema's AHash-based HashMap.
     #[inline]
     fn column_index(&self, name: &str) -> QueryResult<usize> {
         self.column_indices
-            .iter()
-            .find(|(n, _)| n.as_ref() == name)
-            .map(|(_, idx)| *idx)
+            .find_column(name)
             .ok_or_else(|| Error::DeserializationError(Cow::Owned(format!("Column '{}' not found", name))))
     }
 
@@ -567,15 +565,12 @@ impl<'a> ArrowRow<'a> {
 
 /// Helper to build column name index for ArrowRow.
 ///
-/// Returns a SmallVec-based index that provides faster lookups than HashMap
-/// for typical schema sizes (< 20 columns) due to cache locality.
+/// Uses `InternedSchema` which provides:
+/// - O(1) column lookup via AHash-based HashMap
+/// - Interned strings for fast comparison
+/// - Global deduplication of column names
 pub fn build_column_index(schema: &Schema) -> ColumnIndex {
-    schema
-        .fields()
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (Arc::from(f.name().as_str()), i))
-        .collect()
+    InternedSchema::new(schema.fields().iter().map(|f| f.name().as_str()))
 }
 
 /// Iterate over rows in a RecordBatch, calling a callback for each row.

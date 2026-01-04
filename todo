@@ -33,4 +33,5 @@
 - LZ4 compression config needs cleanup in http.rs
 ---
 
-Interner ? optimized
+- Interner ? optimized
+- bindable values allocation ?

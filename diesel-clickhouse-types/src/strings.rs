@@ -221,6 +221,7 @@ impl ToClickHouse<IPv6> for std::net::Ipv6Addr {
 // =============================================================================
 
 /// Write a variable-length integer (used for string lengths).
+#[inline]
 fn write_varint(mut value: u64, out: &mut Vec<u8>) {
     while value >= 0x80 {
         out.push((value as u8) | 0x80);

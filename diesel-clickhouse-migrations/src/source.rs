@@ -77,9 +77,11 @@ impl MigrationSource for FileBasedMigrations {
             return Err(MigrationError::DirectoryNotFound(self.path.clone()));
         }
 
-        let mut migrations = Vec::new();
+        // Pre-allocate based on directory entry count (estimate)
+        let entries: Vec<_> = std::fs::read_dir(&self.path)?.collect();
+        let mut migrations = Vec::with_capacity(entries.len());
 
-        for entry in std::fs::read_dir(&self.path)? {
+        for entry in entries {
             let entry = entry?;
             let path = entry.path();
 
@@ -146,7 +148,8 @@ impl EmbeddedMigrations {
 
 impl MigrationSource for EmbeddedMigrations {
     fn migrations(&self) -> Result<Vec<Migration>> {
-        let mut migrations = Vec::new();
+        // Pre-allocate based on number of entries (directories are migrations)
+        let mut migrations = Vec::with_capacity(self.dir.entries().len());
 
         for entry in self.dir.entries() {
             if let DirEntry::Dir(dir) = entry {
@@ -253,7 +256,8 @@ impl Default for CombinedMigrations {
 
 impl MigrationSource for CombinedMigrations {
     fn migrations(&self) -> Result<Vec<Migration>> {
-        let mut all_migrations = Vec::new();
+        // Estimate capacity: assume ~10 migrations per source on average
+        let mut all_migrations = Vec::with_capacity(self.sources.len() * 10);
 
         for source in &self.sources {
             all_migrations.extend(source.migrations()?);

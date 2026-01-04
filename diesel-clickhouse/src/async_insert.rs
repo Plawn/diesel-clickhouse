@@ -36,7 +36,7 @@
 use std::marker::PhantomData;
 #[cfg(feature = "native")]
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
@@ -396,6 +396,9 @@ pub struct AsyncInserter<T, R> {
     /// Sharded buffers for reduced lock contention under high concurrency.
     /// Each shard is independently locked, allowing parallel writes.
     shards: Box<[Mutex<Vec<R>>; SHARD_COUNT]>,
+    /// Atomic counters for lock-free buffered_count().
+    /// Updated on write/write_many and reset on flush.
+    shard_counts: Box<[AtomicUsize; SHARD_COUNT]>,
     /// Round-robin counter for shard selection.
     shard_counter: AtomicU64,
     sent_count: AtomicU64,
@@ -414,6 +417,11 @@ fn create_shards_with_capacity<R>(capacity_per_shard: usize) -> Box<[Mutex<Vec<R
     Box::new(std::array::from_fn(|_| Mutex::new(Vec::with_capacity(capacity_per_shard))))
 }
 
+/// Helper to create initialized atomic shard counters
+fn create_shard_counts() -> Box<[AtomicUsize; SHARD_COUNT]> {
+    Box::new(std::array::from_fn(|_| AtomicUsize::new(0)))
+}
+
 impl<T, R> AsyncInserter<T, R>
 where
     T: Table,
@@ -424,6 +432,7 @@ where
             conn,
             config,
             shards: create_shards(),
+            shard_counts: create_shard_counts(),
             shard_counter: AtomicU64::new(0),
             sent_count: AtomicU64::new(0),
             #[cfg(feature = "native")]
@@ -441,6 +450,7 @@ where
             conn,
             config,
             shards: create_shards_with_capacity(capacity_per_shard),
+            shard_counts: create_shard_counts(),
             shard_counter: AtomicU64::new(0),
             sent_count: AtomicU64::new(0),
             #[cfg(feature = "native")]
@@ -456,11 +466,15 @@ where
     }
 
     /// Get the number of rows currently buffered locally across all shards.
+    ///
+    /// This is lock-free and uses atomic counters for each shard.
+    #[inline]
     pub fn buffered_count(&self) -> usize {
-        self.shards.iter().map(|s| s.lock().len()).sum()
+        self.shard_counts.iter().map(|c| c.load(Ordering::Relaxed)).sum()
     }
 
     /// Get the total number of rows sent to the server.
+    #[inline]
     pub fn sent_count(&self) -> u64 {
         self.sent_count.load(Ordering::Relaxed)
     }
@@ -492,6 +506,7 @@ where
     pub fn write(&self, row: R) {
         let shard = self.select_shard();
         self.shards[shard].lock().push(row);
+        self.shard_counts[shard].fetch_add(1, Ordering::Relaxed);
     }
 
     /// Write multiple rows to the local buffer.
@@ -501,7 +516,12 @@ where
     /// The rows are not sent to the server until `flush()` is called.
     pub fn write_many(&self, rows: impl IntoIterator<Item = R>) {
         let shard = self.select_shard();
-        self.shards[shard].lock().extend(rows);
+        let mut guard = self.shards[shard].lock();
+        let prev_len = guard.len();
+        guard.extend(rows);
+        let added = guard.len() - prev_len;
+        drop(guard);
+        self.shard_counts[shard].fetch_add(added, Ordering::Relaxed);
     }
 
     /// Flush the local buffer to the server.
@@ -509,16 +529,17 @@ where
     /// Collects all buffered rows from all shards and sends them using the
     /// configured async insert settings. After this call, all shard buffers are empty.
     pub async fn flush(&self) -> QueryResult<()> {
-        // Collect rows from all shards
-        // Pre-calculate total capacity for efficient allocation
-        let total_len: usize = self.shards.iter().map(|s| s.lock().len()).sum();
+        // Use atomic counters for total_len (lock-free)
+        let total_len: usize = self.shard_counts.iter().map(|c| c.load(Ordering::Relaxed)).sum();
         if total_len == 0 {
             return Ok(());
         }
 
         let mut rows = Vec::with_capacity(total_len);
-        for shard in self.shards.iter() {
+        for (i, shard) in self.shards.iter().enumerate() {
             rows.append(&mut *shard.lock());
+            // Reset the atomic counter for this shard
+            self.shard_counts[i].store(0, Ordering::Relaxed);
         }
 
         R::batch_insert(

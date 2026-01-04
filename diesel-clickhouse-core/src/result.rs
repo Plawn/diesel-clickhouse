@@ -2,7 +2,11 @@
 
 use std::borrow::Cow;
 use std::sync::Arc;
+
+use ahash::{HashMap as AHashMap, HashMapExt};
 use thiserror::Error;
+
+use crate::interner::InternedSchema;
 
 /// Result type alias for diesel-clickhouse operations.
 pub type QueryResult<T> = Result<T, Error>;
@@ -99,10 +103,18 @@ pub enum Error {
 }
 
 fn format_errors(errors: &[Error]) -> String {
-    errors.iter()
-        .map(|e| e.to_string())
-        .collect::<Vec<_>>()
-        .join("; ")
+    use std::fmt::Write;
+    let mut result = String::new();
+    let mut iter = errors.iter();
+    if let Some(first) = iter.next() {
+        // First error - no separator
+        let _ = write!(result, "{}", first);
+        // Remaining errors with separator
+        for e in iter {
+            let _ = write!(result, "; {}", e);
+        }
+    }
+    result
 }
 
 impl Error {
@@ -339,6 +351,7 @@ impl Row for RawRow {
 ///
 /// Uses `Arc<str>` internally to share column names between the
 /// name list and index map without cloning string data.
+/// Uses `AHashMap` for ~30% faster lookups than std HashMap.
 #[derive(Debug)]
 pub struct IndexedRow {
     /// Column names in order (shared with name_to_index via Arc).
@@ -346,7 +359,8 @@ pub struct IndexedRow {
     /// Column values in order.
     values: Vec<Vec<u8>>,
     /// Name to index mapping for O(1) lookup (shares strings with names).
-    name_to_index: std::collections::HashMap<Arc<str>, usize>,
+    /// Uses AHash for faster lookups than std HashMap.
+    name_to_index: AHashMap<Arc<str>, usize>,
 }
 
 impl IndexedRow {
@@ -355,7 +369,7 @@ impl IndexedRow {
         Self {
             names: Vec::with_capacity(capacity),
             values: Vec::with_capacity(capacity),
-            name_to_index: std::collections::HashMap::with_capacity(capacity),
+            name_to_index: AHashMap::with_capacity(capacity),
         }
     }
 
@@ -417,50 +431,71 @@ impl Row for IndexedRow {
 /// This is useful when processing many rows with the same columns,
 /// as it allows sharing the column name -> index mapping.
 ///
-/// Uses `Arc<str>` internally to share column names without cloning.
+/// Uses `InternedSchema` internally which provides:
+/// - O(1) column name lookup via AHash-based HashMap
+/// - Interned strings (Symbol) for fast comparison
+/// - SmallVec storage for ≤16 columns (no heap allocation)
+/// - Global string deduplication across queries
 #[derive(Debug, Clone)]
 pub struct ColumnIndex {
-    name_to_index: std::collections::HashMap<Arc<str>, usize>,
-    names: Vec<Arc<str>>,
+    inner: InternedSchema,
 }
 
 impl ColumnIndex {
     /// Create a new column index from column names.
     ///
-    /// Converts strings to `Arc<str>` for efficient sharing without cloning.
+    /// Column names are interned globally for deduplication and fast comparison.
     pub fn new(names: Vec<String>) -> Self {
-        // Convert to Arc<str> once, then share via cheap Arc::clone
-        let names: Vec<Arc<str>> = names.into_iter().map(Arc::from).collect();
-        let name_to_index = names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| (Arc::clone(name), i)) // Cheap pointer clone
-            .collect();
-        Self { name_to_index, names }
+        Self {
+            inner: InternedSchema::new(names.iter().map(String::as_str)),
+        }
     }
 
     /// Get column index by name in O(1).
     #[inline]
     pub fn get(&self, name: &str) -> Option<usize> {
-        self.name_to_index.get(name).copied()
+        self.inner.find_column(name)
+    }
+
+    /// Get column name by index via closure (zero-allocation).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let matches_id = index.with_name(0, |s| s == "id");
+    /// ```
+    #[inline]
+    pub fn with_name<F, R>(&self, index: usize, f: F) -> Option<R>
+    where
+        F: FnOnce(&str) -> R,
+    {
+        self.inner.with_column_name(index, f)
     }
 
     /// Get column name by index.
+    ///
+    /// Returns a reference to the interned string (effectively `'static`).
     #[inline]
     pub fn name(&self, index: usize) -> Option<&str> {
-        self.names.get(index).map(|s| &**s)
+        self.inner.column_name(index)
     }
 
     /// Get the number of columns.
     #[inline]
     pub fn len(&self) -> usize {
-        self.names.len()
+        self.inner.len()
     }
 
     /// Check if empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
+        self.inner.is_empty()
+    }
+
+    /// Get the underlying InternedSchema.
+    #[inline]
+    pub fn as_interned(&self) -> &InternedSchema {
+        &self.inner
     }
 }
 

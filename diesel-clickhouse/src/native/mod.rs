@@ -52,6 +52,7 @@ mod builder;
 mod column;
 
 use std::borrow::Cow;
+use std::sync::Arc;
 #[cfg(feature = "json")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -118,11 +119,17 @@ pub type NativeCompression = Compression;
 ///
 /// - **Port 9000**: Plain TCP (default)
 /// - **Port 9440**: TLS-encrypted TCP (use `.secure(true)`)
+///
+/// # Cloning
+///
+/// Cloning a `NativeConnection` is cheap - it uses `Arc<str>` for string
+/// fields and the underlying pool is also `Arc`-based.
 pub struct NativeConnection {
     pool: Pool,
-    database: String,
-    /// Server address (host:port) for Arrow connection
-    server_addr: String,
+    /// Database name (Arc for cheap cloning)
+    database: Arc<str>,
+    /// Server address (host:port) for Arrow connection (Arc for cheap cloning)
+    server_addr: Arc<str>,
     /// Tracks if JSON support has been enabled for pool connections.
     /// Set to true after first get_handle() to avoid redundant SET commands.
     #[cfg(feature = "json")]
@@ -133,8 +140,8 @@ impl Clone for NativeConnection {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
-            database: self.database.clone(),
-            server_addr: self.server_addr.clone(),
+            database: Arc::clone(&self.database),
+            server_addr: Arc::clone(&self.server_addr),
             #[cfg(feature = "json")]
             json_initialized: AtomicBool::new(self.json_initialized.load(Ordering::Relaxed)),
         }
@@ -145,13 +152,13 @@ impl NativeConnection {
     /// Create a connection from an existing pool.
     pub fn from_pool(
         pool: Pool,
-        database: impl Into<String>,
-        server_addr: impl Into<String>,
+        database: impl AsRef<str>,
+        server_addr: impl AsRef<str>,
     ) -> Self {
         Self {
             pool,
-            database: database.into(),
-            server_addr: server_addr.into(),
+            database: Arc::from(database.as_ref()),
+            server_addr: Arc::from(server_addr.as_ref()),
             #[cfg(feature = "json")]
             json_initialized: AtomicBool::new(false),
         }
@@ -163,13 +170,13 @@ impl NativeConnection {
     #[cfg(feature = "json")]
     pub(crate) fn from_pool_json_initialized(
         pool: Pool,
-        database: impl Into<String>,
-        server_addr: impl Into<String>,
+        database: impl AsRef<str>,
+        server_addr: impl AsRef<str>,
     ) -> Self {
         Self {
             pool,
-            database: database.into(),
-            server_addr: server_addr.into(),
+            database: Arc::from(database.as_ref()),
+            server_addr: Arc::from(server_addr.as_ref()),
             json_initialized: AtomicBool::new(true),
         }
     }
@@ -426,6 +433,9 @@ impl NativeConnection {
     ///
     /// Returns an error if no rows are returned.
     ///
+    /// This method automatically appends `LIMIT 1` to the query for efficiency,
+    /// avoiding loading all rows when only one is needed.
+    ///
     /// # Example
     ///
     /// ```rust,ignore
@@ -436,13 +446,18 @@ impl NativeConnection {
         T: FromNativeBlock + Send,
         Q: QueryFragment<ClickHouse> + Send,
     {
-        let mut results = self.load(query).await?;
+        // Append LIMIT 1 to avoid loading all rows
+        let sql = format!("{} LIMIT 1", build_sql_interpolated(&query)?);
+        let mut results: Vec<T> = self.load_raw(&sql).await?;
         results.pop().ok_or(Error::NotFound)
     }
 
     /// Load an optional single row.
     ///
     /// Returns `None` if no rows are returned.
+    ///
+    /// This method automatically appends `LIMIT 1` to the query for efficiency,
+    /// avoiding loading all rows when only one is needed.
     ///
     /// # Example
     ///
@@ -456,7 +471,9 @@ impl NativeConnection {
         T: FromNativeBlock + Send,
         Q: QueryFragment<ClickHouse> + Send,
     {
-        let mut results = self.load(query).await?;
+        // Append LIMIT 1 to avoid loading all rows
+        let sql = format!("{} LIMIT 1", build_sql_interpolated(&query)?);
+        let mut results: Vec<T> = self.load_raw(&sql).await?;
         Ok(results.pop())
     }
 }
@@ -608,12 +625,13 @@ impl NativeConnection {
     ///     println!("User: {}", user.name);
     /// }
     /// ```
-    pub fn stream_raw<T>(&self, sql: &str) -> crate::stream::NativeBlockStream<T>
+    pub fn stream_raw<T>(&self, sql: impl Into<String>) -> crate::stream::NativeBlockStream<T>
     where
         T: FromAnyBlock + Send + 'static,
     {
         let pool = self.pool.clone();
-        let sql = sql.to_string();
+        // Use Into<String> to avoid allocation when caller already has String
+        let sql = sql.into();
 
         let stream = async_stream::stream! {
             // Get connection handle

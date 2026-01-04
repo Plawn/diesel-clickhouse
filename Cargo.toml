@@ -125,9 +125,11 @@ ryu = "1"
 smallvec = "1.13"
 compact_str = "0.8"
 bumpalo = { version = "3.16", features = ["collections"] }
-string-interner = "0.17"
+lasso = { version = "0.7", features = ["multi-threaded", "ahasher"] }
+ahash = "0.8"
 rayon = "1.10"
 parking_lot = "0.12"
+memchr = "2.7"
 
 # Apache Arrow (optional, for zero-copy columnar data)
 arrow = { version = "57", default-features = false, features = ["ipc", "ipc_compression"] }

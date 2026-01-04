@@ -421,35 +421,14 @@ impl<T: ToSqlLiteral> ToSqlLiteral for &T {
 
 /// Format a string as a SQL string literal with proper escaping.
 ///
-/// Optimized to avoid per-character branching for strings without special characters,
-/// which is the common case.
+/// Uses SIMD-accelerated detection via `memchr` for the fast path.
+/// Delegates to `crate::backend::write_escaped_string` for the actual escaping.
 #[inline]
 fn format_sql_string(s: &str) -> String {
-    // Fast path: check if escaping is needed at all using byte scan
-    let needs_escape = s.as_bytes().iter().any(|&b| b == b'\'' || b == b'\\');
-
-    if needs_escape {
-        // Slow path: escape special characters
-        // Estimate capacity: original + quotes + some extra for escapes
-        let mut result = String::with_capacity(s.len() + 2 + s.len() / 8);
-        result.push('\'');
-        for c in s.chars() {
-            match c {
-                '\'' => result.push_str("''"),
-                '\\' => result.push_str("\\\\"),
-                _ => result.push(c),
-            }
-        }
-        result.push('\'');
-        result
-    } else {
-        // Fast path: no escaping needed, just wrap in quotes
-        let mut result = String::with_capacity(s.len() + 2);
-        result.push('\'');
-        result.push_str(s);
-        result.push('\'');
-        result
-    }
+    // Pre-allocate: original + quotes + some extra for potential escapes
+    let mut result = String::with_capacity(s.len() + 2 + s.len() / 8);
+    crate::backend::write_escaped_string(&mut result, s);
+    result
 }
 
 #[cfg(feature = "json")]

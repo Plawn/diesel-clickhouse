@@ -31,5 +31,8 @@ walkdir = "2"
 # For embed_migrations macro
 include_dir = "0.7"
 
+# Fast hash maps
+ahash.workspace = true
+
 [dev-dependencies]
 tempfile = "3"

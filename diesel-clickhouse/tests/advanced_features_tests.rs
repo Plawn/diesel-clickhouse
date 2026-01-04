@@ -132,16 +132,11 @@ mod arrow_row_tests {
 
         let indices = build_column_index(&schema);
 
-        // ColumnIndex uses SmallVec with linear search, so use iter().find()
-        let find_index = |name: &str| -> Option<usize> {
-            indices.iter()
-                .find(|(n, _)| n.as_ref() == name)
-                .map(|(_, idx)| *idx)
-        };
-
-        assert_eq!(find_index("a"), Some(0));
-        assert_eq!(find_index("b"), Some(1));
-        assert_eq!(find_index("c"), Some(2));
+        // ColumnIndex (InternedSchema) provides O(1) find_column lookup
+        assert_eq!(indices.find_column("a"), Some(0));
+        assert_eq!(indices.find_column("b"), Some(1));
+        assert_eq!(indices.find_column("c"), Some(2));
+        assert_eq!(indices.find_column("missing"), None);
     }
 
     #[test]

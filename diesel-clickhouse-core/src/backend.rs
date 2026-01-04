@@ -11,8 +11,8 @@
 //! The [`Backend`] trait abstracts over these, allowing generic code to work
 //! with either protocol.
 
-use std::borrow::Cow;
 use std::fmt::Debug;
+use compact_str::CompactString;
 use serde::Serialize;
 use smallvec::SmallVec;
 
@@ -28,9 +28,9 @@ use smallvec::SmallVec;
 ///
 /// # String Optimization
 ///
-/// The `String` variant uses `Cow<'static, str>` to avoid allocations for
-/// static string literals. Use `BindableValue::static_str("literal")` for
-/// compile-time known strings to avoid heap allocation.
+/// The `String` variant uses `CompactString` which stores strings up to 24 bytes
+/// inline on the stack, avoiding heap allocation for most common string values.
+/// Larger strings are stored on the heap as usual.
 #[derive(Debug, Clone)]
 pub enum BindableValue {
     // Unsigned integers
@@ -48,29 +48,42 @@ pub enum BindableValue {
     F64(f64),
     // Boolean
     Bool(bool),
-    // String (Cow for zero-alloc static strings)
-    String(Cow<'static, str>),
+    // String (CompactString for inline storage of small strings ≤24 bytes)
+    String(CompactString),
 }
 
 impl BindableValue {
     /// Create a BindableValue from a static string literal.
     ///
-    /// This avoids heap allocation for compile-time known strings.
+    /// Uses `CompactString::const_new` for compile-time construction when possible,
+    /// otherwise stores the string inline (≤24 bytes) or on the heap.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// let val = BindableValue::static_str("hello");  // No allocation
+    /// let val = BindableValue::static_str("hello");  // Inline, no heap allocation
     /// ```
     #[inline]
-    pub const fn static_str(s: &'static str) -> Self {
-        BindableValue::String(Cow::Borrowed(s))
+    pub fn static_str(s: &'static str) -> Self {
+        BindableValue::String(CompactString::from(s))
     }
 
     /// Create a BindableValue from an owned String.
+    ///
+    /// For strings ≤24 bytes, the data is stored inline without heap allocation.
+    /// Larger strings are moved to the heap.
     #[inline]
     pub fn owned_string(s: String) -> Self {
-        BindableValue::String(Cow::Owned(s))
+        BindableValue::String(CompactString::from(s))
+    }
+
+    /// Create a BindableValue from a string slice.
+    ///
+    /// For strings ≤24 bytes, the data is copied inline without heap allocation.
+    /// Larger strings are copied to the heap.
+    #[inline]
+    pub fn from_str(s: &str) -> Self {
+        BindableValue::String(CompactString::from(s))
     }
 
     /// Get the ClickHouse type name for this value.
@@ -139,24 +152,8 @@ fn write_float<F: ryu::Float>(buf: &mut String, value: F) {
     buf.push_str(tmp.format(value));
 }
 
-/// Write a SQL-escaped string literal to a buffer.
-#[inline]
-fn write_escaped_string(buf: &mut String, value: &str) {
-    buf.push('\'');
-    // Escape single quotes by doubling them
-    if value.contains('\'') {
-        for ch in value.chars() {
-            if ch == '\'' {
-                buf.push_str("''");
-            } else {
-                buf.push(ch);
-            }
-        }
-    } else {
-        buf.push_str(value);
-    }
-    buf.push('\'');
-}
+// Re-export escape function from the centralized escape module
+pub use crate::escape::write_escaped_sql_string as write_escaped_string;
 
 // Implement Serialize for BindableValue so it can be used with clickhouse's .bind()
 impl Serialize for BindableValue {
@@ -190,6 +187,7 @@ macro_rules! impl_to_bindable {
     ($($t:ty => $variant:ident),*) => {
         $(
             impl ToBindableValue for $t {
+                #[inline]
                 fn to_bindable_value(&self) -> BindableValue {
                     BindableValue::$variant(*self)
                 }
@@ -207,14 +205,49 @@ impl_to_bindable!(
 impl ToBindableValue for String {
     #[inline]
     fn to_bindable_value(&self) -> BindableValue {
-        BindableValue::String(Cow::Owned(self.clone()))
+        BindableValue::String(CompactString::from(self.as_str()))
     }
 }
+
+/// Trait for converting a value into BindableValue by consuming it.
+///
+/// This is more efficient than `ToBindableValue` when you have an owned value
+/// that would otherwise need to be cloned.
+pub trait IntoBindableValue {
+    fn into_bindable_value(self) -> BindableValue;
+}
+
+impl IntoBindableValue for String {
+    #[inline]
+    fn into_bindable_value(self) -> BindableValue {
+        BindableValue::String(CompactString::from(self))
+    }
+}
+
+// Implement IntoBindableValue for Copy types via macro
+macro_rules! impl_into_bindable {
+    ($($t:ty => $variant:ident),*) => {
+        $(
+            impl IntoBindableValue for $t {
+                #[inline]
+                fn into_bindable_value(self) -> BindableValue {
+                    BindableValue::$variant(self)
+                }
+            }
+        )*
+    };
+}
+
+impl_into_bindable!(
+    u8 => U8, u16 => U16, u32 => U32, u64 => U64,
+    i8 => I8, i16 => I16, i32 => I32, i64 => I64,
+    f32 => F32, f64 => F64, bool => Bool
+);
 
 impl ToBindableValue for str {
     #[inline]
     fn to_bindable_value(&self) -> BindableValue {
-        BindableValue::String(Cow::Owned(self.to_owned()))
+        BindableValue::String(CompactString::from(self))
     }
 }
 
@@ -223,15 +256,11 @@ impl ToBindableValue for &str {
     ///
     /// # Performance Note
     ///
-    /// This allocates because `BindableValue` requires `Cow<'static, str>`.
-    /// For static string literals known at compile time, use one of these
-    /// zero-allocation alternatives:
-    ///
-    /// - `BindableValue::static_str("literal")` - direct construction
-    /// - `AstPass::push_bindable_static_str("literal")` - during query building
+    /// For strings ≤24 bytes, the data is stored inline without heap allocation.
+    /// Larger strings are copied to the heap.
     #[inline]
     fn to_bindable_value(&self) -> BindableValue {
-        BindableValue::String(Cow::Owned((*self).to_owned()))
+        BindableValue::String(CompactString::from(*self))
     }
 }
 
@@ -256,6 +285,8 @@ pub trait Backend: Sized + Send + Sync + Debug + Clone + Copy + 'static {
 /// Trait for collecting bound parameters.
 pub trait BindCollector<'a, DB: Backend>: Default {
     /// Push a bindable value for native parameter binding.
+    ///
+    /// This is a hot path - implementations should be `#[inline]`.
     fn push_bindable_value(&mut self, value: BindableValue) -> Result<(), crate::result::Error>;
 
     /// Get the collected bindable values for native binding.

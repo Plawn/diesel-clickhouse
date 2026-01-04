@@ -9,9 +9,73 @@ use crate::query_source::{Join, Inner, Left, Right, JoinTo, ArrayJoin, Table, Jo
 use crate::result::QueryResult;
 use super::{QueryFragment, AstPass, QueryOutputType};
 
-/// A SELECT statement builder.
+// =============================================================================
+// DISTINCT type markers
+// =============================================================================
+
+/// Marker type for no DISTINCT modifier.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoDistinct;
+
+/// Marker type for DISTINCT modifier.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WithDistinct;
+
+/// Marker type for DISTINCT ON modifier (ClickHouse-specific).
 #[derive(Debug, Clone, Copy)]
-pub struct SelectStatement<From, Select = (), Where = (), OrderBy = (), Limit = (), Offset = (), GroupBy = (), Having = ()> {
+pub struct WithDistinctOn<E> {
+    on_expr: E,
+}
+
+impl<E> WithDistinctOn<E> {
+    /// Create a new DISTINCT ON marker with the given expression.
+    pub fn new(on_expr: E) -> Self {
+        Self { on_expr }
+    }
+}
+
+/// Trait for DISTINCT clause types.
+pub trait DistinctClause {
+    /// Whether this is a DISTINCT clause.
+    fn is_distinct(&self) -> bool;
+}
+
+impl DistinctClause for NoDistinct {
+    #[inline]
+    fn is_distinct(&self) -> bool {
+        false
+    }
+}
+
+impl DistinctClause for WithDistinct {
+    #[inline]
+    fn is_distinct(&self) -> bool {
+        true
+    }
+}
+
+impl<E> DistinctClause for WithDistinctOn<E> {
+    #[inline]
+    fn is_distinct(&self) -> bool {
+        true
+    }
+}
+
+/// A SELECT statement builder.
+///
+/// # Type Parameters
+///
+/// - `From`: The source table or join
+/// - `Select`: Selected columns (or `()` for `*`)
+/// - `Where`: WHERE clause (or `()` for none)
+/// - `OrderBy`: ORDER BY clause (or `()` for none)
+/// - `Limit`: LIMIT clause (or `()` for none)
+/// - `Offset`: OFFSET clause (or `()` for none)
+/// - `GroupBy`: GROUP BY clause (or `()` for none)
+/// - `Having`: HAVING clause (or `()` for none)
+/// - `Distinct`: DISTINCT modifier (`NoDistinct`, `WithDistinct`, or `WithDistinctOn<E>`)
+#[derive(Debug, Clone, Copy)]
+pub struct SelectStatement<From, Select = (), Where = (), OrderBy = (), Limit = (), Offset = (), GroupBy = (), Having = (), Distinct = NoDistinct> {
     from: From,
     select: Select,
     where_clause: Where,
@@ -20,6 +84,7 @@ pub struct SelectStatement<From, Select = (), Where = (), OrderBy = (), Limit = 
     offset: Offset,
     group_by: GroupBy,
     having: Having,
+    distinct: Distinct,
 }
 
 impl<F> SelectStatement<F> {
@@ -34,13 +99,14 @@ impl<F> SelectStatement<F> {
             offset: (),
             group_by: (),
             having: (),
+            distinct: NoDistinct,
         }
     }
 }
 
-impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
+impl<F, S, W, O, L, Of, G, H, D> SelectStatement<F, S, W, O, L, Of, G, H, D> {
     /// Set the columns to select.
-    pub fn select<NewS>(self, select: NewS) -> SelectStatement<F, NewS, W, O, L, Of, G, H>
+    pub fn select<NewS>(self, select: NewS) -> SelectStatement<F, NewS, W, O, L, Of, G, H, D>
     where
         NewS: Expression,
     {
@@ -53,6 +119,7 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
@@ -67,7 +134,7 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
     /// users::table
     ///     .filter(users::active.eq(true).and(users::age.gt(18)))
     /// ```
-    pub fn filter<P>(self, predicate: P) -> SelectStatement<F, S, P, O, L, Of, G, H>
+    pub fn filter<P>(self, predicate: P) -> SelectStatement<F, S, P, O, L, Of, G, H, D>
     where
         P: Expression,
     {
@@ -80,11 +147,12 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
     /// Add an ORDER BY clause.
-    pub fn order_by<E>(self, expr: E) -> SelectStatement<F, S, W, E, L, Of, G, H>
+    pub fn order_by<E>(self, expr: E) -> SelectStatement<F, S, W, E, L, Of, G, H, D>
     where
         E: Expression,
     {
@@ -97,11 +165,12 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
     /// Add a LIMIT clause.
-    pub fn limit(self, limit: i64) -> SelectStatement<F, S, W, O, LimitClause, Of, G, H> {
+    pub fn limit(self, limit: i64) -> SelectStatement<F, S, W, O, LimitClause, Of, G, H, D> {
         SelectStatement {
             from: self.from,
             select: self.select,
@@ -111,11 +180,12 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
     /// Add an OFFSET clause.
-    pub fn offset(self, offset: i64) -> SelectStatement<F, S, W, O, L, OffsetClause, G, H> {
+    pub fn offset(self, offset: i64) -> SelectStatement<F, S, W, O, L, OffsetClause, G, H, D> {
         SelectStatement {
             from: self.from,
             select: self.select,
@@ -125,11 +195,12 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: OffsetClause(offset),
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
     /// Add a GROUP BY clause.
-    pub fn group_by<E>(self, expr: E) -> SelectStatement<F, S, W, O, L, Of, E, H>
+    pub fn group_by<E>(self, expr: E) -> SelectStatement<F, S, W, O, L, Of, E, H, D>
     where
         E: Expression,
     {
@@ -142,11 +213,12 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: expr,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
     /// Add a HAVING clause.
-    pub fn having<P>(self, predicate: P) -> SelectStatement<F, S, W, O, L, Of, G, P>
+    pub fn having<P>(self, predicate: P) -> SelectStatement<F, S, W, O, L, Of, G, P, D>
     where
         P: Expression,
     {
@@ -159,6 +231,56 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: predicate,
+            distinct: self.distinct,
+        }
+    }
+
+    /// Apply DISTINCT modifier to the query.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// users::table.select(users::name).distinct()
+    /// // Generates: SELECT DISTINCT `name` FROM `users`
+    /// ```
+    pub fn distinct(self) -> SelectStatement<F, S, W, O, L, Of, G, H, WithDistinct> {
+        SelectStatement {
+            from: self.from,
+            select: self.select,
+            where_clause: self.where_clause,
+            order_by: self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            group_by: self.group_by,
+            having: self.having,
+            distinct: WithDistinct,
+        }
+    }
+
+    /// Apply DISTINCT ON modifier to the query (ClickHouse-specific).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// users::table
+    ///     .select((users::name, users::age))
+    ///     .distinct_on(users::department)
+    /// // Generates: SELECT DISTINCT ON (`department`) `name`, `age` FROM `users`
+    /// ```
+    pub fn distinct_on<E>(self, on_expr: E) -> SelectStatement<F, S, W, O, L, Of, G, H, WithDistinctOn<E>>
+    where
+        E: Expression,
+    {
+        SelectStatement {
+            from: self.from,
+            select: self.select,
+            where_clause: self.where_clause,
+            order_by: self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            group_by: self.group_by,
+            having: self.having,
+            distinct: WithDistinctOn::new(on_expr),
         }
     }
 
@@ -171,7 +293,7 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
     ///     .inner_join(posts::table)
     ///     .select((users::id, posts::title))
     /// ```
-    pub fn inner_join<R>(self, rhs: R) -> SelectStatement<Join<F, R, Inner, <F as JoinTo<R>>::OnClause>, S, W, O, L, Of, G, H>
+    pub fn inner_join<R>(self, rhs: R) -> SelectStatement<Join<F, R, Inner, <F as JoinTo<R>>::OnClause>, S, W, O, L, Of, G, H, D>
     where
         F: JoinTo<R>,
     {
@@ -185,6 +307,7 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
@@ -197,7 +320,7 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
     ///     .left_join(posts::table)
     ///     .select((users::id, posts::title.nullable()))
     /// ```
-    pub fn left_join<R>(self, rhs: R) -> SelectStatement<Join<F, R, Left, <F as JoinTo<R>>::OnClause>, S, W, O, L, Of, G, H>
+    pub fn left_join<R>(self, rhs: R) -> SelectStatement<Join<F, R, Left, <F as JoinTo<R>>::OnClause>, S, W, O, L, Of, G, H, D>
     where
         F: JoinTo<R>,
     {
@@ -211,11 +334,12 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
     /// Create a RIGHT JOIN with another table.
-    pub fn right_join<R>(self, rhs: R) -> SelectStatement<Join<F, R, Right, <F as JoinTo<R>>::OnClause>, S, W, O, L, Of, G, H>
+    pub fn right_join<R>(self, rhs: R) -> SelectStatement<Join<F, R, Right, <F as JoinTo<R>>::OnClause>, S, W, O, L, Of, G, H, D>
     where
         F: JoinTo<R>,
     {
@@ -229,6 +353,7 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
@@ -241,7 +366,7 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
     ///     .inner_join_on(posts::table, users::id.eq(posts::user_id))
     ///     .select((users::id, posts::title))
     /// ```
-    pub fn inner_join_on<R, On>(self, rhs: R, on: On) -> SelectStatement<Join<F, R, Inner, On>, S, W, O, L, Of, G, H>
+    pub fn inner_join_on<R, On>(self, rhs: R, on: On) -> SelectStatement<Join<F, R, Inner, On>, S, W, O, L, Of, G, H, D>
     where
         On: Expression,
     {
@@ -254,11 +379,12 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
     /// Create a LEFT JOIN with a custom ON clause.
-    pub fn left_join_on<R, On>(self, rhs: R, on: On) -> SelectStatement<Join<F, R, Left, On>, S, W, O, L, Of, G, H>
+    pub fn left_join_on<R, On>(self, rhs: R, on: On) -> SelectStatement<Join<F, R, Left, On>, S, W, O, L, Of, G, H, D>
     where
         On: Expression,
     {
@@ -271,6 +397,7 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
@@ -283,7 +410,7 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
     ///     .array_join(events::tags)
     ///     .select((events::id, events::tags))
     /// ```
-    pub fn array_join<A>(self, array: A) -> SelectStatement<ArrayJoin<F, A>, S, W, O, L, Of, G, H>
+    pub fn array_join<A>(self, array: A) -> SelectStatement<ArrayJoin<F, A>, S, W, O, L, Of, G, H, D>
     where
         A: Expression,
     {
@@ -296,11 +423,12 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 
     /// Create a LEFT ARRAY JOIN (includes rows with empty arrays).
-    pub fn left_array_join<A>(self, array: A) -> SelectStatement<ArrayJoin<F, A>, S, W, O, L, Of, G, H>
+    pub fn left_array_join<A>(self, array: A) -> SelectStatement<ArrayJoin<F, A>, S, W, O, L, Of, G, H, D>
     where
         A: Expression,
     {
@@ -313,12 +441,13 @@ impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H> {
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 }
 
 // Specialized impl for adding to an existing WHERE clause
-impl<F, S, W, O, L, Of, G, H> SelectStatement<F, S, W, O, L, Of, G, H>
+impl<F, S, W, O, L, Of, G, H, D> SelectStatement<F, S, W, O, L, Of, G, H, D>
 where
     W: Expression,
 {
@@ -331,7 +460,7 @@ where
     ///     .and_filter(users::age.gt(18))
     /// // Generates: WHERE active = true AND age > 18
     /// ```
-    pub fn and_filter<P>(self, predicate: P) -> SelectStatement<F, S, crate::expression::And<W, P>, O, L, Of, G, H>
+    pub fn and_filter<P>(self, predicate: P) -> SelectStatement<F, S, crate::expression::And<W, P>, O, L, Of, G, H, D>
     where
         P: Expression,
     {
@@ -347,6 +476,7 @@ where
             offset: self.offset,
             group_by: self.group_by,
             having: self.having,
+            distinct: self.distinct,
         }
     }
 }
@@ -391,8 +521,75 @@ impl IsEmpty for OffsetClause {
     }
 }
 
-// QueryFragment implementation
-impl<F, S, W, O, L, Of, G, H, DB> QueryFragment<DB> for SelectStatement<F, S, W, O, L, Of, G, H>
+// =============================================================================
+// QueryFragment implementations for SelectStatement
+// =============================================================================
+
+/// Helper function to generate common SELECT parts after the initial SELECT keyword.
+fn write_select_body<'b, F, S, W, O, L, Of, G, H, DB>(
+    stmt: &'b SelectStatement<F, S, W, O, L, Of, G, H, impl DistinctClause>,
+    mut pass: AstPass<'_, 'b, DB>,
+) -> QueryResult<()>
+where
+    F: QueryFragment<DB>,
+    S: QueryFragment<DB> + IsEmpty,
+    W: QueryFragment<DB> + IsEmpty,
+    O: QueryFragment<DB> + IsEmpty,
+    L: QueryFragment<DB> + IsEmpty,
+    Of: QueryFragment<DB> + IsEmpty,
+    G: QueryFragment<DB> + IsEmpty,
+    H: QueryFragment<DB> + IsEmpty,
+    DB: Backend,
+{
+    // Select clause (default to *)
+    if stmt.select.is_empty() {
+        pass.push_sql("*");
+    } else {
+        stmt.select.walk_ast(pass.reborrow())?;
+    }
+
+    pass.push_sql(" FROM ");
+    stmt.from.walk_ast(pass.reborrow())?;
+
+    // WHERE clause
+    if !stmt.where_clause.is_empty() {
+        pass.push_sql(" WHERE ");
+        stmt.where_clause.walk_ast(pass.reborrow())?;
+    }
+
+    // GROUP BY clause
+    if !stmt.group_by.is_empty() {
+        pass.push_sql(" GROUP BY ");
+        stmt.group_by.walk_ast(pass.reborrow())?;
+    }
+
+    // HAVING clause
+    if !stmt.having.is_empty() {
+        pass.push_sql(" HAVING ");
+        stmt.having.walk_ast(pass.reborrow())?;
+    }
+
+    // ORDER BY clause
+    if !stmt.order_by.is_empty() {
+        pass.push_sql(" ORDER BY ");
+        stmt.order_by.walk_ast(pass.reborrow())?;
+    }
+
+    // LIMIT clause
+    if !stmt.limit.is_empty() {
+        stmt.limit.walk_ast(pass.reborrow())?;
+    }
+
+    // OFFSET clause
+    if !stmt.offset.is_empty() {
+        stmt.offset.walk_ast(pass.reborrow())?;
+    }
+
+    Ok(())
+}
+
+// QueryFragment for SELECT (no DISTINCT)
+impl<F, S, W, O, L, Of, G, H, DB> QueryFragment<DB> for SelectStatement<F, S, W, O, L, Of, G, H, NoDistinct>
 where
     F: QueryFragment<DB>,
     S: QueryFragment<DB> + IsEmpty,
@@ -406,52 +603,48 @@ where
 {
     fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
         pass.push_sql("SELECT ");
+        write_select_body(self, pass)
+    }
+}
 
-        // Select clause (default to *)
-        if self.select.is_empty() {
-            pass.push_sql("*");
-        } else {
-            self.select.walk_ast(pass.reborrow())?;
-        }
+// QueryFragment for SELECT DISTINCT
+impl<F, S, W, O, L, Of, G, H, DB> QueryFragment<DB> for SelectStatement<F, S, W, O, L, Of, G, H, WithDistinct>
+where
+    F: QueryFragment<DB>,
+    S: QueryFragment<DB> + IsEmpty,
+    W: QueryFragment<DB> + IsEmpty,
+    O: QueryFragment<DB> + IsEmpty,
+    L: QueryFragment<DB> + IsEmpty,
+    Of: QueryFragment<DB> + IsEmpty,
+    G: QueryFragment<DB> + IsEmpty,
+    H: QueryFragment<DB> + IsEmpty,
+    DB: Backend,
+{
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+        pass.push_sql("SELECT DISTINCT ");
+        write_select_body(self, pass)
+    }
+}
 
-        pass.push_sql(" FROM ");
-        self.from.walk_ast(pass.reborrow())?;
-
-        // WHERE clause
-        if !self.where_clause.is_empty() {
-            pass.push_sql(" WHERE ");
-            self.where_clause.walk_ast(pass.reborrow())?;
-        }
-
-        // GROUP BY clause
-        if !self.group_by.is_empty() {
-            pass.push_sql(" GROUP BY ");
-            self.group_by.walk_ast(pass.reborrow())?;
-        }
-
-        // HAVING clause
-        if !self.having.is_empty() {
-            pass.push_sql(" HAVING ");
-            self.having.walk_ast(pass.reborrow())?;
-        }
-
-        // ORDER BY clause
-        if !self.order_by.is_empty() {
-            pass.push_sql(" ORDER BY ");
-            self.order_by.walk_ast(pass.reborrow())?;
-        }
-
-        // LIMIT clause
-        if !self.limit.is_empty() {
-            self.limit.walk_ast(pass.reborrow())?;
-        }
-
-        // OFFSET clause
-        if !self.offset.is_empty() {
-            self.offset.walk_ast(pass.reborrow())?;
-        }
-
-        Ok(())
+// QueryFragment for SELECT DISTINCT ON (ClickHouse-specific)
+impl<F, S, W, O, L, Of, G, H, E, DB> QueryFragment<DB> for SelectStatement<F, S, W, O, L, Of, G, H, WithDistinctOn<E>>
+where
+    F: QueryFragment<DB>,
+    S: QueryFragment<DB> + IsEmpty,
+    W: QueryFragment<DB> + IsEmpty,
+    O: QueryFragment<DB> + IsEmpty,
+    L: QueryFragment<DB> + IsEmpty,
+    Of: QueryFragment<DB> + IsEmpty,
+    G: QueryFragment<DB> + IsEmpty,
+    H: QueryFragment<DB> + IsEmpty,
+    E: QueryFragment<DB>,
+    DB: Backend,
+{
+    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+        pass.push_sql("SELECT DISTINCT ON (");
+        self.distinct.on_expr.walk_ast(pass.reborrow())?;
+        pass.push_sql(") ");
+        write_select_body(self, pass)
     }
 }
 
@@ -512,7 +705,7 @@ impl<T: Table> QueryOutputType for T {
 
 /// Implementation for SELECT with explicit columns (S: Expression).
 /// The output type is the SQL type of the selected expression.
-impl<F, S, W, O, L, Of, G, H> QueryOutputType for SelectStatement<F, S, W, O, L, Of, G, H>
+impl<F, S, W, O, L, Of, G, H, D> QueryOutputType for SelectStatement<F, S, W, O, L, Of, G, H, D>
 where
     S: Expression,
 {
@@ -521,7 +714,7 @@ where
 
 /// Implementation for SELECT * (S = ()).
 /// The output type is all columns of the source.
-impl<F, W, O, L, Of, G, H> QueryOutputType for SelectStatement<F, (), W, O, L, Of, G, H>
+impl<F, W, O, L, Of, G, H, D> QueryOutputType for SelectStatement<F, (), W, O, L, Of, G, H, D>
 where
     F: HasAllColumnsSqlType,
 {
@@ -658,5 +851,66 @@ mod tests {
         let sql = to_sql(&stmt);
 
         assert_eq!(sql, "SELECT * FROM `users` INNER JOIN `posts` ON users.id = posts.user_id WHERE `id`");
+    }
+
+    // =========================================================================
+    // DISTINCT tests (type-level)
+    // =========================================================================
+
+    #[test]
+    fn test_distinct_type_level() {
+        let stmt = SelectStatement::new(UsersTable)
+            .select(IdColumn)
+            .distinct();
+        let sql = to_sql(&stmt);
+
+        assert_eq!(sql, "SELECT DISTINCT `id` FROM `users`");
+    }
+
+    #[test]
+    fn test_distinct_on_type_level() {
+        // Create a department column for DISTINCT ON
+        #[derive(Debug, Clone, Copy)]
+        struct DeptColumn;
+        impl Expression for DeptColumn {
+            type SqlType = diesel_clickhouse_types::CHString;
+        }
+        impl<T> SelectableExpression<T> for DeptColumn {}
+        impl<T> AppearsOnTable<T> for DeptColumn {}
+        impl<DB: Backend> QueryFragment<DB> for DeptColumn {
+            fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
+                pass.push_identifier("department");
+                Ok(())
+            }
+        }
+
+        let stmt = SelectStatement::new(UsersTable)
+            .select(IdColumn)
+            .distinct_on(DeptColumn);
+        let sql = to_sql(&stmt);
+
+        assert_eq!(sql, "SELECT DISTINCT ON (`department`) `id` FROM `users`");
+    }
+
+    #[test]
+    fn test_distinct_with_filter() {
+        let stmt = SelectStatement::new(UsersTable)
+            .select(IdColumn)
+            .distinct()
+            .filter(IdColumn);
+        let sql = to_sql(&stmt);
+
+        assert_eq!(sql, "SELECT DISTINCT `id` FROM `users` WHERE `id`");
+    }
+
+    #[test]
+    fn test_distinct_with_order_by() {
+        let stmt = SelectStatement::new(UsersTable)
+            .select(IdColumn)
+            .distinct()
+            .order_by(IdColumn);
+        let sql = to_sql(&stmt);
+
+        assert_eq!(sql, "SELECT DISTINCT `id` FROM `users` ORDER BY `id`");
     }
 }

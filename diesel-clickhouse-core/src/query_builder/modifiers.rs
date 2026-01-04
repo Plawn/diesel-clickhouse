@@ -1,4 +1,4 @@
-//! Query modifiers: DISTINCT, LIMIT BY, and aliasing.
+//! Query modifiers: LIMIT BY and aliasing.
 //!
 //! This module provides additional query modifiers specific to ClickHouse.
 //!
@@ -7,7 +7,7 @@
 //! ```rust,ignore
 //! use diesel_clickhouse::query_builder::modifiers::*;
 //!
-//! // DISTINCT
+//! // DISTINCT (use SelectStatement methods directly)
 //! users::table.select(users::name).distinct()
 //!
 //! // DISTINCT ON (ClickHouse-specific)
@@ -24,107 +24,12 @@
 //! users::table.select(count_star().alias("total"))
 //! ```
 
+use compact_str::CompactString;
+
 use crate::backend::Backend;
 use crate::expression::Expression;
 use crate::query_builder::{AstPass, QueryFragment};
 use crate::result::QueryResult;
-
-// =============================================================================
-// DISTINCT
-// =============================================================================
-
-/// A query with DISTINCT modifier.
-#[derive(Debug, Clone, Copy)]
-pub struct Distinct<Q> {
-    query: Q,
-}
-
-impl<Q> Distinct<Q> {
-    /// Create a new DISTINCT query.
-    pub fn new(query: Q) -> Self {
-        Self { query }
-    }
-}
-
-impl<Q, DB> QueryFragment<DB> for Distinct<Q>
-where
-    Q: QueryFragment<DB>,
-    DB: Backend,
-{
-    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-        // Get the SQL from the inner query
-        let mut inner_builder = DB::QueryBuilder::default();
-        let mut inner_collector = DB::BindCollector::default();
-        {
-            let inner_pass = AstPass::new(&mut inner_builder, &mut inner_collector);
-            self.query.walk_ast(inner_pass)?;
-        }
-        let sql = crate::backend::QueryBuilder::finish(inner_builder);
-
-        // Replace "SELECT " with "SELECT DISTINCT "
-        if let Some(rest) = sql.strip_prefix("SELECT ") {
-            pass.push_sql("SELECT DISTINCT ");
-            pass.push_sql(rest);
-        } else {
-            // Fallback: just prepend DISTINCT
-            pass.push_sql("DISTINCT ");
-            self.query.walk_ast(pass.reborrow())?;
-        }
-        Ok(())
-    }
-}
-
-// =============================================================================
-// DISTINCT ON (ClickHouse-specific)
-// =============================================================================
-
-/// A query with DISTINCT ON modifier.
-///
-/// ClickHouse syntax: `SELECT DISTINCT ON (expr) ...`
-#[derive(Debug, Clone, Copy)]
-pub struct DistinctOn<Q, E> {
-    query: Q,
-    on_expr: E,
-}
-
-impl<Q, E> DistinctOn<Q, E> {
-    /// Create a new DISTINCT ON query.
-    pub fn new(query: Q, on_expr: E) -> Self {
-        Self { query, on_expr }
-    }
-}
-
-impl<Q, E, DB> QueryFragment<DB> for DistinctOn<Q, E>
-where
-    Q: QueryFragment<DB>,
-    E: QueryFragment<DB>,
-    DB: Backend,
-{
-    fn walk_ast<'b>(&'b self, mut pass: AstPass<'_, 'b, DB>) -> QueryResult<()> {
-        // Get the SQL from the inner query
-        let mut inner_builder = DB::QueryBuilder::default();
-        let mut inner_collector = DB::BindCollector::default();
-        {
-            let inner_pass = AstPass::new(&mut inner_builder, &mut inner_collector);
-            self.query.walk_ast(inner_pass)?;
-        }
-        let sql = crate::backend::QueryBuilder::finish(inner_builder);
-
-        // Replace "SELECT " with "SELECT DISTINCT ON (expr) "
-        if let Some(rest) = sql.strip_prefix("SELECT ") {
-            pass.push_sql("SELECT DISTINCT ON (");
-            self.on_expr.walk_ast(pass.reborrow())?;
-            pass.push_sql(") ");
-            pass.push_sql(rest);
-        } else {
-            pass.push_sql("DISTINCT ON (");
-            self.on_expr.walk_ast(pass.reborrow())?;
-            pass.push_sql(") ");
-            self.query.walk_ast(pass.reborrow())?;
-        }
-        Ok(())
-    }
-}
 
 // =============================================================================
 // LIMIT BY (ClickHouse-specific)
@@ -203,15 +108,25 @@ where
 // =============================================================================
 
 /// An expression with an alias (AS clause).
+///
+/// # Allocation Optimization
+///
+/// Uses `CompactString` for the alias name, which stores strings up to 24 bytes
+/// inline (on the stack) without heap allocation. Since most column aliases are
+/// short (e.g., "id", "name", "total_count"), this avoids heap allocation in
+/// the vast majority of cases.
 #[derive(Debug, Clone)]
 pub struct Alias<E> {
     expr: E,
-    alias: String,
+    alias: CompactString,
 }
 
 impl<E> Alias<E> {
     /// Create a new aliased expression.
-    pub fn new(expr: E, alias: impl Into<String>) -> Self {
+    ///
+    /// Accepts any type that can be converted to `CompactString`, including
+    /// `&str`, `String`, and `CompactString` itself.
+    pub fn new(expr: E, alias: impl Into<CompactString>) -> Self {
         Self {
             expr,
             alias: alias.into(),
@@ -219,6 +134,7 @@ impl<E> Alias<E> {
     }
 
     /// Get the alias name.
+    #[inline]
     pub fn alias_name(&self) -> &str {
         &self.alias
     }
@@ -256,35 +172,6 @@ where
 // =============================================================================
 // Extension traits
 // =============================================================================
-
-/// Extension trait for DISTINCT queries.
-pub trait DistinctDsl: Sized {
-    /// Apply DISTINCT to the query.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// users::table.select(users::name).distinct()
-    /// ```
-    fn distinct(self) -> Distinct<Self> {
-        Distinct::new(self)
-    }
-
-    /// Apply DISTINCT ON to the query (ClickHouse-specific).
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// users::table
-    ///     .select((users::name, users::age))
-    ///     .distinct_on(users::department)
-    /// ```
-    fn distinct_on<E: Expression>(self, on_expr: E) -> DistinctOn<Self, E> {
-        DistinctOn::new(self, on_expr)
-    }
-}
-
-impl<T> DistinctDsl for T {}
 
 /// Extension trait for LIMIT BY queries.
 pub trait LimitByDsl: Sized {
@@ -331,7 +218,7 @@ pub trait AliasDsl: Sized {
     /// count_star().alias("total_count")
     /// // Generates: count(*) AS `total_count`
     /// ```
-    fn alias(self, name: impl Into<String>) -> Alias<Self> {
+    fn alias(self, name: impl Into<CompactString>) -> Alias<Self> {
         Alias::new(self, name)
     }
 
@@ -342,7 +229,7 @@ pub trait AliasDsl: Sized {
     /// ```rust,ignore
     /// users::name.as_("user_name")
     /// ```
-    fn as_(self, name: impl Into<String>) -> Alias<Self> {
+    fn as_(self, name: impl Into<CompactString>) -> Alias<Self> {
         Alias::new(self, name)
     }
 }
@@ -456,6 +343,7 @@ mod tests {
 
     #[test]
     fn test_distinct() {
+        // Uses SelectStatement's native .distinct() method
         let query = SelectStatement::new(UsersTable).select(NameColumn).distinct();
         let sql = to_sql(&query);
         assert_eq!(sql, "SELECT DISTINCT `name` FROM `users`");
@@ -463,6 +351,7 @@ mod tests {
 
     #[test]
     fn test_distinct_on() {
+        // Uses SelectStatement's native .distinct_on() method
         let query = SelectStatement::new(UsersTable)
             .select(NameColumn)
             .distinct_on(DepartmentColumn);

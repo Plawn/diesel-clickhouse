@@ -1,5 +1,8 @@
 //! Migration harness for running migrations.
 
+use std::collections::HashSet;
+
+use ahash::HashMap;
 use async_trait::async_trait;
 use diesel_clickhouse_core::escape::escape_sql_string_owned as escape_sql_string;
 
@@ -73,11 +76,13 @@ pub trait MigrationHarness: MigrationConnection {
         source: &S,
     ) -> Result<Vec<Migration>> {
         let applied = self.applied_migrations().await?;
+        // Convert to HashSet for O(1) lookups instead of O(n)
+        let applied_set: HashSet<_> = applied.into_iter().collect();
         let all = source.migrations()?;
 
         Ok(all
             .into_iter()
-            .filter(|m| !applied.contains(&m.version))
+            .filter(|m| !applied_set.contains(&m.version))
             .collect())
     }
 
@@ -150,9 +155,10 @@ pub trait MigrationHarness: MigrationConnection {
         }
 
         let mut applied = Vec::with_capacity(pending.len());
-        for migration in &pending {
-            self.run_migration(migration).await?;
-            applied.push(migration.version.clone());
+        for migration in pending {
+            // Borrow for run_migration, then move version (avoids clone)
+            self.run_migration(&migration).await?;
+            applied.push(migration.version);
         }
 
         Ok(applied)
@@ -170,6 +176,11 @@ pub trait MigrationHarness: MigrationConnection {
         }
 
         let all_migrations = source.migrations()?;
+        // Build HashMap for O(1) lookups instead of O(n)
+        let migrations_map: HashMap<_, _> = all_migrations
+            .into_iter()
+            .map(|m| (m.version.clone(), m))
+            .collect();
 
         // Get the last N applied migrations in reverse order
         let to_revert: Vec<_> = applied
@@ -180,10 +191,9 @@ pub trait MigrationHarness: MigrationConnection {
 
         let mut reverted = Vec::with_capacity(to_revert.len());
         for version in to_revert {
-            // Find the migration
-            let migration = all_migrations
-                .iter()
-                .find(|m| m.version == version)
+            // Find the migration in O(1)
+            let migration = migrations_map
+                .get(&version)
                 .ok_or_else(|| MigrationError::MigrationNotFound(version.to_string()))?;
 
             self.revert_migration(migration).await?;
@@ -200,6 +210,12 @@ pub trait MigrationHarness: MigrationConnection {
         count: usize,
     ) -> Result<Vec<MigrationVersion>> {
         let all_migrations = source.migrations()?;
+        // Build HashMap for O(1) lookups instead of O(n)
+        let migrations_map: HashMap<_, _> = all_migrations
+            .into_iter()
+            .map(|m| (m.version.clone(), m))
+            .collect();
+
         let applied = self.applied_migrations().await?;
 
         if applied.is_empty() {
@@ -211,9 +227,8 @@ pub trait MigrationHarness: MigrationConnection {
 
         // Revert them
         for version in &to_redo {
-            let migration = all_migrations
-                .iter()
-                .find(|m| &m.version == version)
+            let migration = migrations_map
+                .get(version)
                 .ok_or_else(|| MigrationError::MigrationNotFound(version.to_string()))?;
 
             self.revert_migration(migration).await?;
@@ -223,9 +238,8 @@ pub trait MigrationHarness: MigrationConnection {
         let to_redo_len = to_redo.len();
         let mut reapplied = Vec::with_capacity(to_redo_len);
         for version in to_redo.into_iter().rev() {
-            let migration = all_migrations
-                .iter()
-                .find(|m| m.version == version)
+            let migration = migrations_map
+                .get(&version)
                 .ok_or_else(|| MigrationError::MigrationNotFound(version.to_string()))?;
 
             self.run_migration(migration).await?;
@@ -250,8 +264,9 @@ pub trait MigrationHarness: MigrationConnection {
             if &migration.version > target {
                 break;
             }
+            // Borrow for run_migration, then move version (avoids clone)
             self.run_migration(&migration).await?;
-            applied.push(migration.version.clone());
+            applied.push(migration.version);
         }
 
         Ok(applied)
@@ -264,6 +279,12 @@ pub trait MigrationHarness: MigrationConnection {
         target: &MigrationVersion,
     ) -> Result<Vec<MigrationVersion>> {
         let all_migrations = source.migrations()?;
+        // Build HashMap for O(1) lookups instead of O(n)
+        let migrations_map: HashMap<_, _> = all_migrations
+            .into_iter()
+            .map(|m| (m.version.clone(), m))
+            .collect();
+
         let applied = self.applied_migrations().await?;
 
         let to_revert: Vec<_> = applied
@@ -273,9 +294,8 @@ pub trait MigrationHarness: MigrationConnection {
 
         let mut reverted = Vec::with_capacity(to_revert.len());
         for version in to_revert.into_iter().rev() {
-            let migration = all_migrations
-                .iter()
-                .find(|m| m.version == version)
+            let migration = migrations_map
+                .get(&version)
                 .ok_or_else(|| MigrationError::MigrationNotFound(version.to_string()))?;
 
             self.revert_migration(migration).await?;
@@ -296,7 +316,9 @@ impl<T: MigrationConnection + Send> MigrationHarness for T {}
 /// - Comments (-- and /* */)
 /// - String literals (including escaped quotes like '' and "")
 fn split_sql_statements(sql: &str) -> Vec<String> {
-    let mut statements = Vec::new();
+    // Estimate capacity: count semicolons as approximate statement count
+    let estimated_count = sql.bytes().filter(|&b| b == b';').count().max(1);
+    let mut statements = Vec::with_capacity(estimated_count);
     let mut current = String::new();
     let mut in_string = false;
     let mut string_char = '"';
