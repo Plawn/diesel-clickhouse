@@ -1,5 +1,7 @@
 //! Block column serialization traits for INSERT operations.
 
+use std::borrow::Cow;
+
 use clickhouse_rs::Block;
 
 use crate::core::result::QueryResult;
@@ -173,6 +175,18 @@ macro_rules! impl_into_block_column_primitive {
 // Bool is natively supported by clickhouse-rs as Vec<bool>
 impl_into_block_column_primitive!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64, bool);
 
+/// IntoBlockColumn implementation for `String`.
+///
+/// # Performance Note
+///
+/// Methods taking `&self` (`to_column_value`, `push_to_column`) require cloning
+/// the String. For bulk INSERT operations with owned data, prefer:
+///
+/// - `conn.insert_native_owned(table, rows)` - takes ownership, avoids clones
+/// - `ToNativeBlock::rows_into_block(rows)` - uses `IntoBlockColumnOwned` trait
+///
+/// The `IntoBlockColumnOwned` trait provides `push_to_column_owned` which
+/// moves the String instead of cloning.
 impl IntoBlockColumn for String {
     type ColumnData = Vec<String>;
     type ColumnValue = String;
@@ -214,23 +228,34 @@ impl IntoBlockColumnOwned for String {
     }
 }
 
+/// IntoBlockColumn implementation for `&str`.
+///
+/// # Performance Note
+///
+/// Each `&str` value requires allocation to create an owned `String` for the block.
+/// This is unavoidable because ClickHouse's native protocol requires owned data.
+///
+/// For better performance with INSERT operations:
+/// - Use `String` fields in your insert struct when you already have owned data
+/// - Use [`IntoBlockColumnOwned::push_to_column_owned`] when moving owned strings
+/// - Pre-allocate with [`IntoBlockColumn::new_column_with_capacity`] to avoid Vec reallocations
 impl IntoBlockColumn for &str {
     type ColumnData = Vec<String>;
     type ColumnValue = String;
 
     #[inline]
     fn to_column_value(&self) -> Self::ColumnValue {
-        (*self).to_string()
+        String::from(*self)
     }
 
     #[inline]
     fn into_column_value(self) -> Self::ColumnValue {
-        self.to_string()
+        String::from(self)
     }
 
     #[inline]
     fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push((*value).to_string());
+        column.push(String::from(*value));
     }
 
     #[inline]
@@ -246,6 +271,63 @@ impl IntoBlockColumn for &str {
     #[inline]
     fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
         block.column(name, data)
+    }
+}
+
+/// IntoBlockColumn implementation for `Cow<str>`.
+///
+/// This implementation is optimized to avoid allocation when the `Cow` is
+/// already owned (`Cow::Owned`). Use this when you have mixed borrowed and
+/// owned string data.
+///
+/// # Performance
+///
+/// - `Cow::Owned(s)` → moves `s` directly, no allocation
+/// - `Cow::Borrowed(s)` → allocates a new `String`
+impl IntoBlockColumn for Cow<'_, str> {
+    type ColumnData = Vec<String>;
+    type ColumnValue = String;
+
+    #[inline]
+    fn to_column_value(&self) -> Self::ColumnValue {
+        // Use to_string() instead of clone().into_owned() to avoid
+        // cloning the inner String for Cow::Owned variant
+        self.to_string()
+    }
+
+    #[inline]
+    fn into_column_value(self) -> Self::ColumnValue {
+        self.into_owned()
+    }
+
+    #[inline]
+    fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
+        // Use to_string() instead of clone().into_owned() to avoid
+        // cloning the inner String for Cow::Owned variant
+        column.push(value.to_string());
+    }
+
+    #[inline]
+    fn new_column() -> Self::ColumnData {
+        Vec::new()
+    }
+
+    #[inline]
+    fn new_column_with_capacity(capacity: usize) -> Self::ColumnData {
+        Vec::with_capacity(capacity)
+    }
+
+    #[inline]
+    fn add_column_to_block(block: Block, name: &str, data: Self::ColumnData) -> Block {
+        block.column(name, data)
+    }
+}
+
+impl IntoBlockColumnOwned for Cow<'_, str> {
+    #[inline]
+    fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
+        // Zero-allocation for Cow::Owned, one allocation for Cow::Borrowed
+        column.push(value.into_owned());
     }
 }
 
@@ -494,10 +576,41 @@ impl IntoBlockColumnOwned for chrono::NaiveDateTime {
 // JSON type support (ClickHouse 24.10+)
 // =============================================================================
 
+/// Serialize a JSON value to string, handling errors appropriately.
+///
+/// For `serde_json::Value`, serialization can only fail if the value contains
+/// infinity or NaN numbers, which is impossible since `Value` doesn't accept them.
+/// We handle the error case defensively but it should never occur in practice.
+#[cfg(feature = "json")]
+#[inline]
+fn serialize_json_value(value: &serde_json::Value) -> String {
+    // serde_json::Value serialization can only fail for infinity/NaN numbers,
+    // which Value doesn't support. This match is defensive.
+    match serde_json::to_string(value) {
+        Ok(s) => s,
+        Err(e) => {
+            // This branch should be unreachable for valid serde_json::Value
+            #[cfg(feature = "tracing")]
+            tracing::error!(
+                error = %e,
+                "Failed to serialize serde_json::Value - this should not happen"
+            );
+            debug_assert!(false, "serde_json::Value serialization failed: {}", e);
+            String::new()
+        }
+    }
+}
+
 /// IntoBlockColumn implementation for serde_json::Value.
 ///
 /// JSON values are serialized to strings for insertion. ClickHouse reads them
 /// back as JSON columns when the table schema defines the column as JSON type.
+///
+/// # Error Handling
+///
+/// Serialization of `serde_json::Value` should never fail since the type only
+/// allows valid JSON values. In the extremely unlikely event of a failure,
+/// an empty string is returned and an error is logged (if tracing is enabled).
 #[cfg(feature = "json")]
 impl IntoBlockColumn for serde_json::Value {
     type ColumnData = Vec<String>;
@@ -505,18 +618,17 @@ impl IntoBlockColumn for serde_json::Value {
 
     #[inline]
     fn to_column_value(&self) -> Self::ColumnValue {
-        // Use compact serialization; unwrap_or_default handles edge cases
-        serde_json::to_string(self).unwrap_or_default()
+        serialize_json_value(self)
     }
 
     #[inline]
     fn into_column_value(self) -> Self::ColumnValue {
-        serde_json::to_string(&self).unwrap_or_default()
+        serialize_json_value(&self)
     }
 
     #[inline]
     fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(serde_json::to_string(value).unwrap_or_default());
+        column.push(serialize_json_value(value));
     }
 
     #[inline]
@@ -539,13 +651,54 @@ impl IntoBlockColumn for serde_json::Value {
 impl IntoBlockColumnOwned for serde_json::Value {
     #[inline]
     fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
-        column.push(serde_json::to_string(&value).unwrap_or_default());
+        column.push(serialize_json_value(&value));
+    }
+}
+
+/// Serialize a typed JSON value to string, handling errors appropriately.
+///
+/// Unlike `serde_json::Value`, typed JSON serialization can fail if the
+/// `Serialize` implementation of `T` returns an error. Errors are logged
+/// (if tracing is enabled) and trigger a debug assertion.
+#[cfg(feature = "json")]
+#[inline]
+fn serialize_json_typed<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_string(value) {
+        Ok(s) => s,
+        Err(e) => {
+            // Log the error for visibility - this indicates a bug in the Serialize impl
+            #[cfg(feature = "tracing")]
+            tracing::error!(
+                error = %e,
+                type_name = std::any::type_name::<T>(),
+                "Failed to serialize JsonTyped value - check the Serialize implementation"
+            );
+            debug_assert!(
+                false,
+                "JsonTyped<{}> serialization failed: {}. \
+                 This indicates a bug in the Serialize implementation.",
+                std::any::type_name::<T>(),
+                e
+            );
+            String::new()
+        }
     }
 }
 
 /// IntoBlockColumn implementation for JsonTyped<T>.
 ///
 /// Typed JSON values are serialized to strings for insertion.
+///
+/// # Error Handling
+///
+/// Serialization can fail if `T`'s `Serialize` implementation returns an error.
+/// In such cases:
+/// - A debug assertion is triggered (panics in debug builds)
+/// - An error is logged if the `tracing` feature is enabled
+/// - An empty string is inserted as a fallback
+///
+/// This behavior ensures that production systems don't crash on serialization
+/// errors, while making bugs visible during development.
 #[cfg(feature = "json")]
 impl<T: serde::Serialize + Clone> IntoBlockColumn for diesel_clickhouse_types::JsonTyped<T> {
     type ColumnData = Vec<String>;
@@ -553,17 +706,17 @@ impl<T: serde::Serialize + Clone> IntoBlockColumn for diesel_clickhouse_types::J
 
     #[inline]
     fn to_column_value(&self) -> Self::ColumnValue {
-        serde_json::to_string(&self.0).unwrap_or_default()
+        serialize_json_typed(&self.0)
     }
 
     #[inline]
     fn into_column_value(self) -> Self::ColumnValue {
-        serde_json::to_string(&self.0).unwrap_or_default()
+        serialize_json_typed(&self.0)
     }
 
     #[inline]
     fn push_to_column(value: &Self, column: &mut Self::ColumnData) {
-        column.push(serde_json::to_string(&value.0).unwrap_or_default());
+        column.push(serialize_json_typed(&value.0));
     }
 
     #[inline]
@@ -586,6 +739,6 @@ impl<T: serde::Serialize + Clone> IntoBlockColumn for diesel_clickhouse_types::J
 impl<T: serde::Serialize + Clone> IntoBlockColumnOwned for diesel_clickhouse_types::JsonTyped<T> {
     #[inline]
     fn push_to_column_owned(value: Self, column: &mut Self::ColumnData) {
-        column.push(serde_json::to_string(&value.0).unwrap_or_default());
+        column.push(serialize_json_typed(&value.0));
     }
 }

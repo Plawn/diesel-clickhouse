@@ -1,15 +1,26 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Memory
+
+Before starting a complex task, read files in `.claude/memory/`. After each milestone, update `.claude/memory/NOTES.md` with:
+- What was accomplished
+- Decisions made and why
+- Next steps
+- Problems encountered
+
 ## Build Commands
 
 ```bash
-cargo build --all                              # Full workspace
-cargo build -p diesel-clickhouse --features http   # HTTP backend only
-cargo build -p diesel-clickhouse --features native # Native backend only
-cargo test --all                               # Unit tests
-docker-compose up -d && cargo test --all --features integration  # Integration tests (manual Docker)
-cargo test -p diesel-clickhouse --features testcontainers         # Integration tests (auto Docker)
-cargo clippy --all --all-features              # Lint
+cargo build --all                                                  # Full workspace
+cargo build -p diesel-clickhouse --features http                   # HTTP backend only
+cargo build -p diesel-clickhouse --features native                 # Native backend only
+cargo test --all                                                   # Unit tests
+cargo test -p diesel-clickhouse --features testcontainers          # Integration tests (auto Docker)
+cargo test -p diesel-clickhouse --features testcontainers test_name  # Single integration test
+docker-compose up -d && cargo test --all --features integration    # Integration tests (manual Docker)
+cargo clippy --all --all-features                                  # Lint
 ```
 
 ### Testcontainers (Recommended for Integration Tests)
@@ -43,6 +54,24 @@ diesel-clickhouse-migrations / diesel-clickhouse-cli
 **Two backends** via feature flags: `http` (port 8123) and `native` (port 9000).
 Unified API in `unified.rs` wraps both.
 
+### Connection URL Schemes
+
+| Scheme | Backend | Default Port | Example |
+|--------|---------|--------------|---------|
+| `http://` | HTTP | 8123 | `http://localhost:8123/mydb` |
+| `https://` | HTTP | 8443 | `https://ch.example.com/mydb` |
+| `tcp://` | Native | 9000 | `tcp://localhost:9000/mydb` |
+
+### Key Traits
+
+| Trait | Location | Purpose |
+|-------|----------|---------|
+| `ClickHouseConnection` | `core::connection` | Unified async connection trait |
+| `UnifiedRow` | `diesel-clickhouse::unified_row` | Backend-agnostic row deserialization |
+| `Expression` | `core::expression` | Base trait for all SQL expressions |
+| `QueryFragment` | `core::query_builder` | SQL generation trait |
+| `Table` / `Column` | `core::query_source` | Schema representation |
+
 ## Key Files
 
 - `diesel-clickhouse/src/unified.rs` — Unified `Connection` enum
@@ -50,6 +79,20 @@ Unified API in `unified.rs` wraps both.
 - `diesel-clickhouse/src/native/mod.rs` — Native backend
 - `diesel-clickhouse-core/src/query_builder/` — SQL generation
 - `diesel-clickhouse-derive/src/lib.rs` — Proc macros
+
+## Feature Flags
+
+Key feature flags for `diesel-clickhouse`:
+
+| Feature | Description | Default |
+|---------|-------------|---------|
+| `http` | HTTP backend (port 8123) | Yes |
+| `native` | Native TCP protocol (port 9000) | Yes |
+| `arrow` | Zero-copy Apache Arrow integration | Yes |
+| `chrono` | DateTime via chrono crate | Yes |
+| `pool` | Connection pooling | No |
+| `migrations` | Migration system | No |
+| `testcontainers` | Auto Docker for tests | No |
 
 ## Mandatory Rules
 
@@ -99,23 +142,6 @@ pub fn row(...) -> TokenStream {
 - Use `From`/`Into` traits, not custom conversion methods
 - Pre-allocate collections: `Vec::with_capacity(n)`
 - Borrow (`&T`) over clone when possible
-
-## Performance Rules
-
-**Avoid:**
-- `.clone()` when `&T` works
-- `Vec::new()` in loops → `Vec::with_capacity(n)`
-- `for i in 0..len { v[i] }` → `for item in &v`
-- O(n) lookup in loops → `HashSet`/`HashMap`
-- Intermediate `.collect()` between iterator chains
-- `String` params → `&str` params
-- Sequential async in loops → `join_all` / `buffer_unordered`
-- `if !map.contains_key() { map.insert() }` → `map.entry().or_insert_with()`
-
-**Use:**
-- `Cow<str>` when sometimes borrowed, sometimes owned
-- `SmallVec` for small, fixed-size collections
-- `#[inline]` on small hot-path functions
 
 ## Final Checklist
 

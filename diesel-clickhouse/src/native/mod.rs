@@ -72,8 +72,8 @@ use crate::core::result::{Error, QueryResult};
 // Re-export submodule items
 pub use block::{
     ComplexBlock, SimpleBlock,
-    FromNativeBlock, FromAnyBlock, BlockValue,
-    block_to_vec_optimized,
+    FromNativeBlock, FromAnyBlock, BlockValue, BlockValueRef,
+    block_to_vec_optimized, for_each_row_ref, map_rows_ref,
 };
 pub use builder::NativeClientBuilder;
 pub use column::{ToNativeBlock, IntoBlockColumn, IntoBlockColumnOwned};
@@ -447,7 +447,9 @@ impl NativeConnection {
         Q: QueryFragment<ClickHouse> + Send,
     {
         // Append LIMIT 1 to avoid loading all rows
-        let sql = format!("{} LIMIT 1", build_sql_interpolated(&query)?);
+        // Pre-allocate string to avoid format! overhead
+        let base_sql = build_sql_interpolated(&query)?;
+        let sql = append_limit_1(base_sql);
         let mut results: Vec<T> = self.load_raw(&sql).await?;
         results.pop().ok_or(Error::NotFound)
     }
@@ -472,7 +474,9 @@ impl NativeConnection {
         Q: QueryFragment<ClickHouse> + Send,
     {
         // Append LIMIT 1 to avoid loading all rows
-        let sql = format!("{} LIMIT 1", build_sql_interpolated(&query)?);
+        // Pre-allocate string to avoid format! overhead
+        let base_sql = build_sql_interpolated(&query)?;
+        let sql = append_limit_1(base_sql);
         let mut results: Vec<T> = self.load_raw(&sql).await?;
         Ok(results.pop())
     }
@@ -719,6 +723,16 @@ pub use crate::core::sql_builder::{build_sql, CompiledQuery, compile_query};
 /// ```
 pub fn build_sql_interpolated<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &T) -> QueryResult<String> {
     compile_query(fragment)?.to_interpolated_sql()
+}
+
+/// Append " LIMIT 1" to a SQL string with pre-allocated capacity.
+///
+/// This avoids the overhead of `format!` by reusing the existing String
+/// allocation and extending it in-place.
+#[inline]
+fn append_limit_1(mut sql: String) -> String {
+    sql.push_str(" LIMIT 1");
+    sql
 }
 
 // =============================================================================

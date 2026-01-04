@@ -304,7 +304,7 @@ async fn main() -> anyhow::Result<()> {
     // Count by event type - using simple struct without timestamp
     #[row]
     #[derive(Debug, diesel_clickhouse::Queryable)]
-    #[diesel_clickhouse(select = (UInt64, UInt64, CHString, Float64))]
+    #[diesel_clickhouse]
     struct EventSummary {
         id: u64,
         user_id: u64,

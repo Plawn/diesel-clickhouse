@@ -53,10 +53,76 @@ pub trait FromAnyBlock: Sized {
 ///
 /// This is used by the `#[derive(Row)]` macro to extract individual field values.
 /// Generic over the column type K to support both Complex and Simple blocks.
+///
+/// # Performance Note
+///
+/// This trait returns owned values, which requires allocation for types like `String`.
+/// For zero-copy access to string data, use [`BlockValueRef`] or access the block directly:
+/// ```rust,ignore
+/// let borrowed: &str = block.get(row_idx, "column_name")?;
+/// ```
 pub trait BlockValue<K: clickhouse_rs::types::ColumnType = Complex>: Sized {
     /// Get a value from the block at the given row and column name.
     fn get_value(block: &Block<K>, row_idx: usize, column: &str) -> QueryResult<Self>;
 }
+
+/// Zero-copy trait for extracting borrowed values from a Block column.
+///
+/// This trait allows reading string data without allocation by borrowing
+/// directly from the block's internal buffer.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::native::{BlockValueRef, ComplexBlock};
+///
+/// fn process_rows(block: &ComplexBlock) -> QueryResult<()> {
+///     for row_idx in 0..block.row_count() {
+///         // Zero-copy string access
+///         let name: &str = BlockValueRef::get_value_ref(block, row_idx, "name")?;
+///         println!("Name: {}", name);
+///     }
+///     Ok(())
+/// }
+/// ```
+pub trait BlockValueRef<'a, K: clickhouse_rs::types::ColumnType = Complex>: Sized {
+    /// Get a borrowed value from the block at the given row and column name.
+    fn get_value_ref(block: &'a Block<K>, row_idx: usize, column: &str) -> QueryResult<Self>;
+}
+
+// Implement BlockValueRef for &str (zero-copy string access)
+impl<'a, K: clickhouse_rs::types::ColumnType> BlockValueRef<'a, K> for &'a str {
+    #[inline]
+    fn get_value_ref(block: &'a Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
+        block.get(row_idx, column)
+            .map_err(|e| Error::column_access("&str", column, e))
+    }
+}
+
+// Implement BlockValueRef for primitive types (they're Copy, so no allocation anyway)
+macro_rules! impl_block_value_ref_copy {
+    ($ty:ty, $name:literal) => {
+        impl<'a, K: clickhouse_rs::types::ColumnType> BlockValueRef<'a, K> for $ty {
+            #[inline]
+            fn get_value_ref(block: &'a Block<K>, row_idx: usize, column: &str) -> QueryResult<Self> {
+                block.get(row_idx, column)
+                    .map_err(|e| Error::column_access($name, column, e))
+            }
+        }
+    };
+}
+
+impl_block_value_ref_copy!(u8, "u8");
+impl_block_value_ref_copy!(u16, "u16");
+impl_block_value_ref_copy!(u32, "u32");
+impl_block_value_ref_copy!(u64, "u64");
+impl_block_value_ref_copy!(i8, "i8");
+impl_block_value_ref_copy!(i16, "i16");
+impl_block_value_ref_copy!(i32, "i32");
+impl_block_value_ref_copy!(i64, "i64");
+impl_block_value_ref_copy!(f32, "f32");
+impl_block_value_ref_copy!(f64, "f64");
+impl_block_value_ref_copy!(bool, "bool");
 
 // Macro to implement BlockValue for primitive types with generic K
 macro_rules! impl_block_value {
@@ -205,6 +271,89 @@ pub fn block_to_vec_optimized<T: FromNativeBlock>(block: &ComplexBlock) -> Query
 
     for row_idx in 0..row_count {
         results.push(T::from_block_row(block, row_idx)?);
+    }
+
+    Ok(results)
+}
+
+/// Process block rows with zero-copy string access.
+///
+/// This function allows iterating over rows and accessing string columns
+/// without allocating new `String` objects. The callback receives the block
+/// and row index, allowing use of [`BlockValueRef`] for zero-copy access.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::native::{for_each_row_ref, BlockValueRef, ComplexBlock};
+///
+/// let count = for_each_row_ref(&block, |block, row_idx| {
+///     // Zero-copy string access - no allocation!
+///     let name: &str = BlockValueRef::get_value_ref(block, row_idx, "name")?;
+///     let id: u64 = BlockValueRef::get_value_ref(block, row_idx, "id")?;
+///
+///     println!("User {}: {}", id, name);
+///     Ok(())
+/// })?;
+/// ```
+///
+/// # Performance
+///
+/// This is significantly faster than `block_to_vec_optimized` when you only
+/// need to read data once (e.g., for aggregation, filtering, or streaming).
+/// Use this when:
+/// - You don't need to store the data after processing
+/// - You're working with large string columns
+/// - Memory allocation is a bottleneck
+#[inline]
+pub fn for_each_row_ref<K, F>(block: &Block<K>, mut callback: F) -> QueryResult<usize>
+where
+    K: clickhouse_rs::types::ColumnType,
+    F: FnMut(&Block<K>, usize) -> QueryResult<()>,
+{
+    let row_count = block.row_count();
+    for row_idx in 0..row_count {
+        callback(block, row_idx)?;
+    }
+    Ok(row_count)
+}
+
+/// Process block rows with a closure that can borrow from the block.
+///
+/// Similar to [`for_each_row_ref`], but the callback can return a value
+/// that will be collected into a Vec. This is useful when you need to
+/// transform data while still benefiting from zero-copy string access
+/// during the transformation.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use diesel_clickhouse::native::{map_rows_ref, BlockValueRef};
+///
+/// // Extract just IDs from a block, reading strings without allocation
+/// let ids: Vec<u64> = map_rows_ref(&block, |block, row_idx| {
+///     let name: &str = BlockValueRef::get_value_ref(block, row_idx, "name")?;
+///     if name.starts_with("admin_") {
+///         let id: u64 = BlockValueRef::get_value_ref(block, row_idx, "id")?;
+///         Ok(Some(id))
+///     } else {
+///         Ok(None)
+///     }
+/// })?;
+/// ```
+#[inline]
+pub fn map_rows_ref<K, T, F>(block: &Block<K>, mut callback: F) -> QueryResult<Vec<T>>
+where
+    K: clickhouse_rs::types::ColumnType,
+    F: FnMut(&Block<K>, usize) -> QueryResult<Option<T>>,
+{
+    let row_count = block.row_count();
+    let mut results = Vec::with_capacity(row_count);
+
+    for row_idx in 0..row_count {
+        if let Some(value) = callback(block, row_idx)? {
+            results.push(value);
+        }
     }
 
     Ok(results)

@@ -516,7 +516,8 @@ impl ClickHouseConnection {
 
         // Zero-copy streaming decode
         let mut decoder = ZeroCopyArrowDecoder::new();
-        let mut all_batches = Vec::new();
+        // Pre-allocate for typical Arrow streams (usually 1-8 batches)
+        let mut all_batches = Vec::with_capacity(8);
 
         loop {
             match cursor.next().await {
@@ -943,6 +944,46 @@ impl ClickHouseConnection {
             .fetch_all()
             .await
             .map_err(Error::query_from)
+    }
+
+    /// Load rows with a pre-allocated capacity hint.
+    ///
+    /// Use this when you know approximately how many rows will be returned
+    /// (e.g., from a LIMIT clause or estimated count). This avoids Vec
+    /// reallocations during loading.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // When you know the approximate result size
+    /// let users: Vec<User> = conn.load_with_capacity(
+    ///     users::table.filter(users::active.eq(true)).limit(1000),
+    ///     1000,
+    /// ).await?;
+    /// ```
+    ///
+    /// # Performance
+    ///
+    /// - `capacity = 0`: Same as `load()`, Vec grows dynamically
+    /// - `capacity = expected_rows`: Single allocation, no reallocations
+    /// - `capacity > actual_rows`: Slight memory overhead, but no reallocations
+    pub async fn load_with_capacity<T, Q>(&self, query: Q, capacity: usize) -> QueryResult<Vec<T>>
+    where
+        T: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send,
+        Q: QueryFragment<ClickHouse>,
+    {
+        let compiled = build_sql_native(&query)?;
+        let mut cursor = compiled
+            .bind_to(self.client.query(&compiled.sql))
+            .fetch::<T>()
+            .map_err(Error::query_from)?;
+
+        let mut results = Vec::with_capacity(capacity);
+        while let Some(row) = cursor.next().await.map_err(Error::query_from)? {
+            results.push(row);
+        }
+
+        Ok(results)
     }
 }
 

@@ -978,13 +978,19 @@ fn generate_to_native_impl(name: &Ident, field_info: &RowFieldInfo<'_>) -> Token
             }
 
             fn rows_to_block(rows: &[Self]) -> ::diesel_clickhouse::result::QueryResult<::diesel_clickhouse::native::NativeBlock> {
-                // Use extend() pattern - allows LLVM to vectorize each column independently
+                // Pre-allocate columns with known capacity to avoid reallocations
+                let capacity = rows.len();
                 #(
-                    let #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
-                        rows.iter()
-                            .map(|row| <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::to_column_value(&row.#field_names))
-                            .collect();
+                    let mut #col_var_names: <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::ColumnData =
+                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::new_column_with_capacity(capacity);
                 )*
+
+                // Fill columns - allows LLVM to vectorize each column independently
+                for row in rows {
+                    #(
+                        <#field_types as ::diesel_clickhouse::native::IntoBlockColumn>::push_to_column(&row.#field_names, &mut #col_var_names);
+                    )*
+                }
 
                 let block = ::diesel_clickhouse::native::NativeBlock::new();
                 #(
