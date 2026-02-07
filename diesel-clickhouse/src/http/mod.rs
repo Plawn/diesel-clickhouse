@@ -278,7 +278,7 @@ impl ClickHouseConnection {
     ///
     /// # Note
     ///
-    /// The row type `T` must implement `clickhouse::Row` (via `#[derive(Row)]`).
+    /// The row type `T` must implement `clickhouse::Row` (via `#[derive(ClickHouseRow)]`).
     /// Cursors may return errors after producing some rows. Use
     /// `client.with_option("wait_end_of_query", "1")` for server-side buffering
     /// if you need to ensure all rows succeed before processing.

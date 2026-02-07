@@ -26,20 +26,18 @@ This document provides a comprehensive inventory of all macros in the diesel-cli
 | Macro | Type | Location | Description |
 |-------|------|----------|-------------|
 | `table!` | `proc_macro` | lib.rs:84 | Defines ClickHouse table schema with columns and types |
-| `#[row]` | `proc_macro_attribute` | lib.rs:176 | Optimized binary row deserialization for both backends |
-| `#[typed_row]` | `proc_macro_attribute` | lib.rs:250 | Type-checked row deserialization with compile-time column verification |
-| `#[derive(Row)]` | `proc_macro_derive` | lib.rs:371 | Serde-based row deserialization (deprecated, use `#[row]`) |
-| `#[derive(Queryable)]` | `proc_macro_derive` | lib.rs:437 | Row deserialization from query results |
-| `#[derive(Insertable)]` | `proc_macro_derive` | lib.rs:603 | Row serialization for INSERT statements |
-| `#[derive(Selectable)]` | `proc_macro_derive` | lib.rs:710 | Explicit column selection with type safety |
+| `#[derive(ClickHouseRow)]` | `proc_macro_derive` | lib.rs | Optimized binary row serialization for both HTTP and Native backends |
+| `#[derive(Queryable)]` | `proc_macro_derive` | lib.rs | Row deserialization from query results |
+| `#[derive(Insertable)]` | `proc_macro_derive` | lib.rs | Row serialization for INSERT statements |
+| `#[derive(Selectable)]` | `proc_macro_derive` | lib.rs | Explicit column selection with type safety |
 
 ### 1.2 Proc Macro Attributes
 
 | Attribute | Used By | Purpose |
 |-----------|---------|---------|
-| `#[diesel_clickhouse(table = ...)]` | Queryable, Insertable, Selectable | Specifies the table module |
-| `#[column_name("...")]` | row, typed_row, Row, Queryable, Insertable | Renames field to different DB column |
-| `#[serde(...)]` | Row | Pass-through serde attributes |
+| `#[diesel_clickhouse(table_name = ...)]` | Queryable, Insertable, Selectable | Specifies the table module |
+| `#[diesel_clickhouse(column_name = "...")]` | ClickHouseRow, Queryable, Insertable | Renames field to different DB column |
+| `#[serde(with = "...")]` | ClickHouseRow | Custom serde serialization for fields (e.g., chrono DateTime) |
 
 ---
 
@@ -174,7 +172,7 @@ Define table schemas.
 
 ### 6.4 Row Serialization/Deserialization (6 macros)
 Handle row data conversion.
-- `#[row]`, `#[typed_row]`, derive macros
+- `#[derive(ClickHouseRow)]`, `#[derive(Queryable)]`, `#[derive(Insertable)]`, `#[derive(Selectable)]`
 
 ### 6.5 Internal Utilities (5 macros)
 Helper macros for internal use.

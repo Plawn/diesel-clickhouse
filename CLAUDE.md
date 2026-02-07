@@ -44,7 +44,7 @@ diesel-clickhouse-types    → SQL types (UInt64, DateTime, Array, Map)
         ↓
 diesel-clickhouse-core     → Core traits, SQL generation, shared logic
         ↓
-diesel-clickhouse-derive   → Proc macros (#[row], #[typed_row], table!)
+diesel-clickhouse-derive   → Proc macros (#[derive(ClickHouseRow)], table!)
         ↓
 diesel-clickhouse          → HTTP + Native backends, unified Connection
         ↓

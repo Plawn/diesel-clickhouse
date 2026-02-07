@@ -14,15 +14,15 @@ pub type SimpleBlock = Block<clickhouse_rs::types::Simple>;
 
 /// Trait for types that can be deserialized directly from a Native Block row.
 ///
-/// This trait is automatically implemented by `#[derive(Row)]` and provides
+/// This trait is automatically implemented by `#[derive(ClickHouseRow)]` and provides
 /// optimized deserialization without JSON intermediate conversion.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use diesel_clickhouse::{Row, native::FromNativeBlock};
+/// use diesel_clickhouse::{ClickHouseRow, native::FromNativeBlock};
 ///
-/// #[derive(Debug, Row)]
+/// #[derive(Debug, ClickHouseRow)]
 /// struct User {
 ///     id: u64,
 ///     name: String,
@@ -51,7 +51,7 @@ pub trait FromAnyBlock: Sized {
 
 /// Helper trait for extracting typed values from a Block column.
 ///
-/// This is used by the `#[derive(Row)]` macro to extract individual field values.
+/// This is used by `#[derive(ClickHouseRow)]` to extract individual field values.
 /// Generic over the column type K to support both Complex and Simple blocks.
 ///
 /// # Performance Note

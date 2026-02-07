@@ -7,7 +7,7 @@
 //!
 //! This crate provides:
 //! - `table!` macro for defining table schemas
-//! - `#[clickhouse_row]` attribute for row serialization (HTTP + Native backends)
+//! - `#[derive(ClickHouseRow)]` for row serialization (HTTP + Native backends)
 //! - `#[derive(Queryable)]` for deserializing query results
 //! - `#[derive(Insertable)]` for row serialization (INSERT operations)
 //! - `#[derive(Selectable)]` for explicit column selection with compile-time verification
@@ -16,8 +16,8 @@
 //!
 //! ```rust,ignore
 //! // Full table SELECT with compile-time verification
-//! #[clickhouse_row(table_name = users)]
-//! #[derive(Debug, Queryable, Selectable)]
+//! #[derive(Debug, ClickHouseRow, Queryable, Selectable)]
+//! #[diesel_clickhouse(table_name = users)]
 //! struct User {
 //!     id: u64,
 //!     #[diesel_clickhouse(column_name = "user_name")]
@@ -25,8 +25,7 @@
 //! }
 //!
 //! // Custom projection (JOINs, aggregations, etc.)
-//! #[clickhouse_row]
-//! #[derive(Debug, Queryable)]
+//! #[derive(Debug, ClickHouseRow, Queryable)]
 //! struct UserWithPosts {
 //!     user_id: u64,
 //!     #[diesel_clickhouse(column_name = "post_count")]
@@ -34,7 +33,7 @@
 //! }
 //!
 //! // INSERT struct
-//! #[derive(Debug, Insertable)]
+//! #[derive(Debug, ClickHouseRow, Insertable)]
 //! #[diesel_clickhouse(table_name = events)]
 //! struct NewEvent {
 //!     id: u64,
@@ -116,21 +115,20 @@ pub fn table(input: TokenStream) -> TokenStream {
 }
 
 // =============================================================================
-// #[clickhouse_row(...)] Attribute Macro - Unified row serialization
+// #[derive(ClickHouseRow)] - Unified row serialization
 // =============================================================================
 
-/// Mark a struct as a ClickHouse row with optimized binary deserialization.
+/// Derive macro for ClickHouse row types with optimized binary deserialization.
 ///
-/// This attribute macro generates optimal deserialization code for both backends:
+/// Generates all necessary trait implementations for both HTTP and Native backends:
 ///
-/// - **HTTP backend**: Adds `#[derive(clickhouse::Row)]` for RowBinary format (2-3x faster than JSON)
-/// - **Native backend**: Generates `FromNativeBlock` for direct Block deserialization
+/// - **HTTP backend**: Manual `Serialize`, `Deserialize`, and `clickhouse::Row` impls
+/// - **Native backend**: `FromNativeBlock`, `FromAnyBlock`, and `ToNativeBlock` impls
 ///
 /// # Basic Usage (Custom Projections, JOINs)
 ///
 /// ```rust,ignore
-/// #[clickhouse_row]
-/// #[derive(Debug, Queryable)]
+/// #[derive(Debug, ClickHouseRow, Queryable)]
 /// struct UserWithPosts {
 ///     user_id: u64,
 ///     #[diesel_clickhouse(column_name = "post_count")]
@@ -141,116 +139,63 @@ pub fn table(input: TokenStream) -> TokenStream {
 /// # With Table Association (Full Table Queries)
 ///
 /// ```rust,ignore
-/// #[clickhouse_row(table_name = users)]
-/// #[derive(Debug, Queryable, Selectable)]
+/// #[derive(Debug, ClickHouseRow, Queryable, Selectable)]
+/// #[diesel_clickhouse(table_name = users)]
 /// struct User {
 ///     id: u64,
 ///     #[diesel_clickhouse(column_name = "user_name")]
 ///     name: String,
+///     #[serde(with = "clickhouse::serde::chrono::datetime")]
+///     created_at: chrono::DateTime<chrono::Utc>,
 /// }
 /// ```
 ///
 /// # Column Renaming
 ///
-/// Use `#[diesel_clickhouse(column_name = "...")]` on fields to map to a different database column:
+/// Use `#[diesel_clickhouse(column_name = "...")]` on fields to map to a different database column.
 ///
-/// ```rust,ignore
-/// #[clickhouse_row]
-/// #[derive(Debug, Queryable)]
-/// struct User {
-///     id: u64,
-///     #[diesel_clickhouse(column_name = "user_name")]
-///     name: String,
-/// }
-/// ```
+/// # `#[serde(with = "...")]` Support
 ///
-/// # Generated Code
+/// Fields with `#[serde(with = "path")]` use the module's `serialize`/`deserialize`
+/// functions. This is commonly used for chrono DateTime types with ClickHouse's
+/// `clickhouse::serde::chrono::datetime` module.
 ///
-/// For HTTP backend (when `http` feature is enabled):
-/// - Adds `#[derive(clickhouse::Row)]` with appropriate `#[serde(rename = "...")]` attributes
+/// # Important
 ///
-/// For Native backend (when `native` feature is enabled):
-/// - Generates `impl FromNativeBlock for User { ... }`
-/// - Generates `impl FromAnyBlock for User { ... }`
-/// - Generates `impl ToNativeBlock for User { ... }`
-#[proc_macro_attribute]
-pub fn clickhouse_row(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as ItemStruct);
+/// Do **not** add `#[derive(Serialize, Deserialize)]` alongside `ClickHouseRow` —
+/// the derive generates these impls automatically with correct column name renames.
+#[proc_macro_derive(ClickHouseRow, attributes(diesel_clickhouse, serde))]
+pub fn derive_clickhouse_row(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    let vis = &input.vis;
-    let attrs = &input.attrs;
-    let generics = &input.generics;
 
-    // Parse the optional table_name attribute
-    let table_path: Option<syn::Path> = if attr.is_empty() {
-        None
-    } else {
-        match syn::parse::<ClickhouseRowAttr>(attr) {
-            Ok(parsed) => parsed.table_name,
-            Err(e) => return e.to_compile_error().into(),
-        }
+    let fields = match extract_named_fields(&input, "ClickHouseRow") {
+        Ok(fields) => fields,
+        Err(err) => return err,
     };
 
-    // Extract fields
-    let fields = match &input.fields {
-        Fields::Named(fields) => &fields.named,
-        Fields::Unnamed(_) => {
-            return syn::Error::new(
-                input.fields.span(),
-                "#[clickhouse_row] can only be used on structs with named fields, not tuple structs"
-            ).to_compile_error().into();
-        }
-        Fields::Unit => {
-            return syn::Error::new(
-                input.ident.span(),
-                "#[clickhouse_row] can only be used on structs with named fields, not unit structs"
-            ).to_compile_error().into();
-        }
-    };
-
-    // Parse field information
+    // Parse field information (now includes serde_with paths)
     let field_info = RowFieldInfo::from_fields(fields);
 
-    // Generate code using shared helpers
-    let struct_def = generate_struct_with_serde(attrs, vis, name, generics, &field_info);
+    // Generate HTTP backend impls (clickhouse::Row + Serialize + Deserialize)
+    let clickhouse_row_impl = generate_clickhouse_row_impl(name, &field_info);
+    let serialize_impl = generate_manual_serialize(name, &field_info);
+    let deserialize_impl = generate_manual_deserialize(name, &field_info);
+
+    // Generate Native backend impls (FromNativeBlock, FromAnyBlock, ToNativeBlock)
     let native_impls = generate_native_block_impls(name, &field_info);
 
-    // If table_name is provided, add a marker attribute for Selectable/Queryable derives to find
-    // The #[clickhouse_row(table_name = X)] is consumed by this attribute macro, so we need to
-    // re-emit it as #[diesel_clickhouse(table_name = X)] for the derive macros to read.
-    let marker_attr = if let Some(ref table) = table_path {
-        quote! { #[diesel_clickhouse(table_name = #table)] }
-    } else {
-        quote! {}
-    };
-
     let expanded = quote! {
-        #marker_attr
-        #struct_def
+        #[cfg(feature = "http")]
+        const _: () = {
+            #clickhouse_row_impl
+            #serialize_impl
+            #deserialize_impl
+        };
         #native_impls
     };
 
     TokenStream::from(expanded)
-}
-
-/// Parser for #[clickhouse_row(table_name = path::to::table)]
-struct ClickhouseRowAttr {
-    table_name: Option<syn::Path>,
-}
-
-impl Parse for ClickhouseRowAttr {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let ident: Ident = input.parse()?;
-        if ident != "table_name" {
-            return Err(syn::Error::new(
-                ident.span(),
-                "expected `table_name = path::to::table`"
-            ));
-        }
-        input.parse::<Token![=]>()?;
-        let table: syn::Path = input.parse()?;
-        Ok(ClickhouseRowAttr { table_name: Some(table) })
-    }
 }
 
 /// Derive `Queryable` for deserializing query results with compile-time type verification.
@@ -634,14 +579,36 @@ struct RowFieldInfo<'a> {
     types: Vec<&'a syn::Type>,
     /// Field visibility (e.g., `pub`)
     vis: Vec<&'a syn::Visibility>,
-    /// Non-column_name attributes to preserve
+    /// Non-column_name, non-serde attributes to preserve
     attrs: Vec<Vec<&'a Attribute>>,
     /// Database column names (from field name or #[column_name])
     column_names: Vec<String>,
-    /// Serde rename attributes for fields with different column names
-    serde_renames: Vec<TokenStream2>,
     /// Variable names for column vectors in ToNativeBlock
     col_var_names: Vec<Ident>,
+    /// Optional `#[serde(with = "path")]` module paths per field
+    serde_with_paths: Vec<Option<syn::Path>>,
+}
+
+/// Parse `#[serde(with = "path")]` from field attributes.
+fn get_serde_with_path(field: &syn::Field) -> Option<syn::Path> {
+    for attr in &field.attrs {
+        if attr.path().is_ident("serde") {
+            let result = attr.parse_args_with(|input: syn::parse::ParseStream| {
+                let ident: Ident = input.parse()?;
+                if ident != "with" {
+                    return Err(input.error("expected 'with'"));
+                }
+                input.parse::<syn::Token![=]>()?;
+                let lit: LitStr = input.parse()?;
+                let path: syn::Path = lit.parse()?;
+                Ok(path)
+            });
+            if let Ok(path) = result {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 impl<'a> RowFieldInfo<'a> {
@@ -650,9 +617,12 @@ impl<'a> RowFieldInfo<'a> {
         let names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
         let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
         let vis: Vec<_> = fields.iter().map(|f| &f.vis).collect();
-        // Filter out #[diesel_clickhouse(...)] attributes (they contain column_name which we handle separately)
+        // Filter out #[diesel_clickhouse(...)] and #[serde(...)] attributes
+        // (they are consumed by our code generation)
         let attrs: Vec<Vec<_>> = fields.iter().map(|f| {
-            f.attrs.iter().filter(|a| !a.path().is_ident("diesel_clickhouse")).collect()
+            f.attrs.iter().filter(|a| {
+                !a.path().is_ident("diesel_clickhouse") && !a.path().is_ident("serde")
+            }).collect()
         }).collect();
 
         let column_names: Vec<String> = fields.iter()
@@ -663,51 +633,276 @@ impl<'a> RowFieldInfo<'a> {
             }))
             .collect();
 
-        let serde_renames: Vec<_> = column_names.iter().zip(names.iter()).map(|(col, field)| {
-            let field_str = field.as_ref()
-                .expect("Named fields always have identifiers")
-                .to_string();
-            if col != &field_str {
-                quote! { #[serde(rename = #col)] }
-            } else {
-                quote! {}
-            }
-        }).collect();
-
         let col_var_names: Vec<_> = names.iter()
             .map(|f| format_ident!("col_{}", f.as_ref().expect("Named fields always have identifiers")))
             .collect();
 
-        Self { names, types, vis, attrs, column_names, serde_renames, col_var_names }
+        let serde_with_paths: Vec<_> = fields.iter()
+            .map(get_serde_with_path)
+            .collect();
+
+        Self { names, types, vis, attrs, column_names, col_var_names, serde_with_paths }
     }
 }
 
-/// Generate struct definition with serde and clickhouse::Row derives.
-fn generate_struct_with_serde(
-    attrs: &[Attribute],
-    vis: &syn::Visibility,
-    name: &Ident,
-    generics: &syn::Generics,
-    field_info: &RowFieldInfo<'_>,
-) -> TokenStream2 {
+/// Generate `impl clickhouse::Row for T` with compile-time constants.
+fn generate_clickhouse_row_impl(name: &Ident, field_info: &RowFieldInfo<'_>) -> TokenStream2 {
+    let name_str = name.to_string();
+    let column_names = &field_info.column_names;
+    let column_count = column_names.len();
+
+    quote! {
+        impl ::diesel_clickhouse::clickhouse::Row for #name {
+            const NAME: &'static str = #name_str;
+            const COLUMN_NAMES: &'static [&'static str] = &[#(#column_names),*];
+            const COLUMN_COUNT: usize = #column_count;
+            const KIND: ::diesel_clickhouse::clickhouse::_priv::RowKind = ::diesel_clickhouse::clickhouse::_priv::RowKind::Struct;
+            type Value<'__v> = Self;
+        }
+    }
+}
+
+/// Generate `impl serde::Serialize for T` using `SerializeStruct`.
+///
+/// For fields with `#[serde(with = "mod")]`, wraps in a helper struct
+/// that delegates to `mod::serialize()`.
+fn generate_manual_serialize(name: &Ident, field_info: &RowFieldInfo<'_>) -> TokenStream2 {
+    let name_str = name.to_string();
+    let field_count = field_info.names.len();
+
+    let serialize_fields: Vec<_> = field_info.names.iter()
+        .zip(field_info.column_names.iter())
+        .zip(field_info.serde_with_paths.iter())
+        .zip(field_info.types.iter())
+        .map(|(((field_name, col_name), serde_with), field_ty)| {
+            if let Some(path) = serde_with {
+                let field_ty = *field_ty;
+                // For #[serde(with = "mod")] fields, use a wrapper struct with the concrete type
+                quote! {
+                    {
+                        struct __SerdeWithHelper<'__a>(&'__a #field_ty);
+                        impl<'__a> ::serde::Serialize for __SerdeWithHelper<'__a> {
+                            fn serialize<__S>(&self, serializer: __S) -> ::core::result::Result<__S::Ok, __S::Error>
+                            where
+                                __S: ::serde::Serializer,
+                            {
+                                #path::serialize(self.0, serializer)
+                            }
+                        }
+                        state.serialize_field(#col_name, &__SerdeWithHelper(&self.#field_name))?;
+                    }
+                }
+            } else {
+                quote! {
+                    state.serialize_field(#col_name, &self.#field_name)?;
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        impl ::serde::Serialize for #name {
+            fn serialize<__S>(&self, serializer: __S) -> ::core::result::Result<__S::Ok, __S::Error>
+            where
+                __S: ::serde::Serializer,
+            {
+                use ::serde::ser::SerializeStruct;
+                let mut state = serializer.serialize_struct(#name_str, #field_count)?;
+                #(#serialize_fields)*
+                state.end()
+            }
+        }
+    }
+}
+
+/// Generate `impl<'de> serde::Deserialize<'de> for T` with a `visit_seq` visitor.
+///
+/// For fields with `#[serde(with = "mod")]`, uses a `DeserializeSeed` wrapper
+/// that delegates to `mod::deserialize()`.
+fn generate_manual_deserialize(name: &Ident, field_info: &RowFieldInfo<'_>) -> TokenStream2 {
+    let name_str = name.to_string();
+    let column_names = &field_info.column_names;
+
+    let field_names_idents: Vec<_> = field_info.names.iter()
+        .map(|n| n.as_ref().expect("Named fields always have identifiers"))
+        .collect();
+
+    let seq_elements: Vec<_> = field_info.types.iter()
+        .zip(field_info.serde_with_paths.iter())
+        .zip(field_names_idents.iter())
+        .map(|((ty, serde_with), field_name)| {
+            let field_str = field_name.to_string();
+            if let Some(path) = serde_with {
+                // For #[serde(with = "mod")] fields, use DeserializeSeed wrapper
+                // The wrapper type is concrete (not generic) to match the `path::deserialize` return type
+                quote! {
+                    let #field_name: #ty = {
+                        struct __DeserializeWithHelper;
+                        impl<'__de> ::serde::de::DeserializeSeed<'__de> for __DeserializeWithHelper {
+                            type Value = #ty;
+                            fn deserialize<__D>(self, deserializer: __D) -> ::core::result::Result<Self::Value, __D::Error>
+                            where
+                                __D: ::serde::Deserializer<'__de>,
+                            {
+                                #path::deserialize(deserializer)
+                            }
+                        }
+                        seq.next_element_seed(__DeserializeWithHelper)?
+                            .ok_or_else(|| ::serde::de::Error::missing_field(#field_str))?
+                    };
+                }
+            } else {
+                quote! {
+                    let #field_name: #ty = seq.next_element()?
+                        .ok_or_else(|| ::serde::de::Error::missing_field(#field_str))?;
+                }
+            }
+        })
+        .collect();
+
+    let construct_fields: Vec<_> = field_names_idents.iter()
+        .map(|field_name| quote! { #field_name })
+        .collect();
+
+    quote! {
+        impl<'__de> ::serde::Deserialize<'__de> for #name {
+            fn deserialize<__D>(deserializer: __D) -> ::core::result::Result<Self, __D::Error>
+            where
+                __D: ::serde::Deserializer<'__de>,
+            {
+                static FIELDS: &[&str] = &[#(#column_names),*];
+
+                struct __Visitor;
+
+                impl<'__de> ::serde::de::Visitor<'__de> for __Visitor {
+                    type Value = #name;
+
+                    fn expecting(&self, formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                        formatter.write_str(#name_str)
+                    }
+
+                    fn visit_seq<__A>(self, mut seq: __A) -> ::core::result::Result<Self::Value, __A::Error>
+                    where
+                        __A: ::serde::de::SeqAccess<'__de>,
+                    {
+                        #(#seq_elements)*
+                        Ok(#name {
+                            #(#construct_fields,)*
+                        })
+                    }
+                }
+
+                deserializer.deserialize_struct(#name_str, FIELDS, __Visitor)
+            }
+        }
+    }
+}
+
+/// Legacy alias: `#[clickhouse_row]` attribute macro.
+///
+/// **Deprecated**: Use `#[derive(ClickHouseRow)]` instead.
+///
+/// This is kept temporarily for backward compatibility. It forwards to the
+/// same code generation as `#[derive(ClickHouseRow)]`.
+#[deprecated(since = "0.3.0", note = "Use #[derive(ClickHouseRow)] instead")]
+#[proc_macro_attribute]
+pub fn clickhouse_row(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemStruct);
+    let name = &input.ident;
+    let vis = &input.vis;
+    let attrs = &input.attrs;
+    let generics = &input.generics;
     let where_clause = &generics.where_clause;
+
+    // Parse the optional table_name attribute
+    let table_path: Option<syn::Path> = if attr.is_empty() {
+        None
+    } else {
+        match syn::parse::<ClickhouseRowAttr>(attr) {
+            Ok(parsed) => parsed.table_name,
+            Err(e) => return e.to_compile_error().into(),
+        }
+    };
+
+    // Extract fields
+    let fields = match &input.fields {
+        Fields::Named(fields) => &fields.named,
+        Fields::Unnamed(_) => {
+            return syn::Error::new(
+                input.fields.span(),
+                "#[clickhouse_row] can only be used on structs with named fields, not tuple structs"
+            ).to_compile_error().into();
+        }
+        Fields::Unit => {
+            return syn::Error::new(
+                input.ident.span(),
+                "#[clickhouse_row] can only be used on structs with named fields, not unit structs"
+            ).to_compile_error().into();
+        }
+    };
+
+    // Parse field information
+    let field_info = RowFieldInfo::from_fields(fields);
+
+    // Generate HTTP backend impls
+    let clickhouse_row_impl = generate_clickhouse_row_impl(name, &field_info);
+    let serialize_impl = generate_manual_serialize(name, &field_info);
+    let deserialize_impl = generate_manual_deserialize(name, &field_info);
+
+    // Generate Native backend impls
+    let native_impls = generate_native_block_impls(name, &field_info);
+
+    // Re-emit struct with marker attribute
+    let marker_attr = if let Some(ref table) = table_path {
+        quote! { #[diesel_clickhouse(table_name = #table)] }
+    } else {
+        quote! {}
+    };
+
     let field_names = &field_info.names;
     let field_types = &field_info.types;
     let field_attrs = &field_info.attrs;
     let field_vis = &field_info.vis;
-    let serde_renames = &field_info.serde_renames;
 
-    quote! {
+    let expanded = quote! {
+        #marker_attr
         #(#attrs)*
-        #[cfg_attr(feature = "http", derive(::diesel_clickhouse::clickhouse::Row))]
-        #[cfg_attr(feature = "http", derive(::serde::Serialize, ::serde::Deserialize))]
         #vis struct #name #generics #where_clause {
             #(
                 #(#field_attrs)*
-                #serde_renames
                 #field_vis #field_names: #field_types,
             )*
         }
+
+        #[cfg(feature = "http")]
+        const _: () = {
+            #clickhouse_row_impl
+            #serialize_impl
+            #deserialize_impl
+        };
+        #native_impls
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// Parser for #[clickhouse_row(table_name = path::to::table)]
+struct ClickhouseRowAttr {
+    table_name: Option<syn::Path>,
+}
+
+impl Parse for ClickhouseRowAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let ident: Ident = input.parse()?;
+        if ident != "table_name" {
+            return Err(syn::Error::new(
+                ident.span(),
+                "expected `table_name = path::to::table`"
+            ));
+        }
+        input.parse::<Token![=]>()?;
+        let table: syn::Path = input.parse()?;
+        Ok(ClickhouseRowAttr { table_name: Some(table) })
     }
 }
 

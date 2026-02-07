@@ -20,7 +20,7 @@ A comprehensive parallel audit of all major modules in the diesel-clickhouse wor
 |--------|-------------|------|--------|-----|-------|
 | `diesel-clickhouse` | HTTP + Native backends, unified API | 3 | 5 | 4 | 12 |
 | `diesel-clickhouse-core` | Core traits, SQL generation, expressions | 4 | 5 | 3 | 12 |
-| `diesel-clickhouse-derive` | Proc macros (#[row], table!) | 0 | 3 | 8 | 11 |
+| `diesel-clickhouse-derive` | Proc macros (#[derive(ClickHouseRow)], table!) | 0 | 3 | 8 | 11 |
 | `diesel-clickhouse-types` | SQL types (integers, temporal, complex) | 1 | 5 | 2 | 8 |
 | `diesel-clickhouse-migrations` | Migration harness | 4 | 2 | 6 | 12 |
 | `diesel-clickhouse-cli` | CLI tool | 0 | 3 | 4 | 7 |

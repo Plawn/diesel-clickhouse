@@ -34,15 +34,14 @@ diesel_clickhouse::table! {
 
 ## 2. Define Row Types
 
-Use `#[row]` for optimized binary deserialization that works with both HTTP and Native backends:
+Use `#[derive(ClickHouseRow)]` for optimized binary deserialization that works with both HTTP and Native backends:
 
 ```rust
 use diesel_clickhouse::prelude::*;
 
 /// For inserting new users
-#[row]
-#[derive(Debug, Clone, diesel_clickhouse::Insertable)]
-#[diesel_clickhouse(table = users)]
+#[derive(Debug, Clone, ClickHouseRow, diesel_clickhouse::Insertable)]
+#[diesel_clickhouse(table_name = users)]
 pub struct NewUser {
     pub id: u64,
     pub name: String,
@@ -52,15 +51,15 @@ pub struct NewUser {
 }
 
 /// For querying users
-#[row]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ClickHouseRow, diesel_clickhouse::Queryable, diesel_clickhouse::Selectable)]
+#[diesel_clickhouse(table_name = users)]
 pub struct User {
     pub id: u64,
     pub name: String,
     pub email: String,
     pub age: u8,
     pub active: bool,
-    #[cfg_attr(feature = "http", serde(with = "clickhouse::serde::chrono::datetime"))]
+    #[serde(with = "clickhouse::serde::chrono::datetime")]
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 ```
@@ -227,9 +226,8 @@ diesel_clickhouse::table! {
     }
 }
 
-#[row]
-#[derive(Debug, diesel_clickhouse::Insertable)]
-#[diesel_clickhouse(table = users)]
+#[derive(Debug, ClickHouseRow, diesel_clickhouse::Insertable)]
+#[diesel_clickhouse(table_name = users)]
 struct NewUser {
     id: u64,
     name: String,
@@ -237,14 +235,14 @@ struct NewUser {
     active: bool,
 }
 
-#[row]
-#[derive(Debug)]
+#[derive(Debug, ClickHouseRow, diesel_clickhouse::Queryable, diesel_clickhouse::Selectable)]
+#[diesel_clickhouse(table_name = users)]
 struct User {
     id: u64,
     name: String,
     age: u8,
     active: bool,
-    #[cfg_attr(feature = "http", serde(with = "clickhouse::serde::chrono::datetime"))]
+    #[serde(with = "clickhouse::serde::chrono::datetime")]
     created_at: chrono::DateTime<chrono::Utc>,
 }
 

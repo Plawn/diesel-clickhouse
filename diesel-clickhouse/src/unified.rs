@@ -19,16 +19,17 @@
 //!     }
 //! }
 //!
-//! // 2. Define row types with unified #[derive(Row)]
-//! #[derive(Debug, Row)]
+//! // 2. Define row types with #[derive(ClickHouseRow)]
+//! #[derive(Debug, ClickHouseRow, Queryable, Selectable)]
+//! #[diesel_clickhouse(table_name = users)]
 //! struct User {
 //!     id: u64,
 //!     name: String,
 //!     active: bool,
 //! }
 //!
-//! #[derive(Row, Insertable)]
-//! #[diesel_clickhouse(table = users)]
+//! #[derive(ClickHouseRow, Insertable)]
+//! #[diesel_clickhouse(table_name = users)]
 //! struct NewUser {
 //!     id: u64,
 //!     name: String,
@@ -55,7 +56,7 @@
 //!     // INSERT (Native backend - uses optimized Block format)
 //!     // conn.insert_native("users", &users).await?;
 //!
-//!     // QUERY - unified with #[derive(Row)]
+//!     // QUERY - unified with #[derive(ClickHouseRow)]
 //!     let users: Vec<User> = conn.load(
 //!         users::table.filter(users::active.eq(true))
 //!     ).await?;
@@ -368,8 +369,8 @@ impl Connection {
     /// Load rows from a query with compile-time type verification.
     ///
     /// This method ensures at compile time that the struct type matches the
-    /// query's output columns. Use `#[typed_row(table = xxx)]` to generate
-    /// the required `Queryable` implementation.
+    /// query's output columns. Use `#[derive(ClickHouseRow, Queryable)]` with
+    /// `#[diesel_clickhouse(table_name = xxx)]` to generate the required impls.
     ///
     /// - **HTTP**: Uses RowBinary format (2-3x faster than JSON)
     /// - **Native**: Uses direct Block deserialization (no JSON intermediate)
@@ -379,8 +380,8 @@ impl Connection {
     /// ```rust,ignore
     /// use diesel_clickhouse::prelude::*;
     ///
-    /// #[typed_row(table = users)]
-    /// #[derive(Debug)]
+    /// #[derive(Debug, ClickHouseRow, Queryable, Selectable)]
+    /// #[diesel_clickhouse(table_name = users)]
     /// struct User {
     ///     id: u64,
     ///     name: String,
@@ -403,21 +404,21 @@ impl Connection {
 
     /// Load rows without compile-time type verification.
     ///
-    /// **Deprecated**: Use `load()` with `#[typed_row(table = xxx)]` for type safety.
+    /// **Deprecated**: Use `load()` with `#[derive(ClickHouseRow, Queryable)]` for type safety.
     ///
     /// This method is provided for backward compatibility during migration.
-    /// The row type must be marked with `#[row]` attribute.
+    /// The row type must be marked with `#[derive(ClickHouseRow)]`.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// #[row]
+    /// #[derive(ClickHouseRow)]
     /// struct User { id: u64, name: String }
     ///
     /// // No compile-time verification - runtime errors possible
     /// let users: Vec<User> = conn.load_unchecked(users::table).await?;
     /// ```
-    #[deprecated(since = "0.2.0", note = "Use load() with #[typed_row(table = xxx)] for compile-time type safety")]
+    #[deprecated(since = "0.2.0", note = "Use load() with #[derive(ClickHouseRow, Queryable)] for compile-time type safety")]
     pub async fn load_unchecked<T, Q>(&self, query: Q) -> QueryResult<Vec<T>>
     where
         T: crate::UnifiedRow,
@@ -509,8 +510,8 @@ impl Connection {
     /// ```rust,ignore
     /// use diesel_clickhouse::prelude::*;
     ///
-    /// #[typed_row(table = users)]
-    /// #[derive(Debug)]
+    /// #[derive(Debug, ClickHouseRow, Queryable, Selectable)]
+    /// #[diesel_clickhouse(table_name = users)]
     /// struct User {
     ///     id: u64,
     ///     name: String,
@@ -546,8 +547,8 @@ impl Connection {
 
     /// Stream rows without compile-time type verification.
     ///
-    /// **Deprecated**: Use `stream()` with `#[typed_row(table = xxx)]` for type safety.
-    #[deprecated(since = "0.2.0", note = "Use stream() with #[typed_row(table = xxx)] for compile-time type safety")]
+    /// **Deprecated**: Use `stream()` with `#[derive(ClickHouseRow, Queryable)]` for type safety.
+    #[deprecated(since = "0.2.0", note = "Use stream() with #[derive(ClickHouseRow, Queryable)] for compile-time type safety")]
     pub async fn stream_unchecked<T, Q>(&self, query: Q) -> QueryResult<crate::stream::RowStream<T>>
     where
         T: crate::StreamableRow,

@@ -83,16 +83,14 @@ let conn = Connection::establish("https://localhost:8443/default").await?;
 ```rust
 use diesel_clickhouse::prelude::*;
 
-#[row]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ClickHouseRow, Queryable)]
 struct User {
     id: u64,
     name: String,
 }
 
-#[row]
-#[derive(Debug, Clone, Insertable)]
-#[diesel_clickhouse(table = users)]
+#[derive(Debug, Clone, ClickHouseRow, Insertable)]
+#[diesel_clickhouse(table_name = users)]
 struct NewUser {
     id: u64,
     name: String,
@@ -159,8 +157,7 @@ let conn = Connection::establish(
 ```rust
 use diesel_clickhouse::prelude::*;
 
-#[row]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ClickHouseRow, Queryable)]
 struct User {
     id: u64,
     name: String,

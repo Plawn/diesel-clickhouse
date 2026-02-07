@@ -21,7 +21,7 @@
 /// - **Native only**: Requires `FromNativeBlock + Send`
 /// - **Both backends**: Requires all of the above
 ///
-/// Types marked with `#[row]` or `#[derive(Row)]` automatically implement this trait.
+/// Types marked with `#[derive(ClickHouseRow)]` automatically implement this trait.
 #[cfg(all(feature = "http", not(feature = "native")))]
 pub trait UnifiedRow: clickhouse::Row + clickhouse::RowOwned + clickhouse::RowRead + Send {}
 

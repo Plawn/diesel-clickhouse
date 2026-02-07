@@ -12,10 +12,6 @@
 //!
 //! Prerequisites: docker-compose up -d
 
-// The `clickhouse_row` attribute macro is from the same crate as the derives,
-// so Rust's legacy_derive_helpers lint incorrectly flags it as a derive helper.
-#![allow(legacy_derive_helpers)]
-
 use diesel_clickhouse::async_insert::{AsyncInsertConfig, AsyncInsertExt, AsyncInserter};
 use diesel_clickhouse::prelude::*;
 use diesel_clickhouse::Connection;
@@ -95,10 +91,9 @@ diesel_clickhouse::table! {
 // 2. Define row types
 // =============================================================================
 
-/// Event struct for inserting - #[clickhouse_row] adds backend serialization,
-/// #[derive(Insertable)] adds SQL generation for INSERT statements.
-#[clickhouse_row]
-#[derive(Debug, Clone, diesel_clickhouse::Insertable)]
+/// Event struct for inserting - ClickHouseRow adds backend serialization,
+/// Insertable adds SQL generation for INSERT statements.
+#[derive(Debug, Clone, diesel_clickhouse::ClickHouseRow, diesel_clickhouse::Insertable)]
 #[diesel_clickhouse(table_name = events)]
 pub struct NewEvent {
     pub id: u64,
@@ -307,8 +302,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Count by event type - using simple struct without timestamp
-    #[clickhouse_row]
-    #[derive(Debug, diesel_clickhouse::Queryable)]
+    #[derive(Debug, diesel_clickhouse::ClickHouseRow, diesel_clickhouse::Queryable)]
     struct EventSummary {
         id: u64,
         user_id: u64,

@@ -12,8 +12,7 @@ use crate::core::result::QueryResult;
 /// native Block format instead of generating SQL VALUES text. This provides
 /// better performance for bulk inserts.
 ///
-/// This trait is automatically implemented by the `#[row]` attribute macro
-/// for types that also derive `Insertable`.
+/// This trait is automatically implemented by `#[derive(ClickHouseRow)]`.
 ///
 /// # Example
 ///
@@ -21,9 +20,8 @@ use crate::core::result::QueryResult;
 /// use diesel_clickhouse::prelude::*;
 /// use diesel_clickhouse::native::ToNativeBlock;
 ///
-/// #[row]
-/// #[derive(Debug, Clone, Insertable)]
-/// #[diesel_clickhouse(table = users)]
+/// #[derive(Debug, Clone, ClickHouseRow, Insertable)]
+/// #[diesel_clickhouse(table_name = users)]
 /// struct NewUser {
 ///     id: u64,
 ///     name: String,

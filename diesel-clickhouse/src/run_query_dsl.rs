@@ -8,8 +8,7 @@
 //! ```rust,ignore
 //! use diesel_clickhouse::prelude::*;
 //!
-//! #[clickhouse_row]
-//! #[derive(Debug)]
+//! #[derive(Debug, ClickHouseRow, Queryable)]
 //! struct User {
 //!     id: u64,
 //!     name: String,
@@ -77,7 +76,7 @@ impl<T> LoadableRow for T where T: clickhouse::Row + clickhouse::RowOwned + clic
 /// `QueryFragment<ClickHouse> + QueryOutputType`, allowing you to call `.load()`, `.first()`,
 /// `.get_result()` directly on queries.
 ///
-/// Row types must be marked with `#[clickhouse_row]` for compile-time type verification.
+/// Row types must be marked with `#[derive(ClickHouseRow)]` for compile-time type verification.
 #[allow(async_fn_in_trait)]
 pub trait RunQueryDsl: Sized + QueryOutputType {
     /// Execute the query and load all results with compile-time type verification.
@@ -88,7 +87,7 @@ pub trait RunQueryDsl: Sized + QueryOutputType {
     /// # Example
     ///
     /// ```rust,ignore
-    /// #[clickhouse_row]
+    /// #[derive(ClickHouseRow, Queryable)]
     /// struct User { id: u64, name: String }
     ///
     /// let users: Vec<User> = users::table

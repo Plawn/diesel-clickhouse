@@ -20,7 +20,7 @@ pub trait FromRow: Sized {
 pub trait Queryable<ST: SqlType>: Sized {
     /// The intermediate row type.
     ///
-    /// For structs marked with `#[typed_row(table = xxx)]`, this is a tuple
+    /// For structs with `#[diesel_clickhouse(table_name = xxx)]`, this is a tuple
     /// of the field types. This is only used for compile-time type verification.
     type Row;
 

@@ -15,7 +15,7 @@
 //! - [`Table`] and [`Column`] - Schema representation
 //! - [`QueryDsl`] - Query building methods
 //! - [`AsyncConnection`] - Async database connection
-//! - [`ClickHouseRow`] - Unified row trait for both HTTP and Native backends
+//! - [`SerdeRow`] - Serde-based row trait for serialization support
 
 pub mod backend;
 pub mod result;
@@ -61,7 +61,7 @@ pub use query_dsl::{QueryDsl, ClickHouseQueryDsl, RunQueryDsl, FindStatement};
 pub use connection::ClickHouseConnection;
 pub use deserialize::{FromRow, Queryable};
 pub use serialize::{ToRow, ToSqlValues, ToSqlLiteral};
-pub use row::{ClickHouseRow, InsertableRow, QueryableRow};
+pub use row::{SerdeRow, InsertableRow, QueryableRow};
 pub use type_parser::{parse_type, ClickHouseSqlType, ColumnInfo, TableInfo};
 pub use sql_builder::{build_sql, build_sql_with_bindings, ToSqlString, BindableValue};
 
@@ -76,7 +76,7 @@ pub mod prelude {
     pub use super::connection::ClickHouseConnection;
     pub use super::deserialize::FromRow;
     pub use super::serialize::ToRow;
-    pub use super::row::{ClickHouseRow, InsertableRow, QueryableRow};
+    pub use super::row::{SerdeRow, InsertableRow, QueryableRow};
 
     // Re-export common types
     pub use diesel_clickhouse_types::{

@@ -182,7 +182,7 @@ impl SqlType for Enum16 {
 /// use diesel_clickhouse::types::{Json, JsonTyped};
 ///
 /// // Untyped - flexible JSON
-/// #[row]
+/// #[derive(ClickHouseRow)]
 /// struct Event {
 ///     id: u64,
 ///     data: serde_json::Value,  // Any JSON
@@ -195,7 +195,7 @@ impl SqlType for Enum16 {
 ///     notifications: bool,
 /// }
 ///
-/// #[row]
+/// #[derive(ClickHouseRow)]
 /// struct User {
 ///     id: u64,
 ///     preferences: JsonTyped<UserPrefs>,
@@ -225,7 +225,7 @@ impl SqlType for Json {
 ///     notifications: bool,
 /// }
 ///
-/// #[row]
+/// #[derive(ClickHouseRow)]
 /// struct User {
 ///     id: u64,
 ///     preferences: JsonTyped<UserPrefs>,

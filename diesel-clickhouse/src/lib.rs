@@ -115,7 +115,8 @@ pub use diesel_clickhouse_core as core;
 pub use diesel_clickhouse_types as types;
 
 // Re-export derive macros
-pub use diesel_clickhouse_derive::{table, clickhouse_row, Queryable, Insertable, Selectable};
+#[allow(deprecated)]
+pub use diesel_clickhouse_derive::{table, clickhouse_row, ClickHouseRow, Queryable, Insertable, Selectable};
 
 // Re-export clickhouse crate for Row derive to use
 #[cfg(feature = "http")]
@@ -132,7 +133,7 @@ pub use core::query_dsl::{QueryDsl, ClickHouseQueryDsl};
 pub use core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
 pub use core::deserialize::FromRow;
 pub use core::serialize::ToRow;
-pub use core::row::{ClickHouseRow, InsertableRow, QueryableRow};
+pub use core::row::{SerdeRow, InsertableRow, QueryableRow};
 
 /// Prelude module for common imports.
 ///
@@ -143,10 +144,11 @@ pub mod prelude {
 
     // Unified connection trait (renamed to avoid conflict with http::ClickHouseConnection)
     pub use crate::core::connection::ClickHouseConnection as ClickHouseConnectionTrait;
-    pub use crate::core::row::{ClickHouseRow, InsertableRow, QueryableRow};
+    pub use crate::core::row::{SerdeRow, InsertableRow, QueryableRow};
 
     // Derive macros
-    pub use crate::{table, clickhouse_row, Queryable, Insertable, Selectable};
+    #[allow(deprecated)]
+    pub use crate::{table, clickhouse_row, ClickHouseRow, Queryable, Insertable, Selectable};
 
     // Common functions
     pub use crate::core::expression::functions::{

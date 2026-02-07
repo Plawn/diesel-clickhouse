@@ -17,7 +17,7 @@ A type-safe, Diesel-inspired ORM for ClickHouse with async support.
 - **Streaming support** - Memory-efficient processing of large result sets
 - **Connection pooling** - Built-in pool with configurable options
 - **Migration system** - Similar to Diesel's migration tooling
-- **Derive macros** - `#[derive(Queryable, Insertable, Selectable)]` and `#[clickhouse_row]`
+- **Derive macros** - `#[derive(ClickHouseRow, Queryable, Insertable, Selectable)]`
 - **Full type coverage** - All ClickHouse types including Array, Map, Tuple, LowCardinality
 
 ## Quick Start
@@ -48,14 +48,13 @@ diesel_clickhouse::table! {
 
 ### Define Row Types
 
-Use `#[clickhouse_row]` for optimized binary deserialization that works with both backends:
+Use `#[derive(ClickHouseRow)]` for optimized binary deserialization that works with both backends:
 
 ```rust
 use diesel_clickhouse::prelude::*;
 
 /// For querying events
-#[clickhouse_row]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ClickHouseRow, Queryable)]
 struct Event {
     id: u64,
     user_id: u32,
@@ -63,8 +62,7 @@ struct Event {
 }
 
 /// For inserting new events
-#[clickhouse_row]
-#[derive(Debug, Clone, Insertable)]
+#[derive(Debug, Clone, ClickHouseRow, Insertable)]
 #[diesel_clickhouse(table_name = events)]
 struct NewEvent {
     id: u64,
@@ -416,8 +414,7 @@ let count = conn.load_zero_copy(
 ### JOINs with Aggregation
 
 ```rust
-#[clickhouse_row]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, ClickHouseRow, Queryable)]
 struct UserWithPosts {
     id: u64,
     name: String,
