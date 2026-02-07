@@ -51,6 +51,9 @@ pub use crate::core::connection::Compression;
 #[derive(Clone)]
 pub struct ClickHouseConnection {
     client: Client,
+    /// The base client without compression applied, used to rebuild `client`
+    /// when switching compression modes (e.g., from Lz4 back to None).
+    base_client: Client,
     database: String,
     compression: Compression,
 }
@@ -59,6 +62,7 @@ impl ClickHouseConnection {
     /// Create a connection from an existing Client.
     pub fn from_client(client: Client, database: impl Into<String>) -> Self {
         Self {
+            base_client: client.clone(),
             client,
             database: database.into(),
             compression: Compression::None,
@@ -66,13 +70,23 @@ impl ClickHouseConnection {
     }
 
     /// Create a connection from an existing Client with compression setting.
+    ///
+    /// The provided `client` should be the base client (without compression).
+    /// Compression is applied on top of it based on the `compression` parameter.
     pub(crate) fn from_client_with_compression(
         client: Client,
         database: impl Into<String>,
         compression: Compression,
     ) -> Self {
+        let active_client = match compression {
+            Compression::Lz4 | Compression::Lz4Hc => {
+                client.clone().with_compression(clickhouse::Compression::Lz4)
+            }
+            Compression::None | Compression::Zstd => client.clone(),
+        };
         Self {
-            client,
+            base_client: client,
+            client: active_client,
             database: database.into(),
             compression,
         }
@@ -99,14 +113,15 @@ impl ClickHouseConnection {
     /// ```
     pub fn with_compression(mut self, compression: Compression) -> Self {
         self.compression = compression;
-        // Update client with compression setting
-        // Note: Lz4Hc falls back to Lz4, Zstd is not supported
+        // Rebuild client from base_client to correctly handle all transitions,
+        // including switching from Lz4 back to None.
         match compression {
             Compression::Lz4 | Compression::Lz4Hc => {
-                self.client = self.client.clone().with_compression(clickhouse::Compression::Lz4);
+                self.client = self.base_client.clone().with_compression(clickhouse::Compression::Lz4);
             }
             Compression::None | Compression::Zstd => {
                 // Zstd not supported by clickhouse crate, use no compression
+                self.client = self.base_client.clone();
             }
         }
         self

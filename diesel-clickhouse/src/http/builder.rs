@@ -107,42 +107,32 @@ impl HttpClientBuilder {
         let scheme = if self.https { "https" } else { "http" };
 
         let url = format!("{}://{}:{}", scheme, validated.host, validated.port);
-        let mut client = Client::default()
+        let mut base_client = Client::default()
             .with_url(&url)
             .with_database(&validated.database)
             .with_user(&validated.user)
             .with_password(&validated.password);
 
-        // Apply compression setting
-        // Note: Lz4Hc falls back to Lz4, Zstd is not supported
-        match self.compression {
-            Compression::Lz4 | Compression::Lz4Hc => {
-                client = client.with_compression(clickhouse::Compression::Lz4);
-            }
-            Compression::None | Compression::Zstd => {
-                // Zstd not supported by clickhouse crate, use no compression
-            }
-        }
-
         for (key, value) in &self.options {
-            client = client.with_option(key, value);
+            base_client = base_client.with_option(key, value);
         }
 
         // Enable JSON-as-string mode for ClickHouse 24.10+ JSON type support
         // This ensures stable serialization format (TypeId instability workaround)
         #[cfg(feature = "json")]
         {
-            client = client
+            base_client = base_client
                 .with_option("output_format_binary_write_json_as_string", "1")
                 .with_option("input_format_binary_read_json_as_string", "1");
         }
 
-        // Test connection
-        client.query("SELECT 1").execute().await
+        // Test connection (using base client; compression not needed for SELECT 1)
+        base_client.query("SELECT 1").execute().await
             .map_err(Error::connection_from)?;
 
+        // from_client_with_compression takes the base client and applies compression
         let http_conn = ClickHouseConnection::from_client_with_compression(
-            client,
+            base_client,
             validated.database,
             self.compression,
         );

@@ -7,11 +7,40 @@
 //!
 //! This crate provides:
 //! - `table!` macro for defining table schemas
-//! - `#[row]` attribute for optimized binary row deserialization (recommended)
-//! - `#[derive(Row)]` for serde-based row deserialization (deprecated, use `#[row]` instead)
-//! - `#[derive(Queryable)]` for row deserialization
-//! - `#[derive(Insertable)]` for row serialization
-//! - `#[derive(Selectable)]` for explicit column selection
+//! - `#[clickhouse_row]` attribute for row serialization (HTTP + Native backends)
+//! - `#[derive(Queryable)]` for deserializing query results
+//! - `#[derive(Insertable)]` for row serialization (INSERT operations)
+//! - `#[derive(Selectable)]` for explicit column selection with compile-time verification
+//!
+//! # Usage
+//!
+//! ```rust,ignore
+//! // Full table SELECT with compile-time verification
+//! #[clickhouse_row(table_name = users)]
+//! #[derive(Debug, Queryable, Selectable)]
+//! struct User {
+//!     id: u64,
+//!     #[diesel_clickhouse(column_name = "user_name")]
+//!     name: String,
+//! }
+//!
+//! // Custom projection (JOINs, aggregations, etc.)
+//! #[clickhouse_row]
+//! #[derive(Debug, Queryable)]
+//! struct UserWithPosts {
+//!     user_id: u64,
+//!     #[diesel_clickhouse(column_name = "post_count")]
+//!     post_count: u64,
+//! }
+//!
+//! // INSERT struct
+//! #[derive(Debug, Insertable)]
+//! #[diesel_clickhouse(table_name = events)]
+//! struct NewEvent {
+//!     id: u64,
+//!     user_id: u64,
+//! }
+//! ```
 
 use proc_macro::TokenStream;
 use quote::{quote, format_ident};
@@ -51,12 +80,12 @@ fn extract_named_fields<'a>(input: &'a DeriveInput, derive_name: &str) -> Result
     }
 }
 
-/// Get a required table attribute, returning a compile error if not present.
-fn require_table_attribute(attrs: &[Attribute], derive_name: &str) -> Result<syn::Path, TokenStream> {
-    get_table_attribute(attrs).ok_or_else(|| {
+/// Get a required table_name attribute, returning a compile error if not present.
+fn require_table_name_attribute(attrs: &[Attribute], derive_name: &str) -> Result<syn::Path, TokenStream> {
+    get_table_name_attribute(attrs).ok_or_else(|| {
         syn::Error::new(
             proc_macro2::Span::call_site(),
-            format!("#[diesel_clickhouse(table = ...)] attribute is required for {}", derive_name)
+            format!("#[diesel_clickhouse(table_name = ...)] attribute is required for {}", derive_name)
         ).to_compile_error().into()
     })
 }
@@ -87,7 +116,7 @@ pub fn table(input: TokenStream) -> TokenStream {
 }
 
 // =============================================================================
-// #[row] Attribute Macro - Unified optimized row deserialization
+// #[clickhouse_row(...)] Attribute Macro - Unified row serialization
 // =============================================================================
 
 /// Mark a struct as a ClickHouse row with optimized binary deserialization.
@@ -97,32 +126,40 @@ pub fn table(input: TokenStream) -> TokenStream {
 /// - **HTTP backend**: Adds `#[derive(clickhouse::Row)]` for RowBinary format (2-3x faster than JSON)
 /// - **Native backend**: Generates `FromNativeBlock` for direct Block deserialization
 ///
-/// # Example
+/// # Basic Usage (Custom Projections, JOINs)
 ///
 /// ```rust,ignore
-/// use diesel_clickhouse::row;
+/// #[clickhouse_row]
+/// #[derive(Debug, Queryable)]
+/// struct UserWithPosts {
+///     user_id: u64,
+///     #[diesel_clickhouse(column_name = "post_count")]
+///     post_count: u64,
+/// }
+/// ```
 ///
-/// #[row]
-/// #[derive(Debug, Clone)]
+/// # With Table Association (Full Table Queries)
+///
+/// ```rust,ignore
+/// #[clickhouse_row(table_name = users)]
+/// #[derive(Debug, Queryable, Selectable)]
 /// struct User {
 ///     id: u64,
+///     #[diesel_clickhouse(column_name = "user_name")]
 ///     name: String,
-///     email: Option<String>,
 /// }
-///
-/// // Works optimally with both backends!
-/// let users: Vec<User> = conn.load(users::table.filter(users::active.eq(true))).await?;
 /// ```
 ///
 /// # Column Renaming
 ///
-/// Use `#[column_name("...")]` to map a field to a different database column:
+/// Use `#[diesel_clickhouse(column_name = "...")]` on fields to map to a different database column:
 ///
 /// ```rust,ignore
-/// #[row]
+/// #[clickhouse_row]
+/// #[derive(Debug, Queryable)]
 /// struct User {
 ///     id: u64,
-///     #[column_name("user_name")]
+///     #[diesel_clickhouse(column_name = "user_name")]
 ///     name: String,
 /// }
 /// ```
@@ -134,52 +171,25 @@ pub fn table(input: TokenStream) -> TokenStream {
 ///
 /// For Native backend (when `native` feature is enabled):
 /// - Generates `impl FromNativeBlock for User { ... }`
-///
-/// # Why an attribute macro instead of `#[derive(...)]`?
-///
-/// You might wonder why `#[row]` is an attribute macro rather than a derive macro like
-/// `#[derive(Row)]`. This is a deliberate design choice due to Rust's macro limitations:
-///
-/// **Derive macros cannot modify the struct definition.** They can only *add* new
-/// implementations after the struct is defined. However, `#[row]` needs to:
-///
-/// 1. **Add `#[derive(clickhouse::Row)]`** - The `clickhouse` crate's `Row` derive is
-///    required for efficient RowBinary deserialization. A derive macro cannot add
-///    other derive macros to a struct.
-///
-/// 2. **Add `#[derive(serde::Deserialize)]`** - Required for JSON fallback and the
-///    `clickhouse::Row` derive itself.
-///
-/// 3. **Transform `#[column_name("x")]` into `#[serde(rename = "x")]`** - The serde
-///    rename attribute must be present on the struct fields *before* serde's derive
-///    runs. A derive macro runs too late to inject these attributes.
-///
-/// **Alternative: Manual derives**
-///
-/// If you prefer explicit derives, you can skip `#[row]` and manually add everything:
-///
-/// ```rust,ignore
-/// #[derive(Debug, Clone)]
-/// #[derive(serde::Deserialize)]
-/// #[cfg_attr(feature = "http", derive(clickhouse::Row))]
-/// struct User {
-///     id: u64,
-///     #[serde(rename = "user_name")]
-///     name: String,
-/// }
-///
-/// // Then implement FromNativeBlock manually or use #[derive(Row)] for that part
-/// ```
-///
-/// The `#[row]` attribute provides a simpler, single-annotation solution that handles
-/// all of this automatically.
+/// - Generates `impl FromAnyBlock for User { ... }`
+/// - Generates `impl ToNativeBlock for User { ... }`
 #[proc_macro_attribute]
-pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn clickhouse_row(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemStruct);
     let name = &input.ident;
     let vis = &input.vis;
     let attrs = &input.attrs;
     let generics = &input.generics;
+
+    // Parse the optional table_name attribute
+    let table_path: Option<syn::Path> = if attr.is_empty() {
+        None
+    } else {
+        match syn::parse::<ClickhouseRowAttr>(attr) {
+            Ok(parsed) => parsed.table_name,
+            Err(e) => return e.to_compile_error().into(),
+        }
+    };
 
     // Extract fields
     let fields = match &input.fields {
@@ -187,13 +197,13 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
         Fields::Unnamed(_) => {
             return syn::Error::new(
                 input.fields.span(),
-                "#[row] can only be used on structs with named fields, not tuple structs"
+                "#[clickhouse_row] can only be used on structs with named fields, not tuple structs"
             ).to_compile_error().into();
         }
         Fields::Unit => {
             return syn::Error::new(
                 input.ident.span(),
-                "#[row] can only be used on structs with named fields, not unit structs"
+                "#[clickhouse_row] can only be used on structs with named fields, not unit structs"
             ).to_compile_error().into();
         }
     };
@@ -205,7 +215,17 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_def = generate_struct_with_serde(attrs, vis, name, generics, &field_info);
     let native_impls = generate_native_block_impls(name, &field_info);
 
+    // If table_name is provided, add a marker attribute for Selectable/Queryable derives to find
+    // The #[clickhouse_row(table_name = X)] is consumed by this attribute macro, so we need to
+    // re-emit it as #[diesel_clickhouse(table_name = X)] for the derive macros to read.
+    let marker_attr = if let Some(ref table) = table_path {
+        quote! { #[diesel_clickhouse(table_name = #table)] }
+    } else {
+        quote! {}
+    };
+
     let expanded = quote! {
+        #marker_attr
         #struct_def
         #native_impls
     };
@@ -213,197 +233,35 @@ pub fn row(_attr: TokenStream, item: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Attribute macro for type-safe row deserialization with compile-time verification.
-///
-/// This macro extends `#[row]` to add compile-time type checking that ensures
-/// the struct matches the table's column types.
-///
-/// # Usage
-///
-/// ```rust,ignore
-/// use diesel_clickhouse::typed_row;
-///
-/// diesel_clickhouse::table! {
-///     users (id) {
-///         id -> UInt64,
-///         name -> CHString,
-///         active -> Bool,
-///     }
-/// }
-///
-/// #[typed_row(table = users)]
-/// #[derive(Debug)]
-/// struct User {
-///     id: u64,
-///     name: String,
-///     active: bool,
-/// }
-///
-/// // Now this produces a compile-time error if User doesn't match users::table:
-/// let users: Vec<User> = conn.load(users::table).await?;
-/// ```
-///
-/// # Generated Code
-///
-/// This macro generates everything that `#[row]` generates, plus:
-/// - `impl Queryable<table::AllColumnsSqlType> for User`
-#[proc_macro_attribute]
-pub fn typed_row(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as ItemStruct);
-    let name = &input.ident;
-    let vis = &input.vis;
-    let attrs = &input.attrs;
-    let generics = &input.generics;
-
-    // Parse the table attribute: table = path::to::table
-    let table_path: syn::Path = match syn::parse::<TypedRowAttr>(attr) {
-        Ok(parsed) => parsed.table,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    // Extract fields
-    let fields = match &input.fields {
-        Fields::Named(fields) => &fields.named,
-        Fields::Unnamed(_) => {
-            return syn::Error::new(
-                input.fields.span(),
-                "#[typed_row] can only be used on structs with named fields, not tuple structs"
-            ).to_compile_error().into();
-        }
-        Fields::Unit => {
-            return syn::Error::new(
-                input.ident.span(),
-                "#[typed_row] can only be used on structs with named fields, not unit structs"
-            ).to_compile_error().into();
-        }
-    };
-
-    // Parse field information using shared helper
-    let field_info = RowFieldInfo::from_fields(fields);
-
-    // Generate shared code using helpers
-    let struct_def = generate_struct_with_serde(attrs, vis, name, generics, &field_info);
-    let native_impls = generate_native_block_impls(name, &field_info);
-
-    // Generate typed_row-specific code: column verification and Queryable impl
-    let typed_row_extras = generate_typed_row_extras(name, &table_path, &field_info);
-
-    let expanded = quote! {
-        #struct_def
-        #typed_row_extras
-        #native_impls
-    };
-
-    TokenStream::from(expanded)
+/// Parser for #[clickhouse_row(table_name = path::to::table)]
+struct ClickhouseRowAttr {
+    table_name: Option<syn::Path>,
 }
 
-/// Parser for #[typed_row(table = path::to::table)]
-struct TypedRowAttr {
-    table: syn::Path,
-}
-
-impl Parse for TypedRowAttr {
+impl Parse for ClickhouseRowAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let ident: Ident = input.parse()?;
-        if ident != "table" {
+        if ident != "table_name" {
             return Err(syn::Error::new(
                 ident.span(),
-                "expected `table = path::to::table`"
+                "expected `table_name = path::to::table`"
             ));
         }
         input.parse::<Token![=]>()?;
         let table: syn::Path = input.parse()?;
-        Ok(TypedRowAttr { table })
+        Ok(ClickhouseRowAttr { table_name: Some(table) })
     }
-}
-
-/// Derive `Row` for unified row deserialization.
-///
-/// This derive macro generates implementations that work with both
-/// HTTP and Native backends:
-///
-/// - Generates `serde::Serialize` and `serde::Deserialize`
-/// - Generates `FromNativeBlock` for Native backend direct deserialization
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use diesel_clickhouse::Row;
-///
-/// #[derive(Debug, Row)]
-/// struct User {
-///     id: u64,
-///     name: String,
-///     email: Option<String>,
-/// }
-///
-/// // Works with both backends
-/// let users: Vec<User> = conn.load(users::table.filter(users::active.eq(true))).await?;
-/// ```
-///
-/// # For Maximum HTTP Performance
-///
-/// Add `clickhouse::Row` derive for RowBinary format (2-3x faster):
-///
-/// ```rust,ignore
-/// use diesel_clickhouse::{Row, clickhouse};
-///
-/// #[derive(Debug, Row, clickhouse::Row)]
-/// struct User {
-///     id: u64,
-///     name: String,
-/// }
-///
-/// // Now you can use load() for best performance
-/// let users: Vec<User> = conn.load(query).await?;
-/// ```
-///
-/// # Attributes
-///
-/// - `#[column_name = "..."]` - Rename a field for the database column
-/// - `#[serde(rename = "...")]` - Also supported for serde compatibility
-///
-/// # Generated Code
-///
-/// - `impl serde::Serialize for User`
-/// - `impl serde::Deserialize for User`
-/// - `impl FromNativeBlock for User` (Native backend, direct Block access)
-#[proc_macro_derive(Row, attributes(column_name, serde))]
-pub fn derive_row(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let generics = &input.generics;
-    let (_impl_generics, _ty_generics, where_clause) = generics.split_for_impl();
-
-    let fields = match extract_named_fields(&input, "Row") {
-        Ok(fields) => fields,
-        Err(err) => return err,
-    };
-
-    // Use shared RowFieldInfo helper
-    let field_info = RowFieldInfo::from_fields(fields);
-
-    // Generate implementations using shared helpers
-    let serde_impls = generate_serde_impls(name, &field_info, where_clause);
-    let native_impls = generate_from_native_impls(name, &field_info);
-
-    let expanded = quote! {
-        #serde_impls
-        #native_impls
-    };
-
-    TokenStream::from(expanded)
 }
 
 /// Derive `Queryable` for deserializing query results with compile-time type verification.
 ///
 /// # For full table queries
 ///
-/// Use `#[diesel_clickhouse(table = table_name)]` when your struct matches all columns:
+/// Use `#[diesel_clickhouse(table_name = table_path)]` when your struct matches all columns:
 ///
 /// ```rust,ignore
-/// #[derive(Queryable)]
-/// #[diesel_clickhouse(table = users)]
+/// #[diesel_clickhouse(table_name = users)]
+/// #[derive(Debug, Queryable, Selectable)]
 /// struct User {
 ///     id: u64,
 ///     name: String,
@@ -414,27 +272,20 @@ pub fn derive_row(input: TokenStream) -> TokenStream {
 /// let users: Vec<User> = users::table.load(&conn).await?;
 /// ```
 ///
-/// # For custom SELECT projections
+/// # For custom SELECT projections (JOINs, aggregations)
 ///
-/// Use `#[diesel_clickhouse(select = (Type1, Type2, ...))]` for custom column selections:
+/// Use `#[diesel_clickhouse]` without `table_name` - types are auto-deduced:
 ///
 /// ```rust,ignore
-/// use diesel_clickhouse::types::*;
-///
-/// #[derive(Queryable)]
-/// #[diesel_clickhouse(select = (CHString, CHString))]
-/// struct UserSummary {
-///     name: String,
-///     email: String,
+/// #[diesel_clickhouse]
+/// #[derive(Debug, Queryable)]
+/// struct UserWithPosts {
+///     user_id: u64,
+///     #[diesel_clickhouse(column_name = "post_count")]
+///     post_count: u64,
 /// }
-///
-/// // Compile-time verified!
-/// let summaries: Vec<UserSummary> = users::table
-///     .select((users::name, users::email))
-///     .load(&conn)
-///     .await?;
 /// ```
-#[proc_macro_derive(Queryable, attributes(diesel_clickhouse, column_name))]
+#[proc_macro_derive(Queryable, attributes(diesel_clickhouse))]
 pub fn derive_queryable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -447,17 +298,19 @@ pub fn derive_queryable(input: TokenStream) -> TokenStream {
     let field_names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
     let field_types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
 
-    // Check for table or select attribute
-    let queryable_impl = get_queryable_attribute(&input.attrs);
+    // Check for table_name attribute
+    let table_path = get_table_name_attribute(&input.attrs);
 
     // Generate field indices for Queryable::build
     let field_indices: Vec<syn::Index> = (0..field_names.len())
         .map(syn::Index::from)
         .collect();
 
-    let queryable_impl_tokens = match queryable_impl {
-        Some(QueryableAttr::Table(table_path)) => {
-            // Use table's AllColumnsSqlType
+    // Generate Queryable impl based on whether table_name is provided.
+    let queryable_impl_tokens = match table_path {
+        Some(table_path) => {
+            // Use table's AllColumnsSqlType for compile-time type verification.
+            // This ensures the struct's fields match the table's column types.
             quote! {
                 impl ::diesel_clickhouse::core::deserialize::Queryable<
                     <#table_path::table as ::diesel_clickhouse::core::query_source::Table>::AllColumnsSqlType
@@ -472,23 +325,10 @@ pub fn derive_queryable(input: TokenStream) -> TokenStream {
                 }
             }
         }
-        Some(QueryableAttr::Select(select_types)) => {
-            // Use explicitly specified SQL types
-            quote! {
-                impl ::diesel_clickhouse::core::deserialize::Queryable<#select_types> for #name {
-                    type Row = (#(#field_types,)*);
-
-                    fn build(row: Self::Row) -> ::diesel_clickhouse::core::result::QueryResult<Self> {
-                        Ok(Self {
-                            #(#field_names: row.#field_indices,)*
-                        })
-                    }
-                }
-            }
-        }
         None => {
-            // No table or select attribute - automatically deduce SQL types from field types
-            // using HasSqlType trait: String -> CHString, u64 -> UInt64, Vec<T> -> Array<T::SqlType>, etc.
+            // No table_name - deduce SQL types from Rust types via HasSqlType trait.
+            // This works for custom projections (JOINs, aggregations) using common types
+            // like String, u64, Vec<T>, etc. that implement HasSqlType.
             quote! {
                 impl ::diesel_clickhouse::core::deserialize::Queryable<(
                     #(<#field_types as ::diesel_clickhouse::types::HasSqlType>::SqlType,)*
@@ -512,60 +352,13 @@ pub fn derive_queryable(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Parsed attribute for Queryable derive
-enum QueryableAttr {
-    Table(syn::Path),
-    Select(syn::Type),
-}
-
-/// Custom parser for select = (Type1, Type2<Generic>, ...)
-struct SelectAttr {
-    types: syn::Type,
-}
-
-impl Parse for SelectAttr {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let ident: Ident = input.parse()?;
-        if ident != "select" {
-            return Err(syn::Error::new(ident.span(), "expected `select`"));
-        }
-        input.parse::<Token![=]>()?;
-        let types: syn::Type = input.parse()?;
-        Ok(SelectAttr { types })
-    }
-}
-
-/// Parse #[diesel_clickhouse(table = ...)] or #[diesel_clickhouse(select = (...))]
-fn get_queryable_attribute(attrs: &[Attribute]) -> Option<QueryableAttr> {
-    for attr in attrs {
-        if attr.path().is_ident("diesel_clickhouse") {
-            // First try to parse as select = (types)
-            if let Ok(select_attr) = attr.parse_args::<SelectAttr>() {
-                return Some(QueryableAttr::Select(select_attr.types));
-            }
-
-            // Then try to parse as table = path
-            if let Ok(nested) = attr.parse_args::<syn::Meta>() {
-                if let syn::Meta::NameValue(nv) = &nested {
-                    if nv.path.is_ident("table") {
-                        if let syn::Expr::Path(expr_path) = &nv.value {
-                            return Some(QueryableAttr::Table(expr_path.path.clone()));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Derive `Insertable` for serializing rows for insertion.
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// #[derive(Insertable)]
-/// #[diesel_clickhouse(table = events)]
+/// #[diesel_clickhouse(table_name = events)]
 /// struct NewEvent {
 ///     id: u64,
 ///     user_id: u32,
@@ -600,7 +393,7 @@ fn is_json_type(ty: &syn::Type) -> bool {
     }
 }
 
-#[proc_macro_derive(Insertable, attributes(diesel_clickhouse, column_name))]
+#[proc_macro_derive(Insertable, attributes(diesel_clickhouse))]
 pub fn derive_insertable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -608,7 +401,7 @@ pub fn derive_insertable(input: TokenStream) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     // Get table name from attribute
-    let table_path = match require_table_attribute(&input.attrs, "Insertable") {
+    let table_path = match require_table_name_attribute(&input.attrs, "Insertable") {
         Ok(path) => path,
         Err(err) => return err,
     };
@@ -695,26 +488,33 @@ pub fn derive_insertable(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Derive `Selectable` for explicit column selection.
+/// Derive `Selectable` for explicit column selection with compile-time verification.
+///
+/// This derive generates an `as_select()` method that returns a tuple of column references,
+/// and verifies at compile-time that all columns exist in the specified table.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// #[derive(Selectable)]
-/// #[diesel_clickhouse(table = users)]
-/// struct UserSummary {
+/// #[diesel_clickhouse(table_name = users)]
+/// #[derive(Debug, Queryable, Selectable)]
+/// struct User {
 ///     id: u64,
+///     #[diesel_clickhouse(column_name = "user_name")]
 ///     name: String,
 /// }
+///
+/// // Use with type-safe column selection
+/// let selection = User::as_select();
 /// ```
-#[proc_macro_derive(Selectable, attributes(diesel_clickhouse, column_name))]
+#[proc_macro_derive(Selectable, attributes(diesel_clickhouse))]
 pub fn derive_selectable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
     let generics = &input.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let table_path = match require_table_attribute(&input.attrs, "Selectable") {
+    let table_path = match require_table_name_attribute(&input.attrs, "Selectable") {
         Ok(path) => path,
         Err(err) => return err,
     };
@@ -724,22 +524,45 @@ pub fn derive_selectable(input: TokenStream) -> TokenStream {
         Err(err) => return err,
     };
 
-    let column_refs: Vec<_> = fields.iter().map(|f| {
-        let col_name = get_column_name(f)
-            .unwrap_or_else(|| {
-                f.ident.as_ref()
-                    .expect("Named fields always have identifiers")
-                    .to_string()
-            });
-        let col_ident = format_ident!("{}", col_name);
-        quote! { #table_path::#col_ident }
-    }).collect();
+    let column_names: Vec<String> = fields.iter()
+        .map(|f| get_column_name(f).unwrap_or_else(|| {
+            f.ident.as_ref()
+                .expect("Named fields always have identifiers")
+                .to_string()
+        }))
+        .collect();
+
+    let column_idents: Vec<Ident> = column_names.iter()
+        .map(|name| format_ident!("{}", name))
+        .collect();
+
+    let column_refs: Vec<_> = column_idents.iter()
+        .map(|col_ident| quote! { #table_path::#col_ident })
+        .collect();
 
     let expanded = quote! {
+        // Compile-time verification that all column names exist in the table
+        const _: () = {
+            #[allow(unused)]
+            fn _verify_column_names_for_selectable() {
+                #(
+                    let _ = #table_path::#column_idents;
+                )*
+            }
+        };
+
         impl #impl_generics #name #ty_generics #where_clause {
             /// Get the selection expression for this type.
-            pub fn selection() -> (#(#column_refs,)*) {
+            ///
+            /// Returns a tuple of column references that can be used in `.select()`.
+            pub fn as_select() -> (#(#column_refs,)*) {
                 (#(#column_refs,)*)
+            }
+
+            /// Alias for `as_select()` for backward compatibility.
+            #[deprecated(note = "Use as_select() instead")]
+            pub fn selection() -> (#(#column_refs,)*) {
+                Self::as_select()
             }
         }
     };
@@ -751,29 +574,39 @@ pub fn derive_selectable(input: TokenStream) -> TokenStream {
 // Helper functions
 // =============================================================================
 
+/// Parse column name from field attributes.
+/// Supports: `#[diesel_clickhouse(column_name = "...")]`
 fn get_column_name(field: &syn::Field) -> Option<String> {
     for attr in &field.attrs {
-        if attr.path().is_ident("column_name") {
-            if let Ok(lit) = attr.parse_args::<LitStr>() {
-                return Some(lit.value());
-            }
-        }
         if attr.path().is_ident("diesel_clickhouse") {
             // Parse #[diesel_clickhouse(column_name = "...")]
-            // Simplified parsing
+            let result = attr.parse_args_with(|input: syn::parse::ParseStream| {
+                let ident: Ident = input.parse()?;
+                if ident != "column_name" {
+                    return Err(input.error("expected 'column_name'"));
+                }
+                input.parse::<syn::Token![=]>()?;
+                let lit: LitStr = input.parse()?;
+                Ok(lit.value())
+            });
+            if let Ok(name) = result {
+                return Some(name);
+            }
         }
     }
     None
 }
 
-fn get_table_attribute(attrs: &[Attribute]) -> Option<syn::Path> {
+/// Parse table_name from struct attributes.
+/// Supports: `#[diesel_clickhouse(table_name = path::to::table)]`
+fn get_table_name_attribute(attrs: &[Attribute]) -> Option<syn::Path> {
     for attr in attrs {
         if attr.path().is_ident("diesel_clickhouse") {
-            // Parse #[diesel_clickhouse(table = path::to::table)]
+            // Parse #[diesel_clickhouse(table_name = path::to::table)]
             let result = attr.parse_args_with(|input: syn::parse::ParseStream| {
                 let ident: Ident = input.parse()?;
-                if ident != "table" {
-                    return Err(input.error("expected 'table'"));
+                if ident != "table_name" {
+                    return Err(input.error("expected 'table_name'"));
                 }
                 input.parse::<syn::Token![=]>()?;
                 let path: syn::Path = input.parse()?;
@@ -788,7 +621,7 @@ fn get_table_attribute(attrs: &[Attribute]) -> Option<syn::Path> {
 }
 
 // =============================================================================
-// Shared Code Generation Helpers for #[row] and #[typed_row]
+// Shared Code Generation Helpers for #[diesel_clickhouse] attribute macro
 // =============================================================================
 
 use proc_macro2::TokenStream as TokenStream2;
@@ -817,8 +650,9 @@ impl<'a> RowFieldInfo<'a> {
         let names: Vec<_> = fields.iter().map(|f| &f.ident).collect();
         let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
         let vis: Vec<_> = fields.iter().map(|f| &f.vis).collect();
+        // Filter out #[diesel_clickhouse(...)] attributes (they contain column_name which we handle separately)
         let attrs: Vec<Vec<_>> = fields.iter().map(|f| {
-            f.attrs.iter().filter(|a| !a.path().is_ident("column_name")).collect()
+            f.attrs.iter().filter(|a| !a.path().is_ident("diesel_clickhouse")).collect()
         }).collect();
 
         let column_names: Vec<String> = fields.iter()
@@ -873,52 +707,6 @@ fn generate_struct_with_serde(
                 #serde_renames
                 #field_vis #field_names: #field_types,
             )*
-        }
-    }
-}
-
-/// Generate typed_row-specific code: column verification and Queryable impl.
-fn generate_typed_row_extras(
-    name: &Ident,
-    table_path: &syn::Path,
-    field_info: &RowFieldInfo<'_>,
-) -> TokenStream2 {
-    let field_names = &field_info.names;
-    let field_types = &field_info.types;
-    let column_names = &field_info.column_names;
-
-    // Generate field indices for Queryable::build
-    let field_indices: Vec<syn::Index> = (0..field_names.len())
-        .map(syn::Index::from)
-        .collect();
-
-    // Generate column name identifiers for compile-time verification
-    let column_idents: Vec<Ident> = column_names.iter()
-        .map(|name| format_ident!("{}", name))
-        .collect();
-
-    quote! {
-        // Compile-time verification that all field/column names exist in the table
-        const _: () = {
-            #[allow(unused)]
-            fn _verify_column_names_for_struct() {
-                #(
-                    let _ = #table_path::#column_idents;
-                )*
-            }
-        };
-
-        // Generate Queryable implementation for compile-time type checking
-        impl ::diesel_clickhouse::core::deserialize::Queryable<
-            <#table_path::table as ::diesel_clickhouse::core::query_source::Table>::AllColumnsSqlType
-        > for #name {
-            type Row = (#(#field_types,)*);
-
-            fn build(row: Self::Row) -> ::diesel_clickhouse::core::result::QueryResult<Self> {
-                Ok(Self {
-                    #(#field_names: row.#field_indices,)*
-                })
-            }
         }
     }
 }
@@ -1032,58 +820,5 @@ fn generate_native_block_impls(name: &Ident, field_info: &RowFieldInfo<'_>) -> T
     quote! {
         #from_impls
         #to_impl
-    }
-}
-
-/// Generate serde::Serialize and serde::Deserialize implementations.
-fn generate_serde_impls(name: &Ident, field_info: &RowFieldInfo<'_>, where_clause: Option<&syn::WhereClause>) -> TokenStream2 {
-    let field_names = &field_info.names;
-    let field_types = &field_info.types;
-    let column_names = &field_info.column_names;
-    let serde_renames = &field_info.serde_renames;
-    let field_count = field_names.len();
-
-    quote! {
-        // Implement serde::Deserialize by delegation
-        impl<'de> ::serde::Deserialize<'de> for #name #where_clause
-        where
-            #(#field_types: ::serde::Deserialize<'de>,)*
-        {
-            fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-            where
-                D: ::serde::Deserializer<'de>,
-            {
-                #[derive(::serde::Deserialize)]
-                struct __DieselClickhouseRowHelper {
-                    #(
-                        #serde_renames
-                        #field_names: #field_types,
-                    )*
-                }
-
-                let helper = __DieselClickhouseRowHelper::deserialize(deserializer)?;
-                ::std::result::Result::Ok(Self {
-                    #(#field_names: helper.#field_names,)*
-                })
-            }
-        }
-
-        // Implement serde::Serialize
-        impl ::serde::Serialize for #name #where_clause
-        where
-            #(#field_types: ::serde::Serialize,)*
-        {
-            fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
-            where
-                S: ::serde::Serializer,
-            {
-                use ::serde::ser::SerializeStruct;
-                let mut state = serializer.serialize_struct(stringify!(#name), #field_count)?;
-                #(
-                    state.serialize_field(#column_names, &self.#field_names)?;
-                )*
-                state.end()
-            }
-        }
     }
 }

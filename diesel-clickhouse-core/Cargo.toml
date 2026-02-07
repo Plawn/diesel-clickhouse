@@ -10,14 +10,16 @@ categories = ["database"]
 
 [features]
 default = ["chrono"]
-chrono = ["diesel-clickhouse-types/chrono"]
+chrono = ["diesel-clickhouse-types/chrono", "dep:chrono"]
 time = ["diesel-clickhouse-types/time"]
-uuid = ["diesel-clickhouse-types/uuid"]
+uuid = ["diesel-clickhouse-types/uuid", "dep:uuid"]
 json = ["diesel-clickhouse-types/json", "dep:serde_json"]
 
 [dependencies]
 diesel-clickhouse-types.workspace = true
 serde_json = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 thiserror.workspace = true
 async-trait.workspace = true
 serde.workspace = true

@@ -430,6 +430,10 @@ impl Connection {
     ///
     /// Returns an error if no rows are found.
     ///
+    /// This dispatches to backend-specific efficient implementations:
+    /// - **HTTP**: Uses `fetch_one()` (server-side LIMIT)
+    /// - **Native**: Inserts `LIMIT 1` into the SQL
+    ///
     /// # Example
     ///
     /// ```rust,ignore
@@ -442,12 +446,16 @@ impl Connection {
         T: Queryable<Q::SqlType> + crate::UnifiedRow,
         Q: QueryFragment<ClickHouse> + QueryOutputType + Send,
     {
-        self.load(query).await?.into_iter().next().ok_or(Error::NotFound)
+        with_connection!(self, |conn| conn.load_one(query).await)
     }
 
     /// Load an optional single row from a query with compile-time type verification.
     ///
     /// Returns `None` if no rows are found.
+    ///
+    /// This dispatches to backend-specific efficient implementations:
+    /// - **HTTP**: Uses `fetch_optional()` (server-side LIMIT)
+    /// - **Native**: Inserts `LIMIT 1` into the SQL
     ///
     /// # Example
     ///
@@ -461,7 +469,7 @@ impl Connection {
         T: Queryable<Q::SqlType> + crate::UnifiedRow,
         Q: QueryFragment<ClickHouse> + QueryOutputType + Send,
     {
-        Ok(self.load(query).await?.into_iter().next())
+        with_connection!(self, |conn| conn.load_optional(query).await)
     }
 
     /// Get the underlying HTTP connection (if HTTP backend).

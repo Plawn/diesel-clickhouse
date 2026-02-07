@@ -264,6 +264,62 @@ impl ToBindableValue for &str {
     }
 }
 
+// =============================================================================
+// Chrono parameter binding (feature-gated)
+// =============================================================================
+
+#[cfg(feature = "chrono")]
+impl ToBindableValue for chrono::NaiveDate {
+    #[inline]
+    fn to_bindable_value(&self) -> BindableValue {
+        BindableValue::String(CompactString::from(self.format("%Y-%m-%d").to_string()))
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoBindableValue for chrono::NaiveDate {
+    #[inline]
+    fn into_bindable_value(self) -> BindableValue {
+        self.to_bindable_value()
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl ToBindableValue for chrono::NaiveDateTime {
+    #[inline]
+    fn to_bindable_value(&self) -> BindableValue {
+        BindableValue::String(CompactString::from(self.format("%Y-%m-%d %H:%M:%S").to_string()))
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoBindableValue for chrono::NaiveDateTime {
+    #[inline]
+    fn into_bindable_value(self) -> BindableValue {
+        self.to_bindable_value()
+    }
+}
+
+// =============================================================================
+// UUID parameter binding (feature-gated)
+// =============================================================================
+
+#[cfg(feature = "uuid")]
+impl ToBindableValue for uuid::Uuid {
+    #[inline]
+    fn to_bindable_value(&self) -> BindableValue {
+        BindableValue::String(CompactString::from(self.as_hyphenated().to_string()))
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl IntoBindableValue for uuid::Uuid {
+    #[inline]
+    fn into_bindable_value(self) -> BindableValue {
+        self.to_bindable_value()
+    }
+}
+
 /// Core backend trait for ClickHouse connections.
 ///
 /// This trait abstracts over the HTTP and Native protocols, allowing

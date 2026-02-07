@@ -232,24 +232,7 @@ impl NativeClientBuilder {
 
         let server_addr = validated.server_addr();
 
-        // Enable JSON-as-string mode for ClickHouse 24.10+ JSON type support.
-        // Uses dedicated constructor to mark the connection as JSON-initialized,
-        // avoiding redundant SET commands on subsequent get_handle() calls.
-        #[cfg(feature = "json")]
-        {
-            client
-                .execute("SET output_format_native_write_json_as_string = 1")
-                .await
-                .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to enable JSON support: {}", e))))?;
-
-            let native_conn = NativeConnection::from_pool_json_initialized(pool, validated.database, server_addr);
-            return Ok(crate::Connection::Native(native_conn));
-        }
-
-        #[cfg(not(feature = "json"))]
-        {
-            let native_conn = NativeConnection::from_pool(pool, validated.database, server_addr);
-            Ok(crate::Connection::Native(native_conn))
-        }
+        let native_conn = NativeConnection::from_pool(pool, validated.database, server_addr);
+        Ok(crate::Connection::Native(native_conn))
     }
 }

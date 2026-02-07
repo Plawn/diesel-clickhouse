@@ -1,12 +1,17 @@
 //! Getting started with diesel-clickhouse.
 //!
 //! This example demonstrates the unified API that works with both HTTP and Native backends.
-//! Just use `#[row]` attribute for your structs and the same code works everywhere!
+//! Use `#[clickhouse_row]` attribute for your structs and the same code works everywhere!
 //!
 //! Run with:
 //!   cargo run --example getting_started
 //!
 //! Prerequisites: docker-compose up -d
+
+// The `clickhouse_row` attribute macro is from the same crate as the derives,
+// so Rust's legacy_derive_helpers lint incorrectly flags it as a derive helper.
+// This is a false positive - `clickhouse_row` is a standalone attribute macro.
+#![allow(legacy_derive_helpers)]
 
 use diesel_clickhouse::migrations::{EmbeddedMigrations, MigrationHarness};
 use diesel_clickhouse::prelude::*;
@@ -65,13 +70,14 @@ diesel_clickhouse::table! {
 }
 
 // =============================================================================
-// 2. Define your row types - use #[row] for optimized binary deserialization
+// 2. Define your row types - use #[clickhouse_row] for optimized binary deserialization
 // =============================================================================
 
-/// For inserting new users - derives Insertable for SQL generation
-#[row]
+/// For inserting new users - #[clickhouse_row] adds backend serialization (serde + ToNativeBlock),
+/// then #[derive(Insertable)] adds SQL generation for INSERT statements.
+#[clickhouse_row]
 #[derive(Debug, Clone, diesel_clickhouse::Insertable)]
-#[diesel_clickhouse(table = users)]
+#[diesel_clickhouse(table_name = users)]
 pub struct NewUser {
     pub id: u64,
     pub name: String,
@@ -81,9 +87,9 @@ pub struct NewUser {
 }
 
 /// For inserting new posts
-#[row]
+#[clickhouse_row]
 #[derive(Debug, Clone, diesel_clickhouse::Insertable)]
-#[diesel_clickhouse(table = posts)]
+#[diesel_clickhouse(table_name = posts)]
 pub struct NewPost {
     pub id: u64,
     pub user_id: u64,
@@ -92,18 +98,18 @@ pub struct NewPost {
 }
 
 
-/// For querying users - #[typed_row] generates optimized binary deserialization
-/// AND compile-time type verification against the table schema.
+/// For querying users - #[clickhouse_row(table_name = X)] with Selectable generates
+/// optimized binary deserialization AND compile-time type verification against the table schema.
 /// Note: For DateTime, we use Utc with the clickhouse serde helper for HTTP compatibility.
-#[typed_row(table = users)]
-#[derive(Debug, Clone)]
+#[clickhouse_row(table_name = users)]
+#[derive(Debug, Clone, diesel_clickhouse::Queryable, diesel_clickhouse::Selectable)]
 pub struct User {
     pub id: u64,
     pub name: String,
     pub email: String,
     pub age: u8,
     pub active: bool,
-    #[cfg_attr(feature = "http", serde(with = "clickhouse::serde::chrono::datetime"))]
+    #[serde(with = "clickhouse::serde::chrono::datetime")]
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -122,9 +128,9 @@ pub struct EventMetadata {
 
 /// For inserting events with typed JSON metadata
 #[cfg(feature = "json")]
-#[row]
+#[clickhouse_row]
 #[derive(Debug, Clone, diesel_clickhouse::Insertable)]
-#[diesel_clickhouse(table = events)]
+#[diesel_clickhouse(table_name = events)]
 pub struct NewEvent {
     pub id: u64,
     pub event_type: String,
@@ -134,7 +140,7 @@ pub struct NewEvent {
 /// For querying events - JsonTyped<T> implements Deref for direct field access.
 /// The table! macro automatically handles CAST for JSON columns.
 #[cfg(feature = "json")]
-#[row]
+#[clickhouse_row]
 #[derive(Debug, Clone, diesel_clickhouse::Queryable)]
 pub struct Event {
     pub id: u64,
@@ -258,12 +264,13 @@ async fn main() -> anyhow::Result<()> {
     // JOIN - users with their posts (one row per post)
     // SQL types are automatically deduced from Rust field types via HasSqlType trait:
     //   String -> CHString, u64 -> UInt64, Vec<String> -> Array<CHString>, etc.
-    #[row]
+    #[clickhouse_row]
     #[derive(Debug, Clone, diesel_clickhouse::Queryable)]
     struct UserWithPost {
         name: String,
         title: String,
     }
+
 
     let users_with_posts: Vec<UserWithPost> = users::table
         .select((users::name, posts::title))
@@ -280,17 +287,17 @@ async fn main() -> anyhow::Result<()> {
     // Use .alias() to give explicit names to aggregate columns.
     // This ensures column names are consistent across both HTTP and Native backends.
     //
-    // For custom selects, use #[column_name("...")] to map struct fields to query column names.
+    // For custom selects, use #[diesel_clickhouse(column_name = "...")] to map struct fields to query column names.
     // This generates serde(rename) for HTTP and uses the correct column name for Native backend.
     // IMPORTANT: The column_name must match the .alias() in your query!
-    #[row]
+    #[clickhouse_row]
     #[derive(Debug, Clone, diesel_clickhouse::Queryable)]
     struct UserWithPosts {
         id: u64,
         name: String,
-        #[column_name("post_titles")]
+        #[diesel_clickhouse(column_name = "post_titles")]
         post_titles: Vec<String>,
-        #[column_name("post_count")]
+        #[diesel_clickhouse(column_name = "post_count")]
         post_count: u64,
     }
 
@@ -584,7 +591,7 @@ async fn main() -> anyhow::Result<()> {
 
         // You can also use serde_json::Value for dynamic JSON
         // (useful when the JSON structure varies)
-        #[row]
+        #[clickhouse_row]
         #[derive(Debug, Clone, diesel_clickhouse::Queryable)]
         struct EventDynamic {
             id: u64,

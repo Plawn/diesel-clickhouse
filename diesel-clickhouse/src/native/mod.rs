@@ -53,8 +53,6 @@ mod column;
 
 use std::borrow::Cow;
 use std::sync::Arc;
-#[cfg(feature = "json")]
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use clickhouse_rs::{Pool, ClientHandle, Block, types::Complex};
@@ -124,28 +122,14 @@ pub type NativeCompression = Compression;
 ///
 /// Cloning a `NativeConnection` is cheap - it uses `Arc<str>` for string
 /// fields and the underlying pool is also `Arc`-based.
+/// A connection to ClickHouse via native binary protocol.
+#[derive(Clone)]
 pub struct NativeConnection {
     pool: Pool,
     /// Database name (Arc for cheap cloning)
     database: Arc<str>,
     /// Server address (host:port) for Arrow connection (Arc for cheap cloning)
     server_addr: Arc<str>,
-    /// Tracks if JSON support has been enabled for pool connections.
-    /// Set to true after first get_handle() to avoid redundant SET commands.
-    #[cfg(feature = "json")]
-    json_initialized: AtomicBool,
-}
-
-impl Clone for NativeConnection {
-    fn clone(&self) -> Self {
-        Self {
-            pool: self.pool.clone(),
-            database: Arc::clone(&self.database),
-            server_addr: Arc::clone(&self.server_addr),
-            #[cfg(feature = "json")]
-            json_initialized: AtomicBool::new(self.json_initialized.load(Ordering::Relaxed)),
-        }
-    }
 }
 
 impl NativeConnection {
@@ -159,25 +143,6 @@ impl NativeConnection {
             pool,
             database: Arc::from(database.as_ref()),
             server_addr: Arc::from(server_addr.as_ref()),
-            #[cfg(feature = "json")]
-            json_initialized: AtomicBool::new(false),
-        }
-    }
-
-    /// Create a connection from an existing pool with JSON support pre-initialized.
-    ///
-    /// Used by the builder when JSON support has already been enabled during connection setup.
-    #[cfg(feature = "json")]
-    pub(crate) fn from_pool_json_initialized(
-        pool: Pool,
-        database: impl AsRef<str>,
-        server_addr: impl AsRef<str>,
-    ) -> Self {
-        Self {
-            pool,
-            database: Arc::from(database.as_ref()),
-            server_addr: Arc::from(server_addr.as_ref()),
-            json_initialized: AtomicBool::new(true),
         }
     }
 
@@ -199,18 +164,21 @@ impl NativeConnection {
     /// Get a client handle from the pool.
     ///
     /// When the `json` feature is enabled, this automatically applies the
-    /// `output_format_native_write_json_as_string` setting on first use
-    /// to ensure JSON columns are serialized as strings.
+    /// `output_format_native_write_json_as_string` setting on every handle
+    /// to ensure JSON columns are serialized as strings. This is necessary
+    /// because pool connections may be new sessions without the setting applied.
     pub async fn get_handle(&self) -> QueryResult<ClientHandle> {
+        #[allow(unused_mut)]
         let mut handle = self.pool
             .get_handle()
             .await
             .map_err(|e| Error::ConnectionError(Cow::Owned(format!("Failed to get handle: {}", e))))?;
 
-        // Apply JSON-as-string setting once per connection instance.
-        // Uses swap to atomically check-and-set, avoiding redundant SET commands.
+        // Apply JSON-as-string setting on every handle from the pool.
+        // The SET command is per-session in ClickHouse, and the pool may
+        // return a fresh connection that hasn't been initialized.
         #[cfg(feature = "json")]
-        if !self.json_initialized.swap(true, Ordering::Relaxed) {
+        {
             handle
                 .execute("SET output_format_native_write_json_as_string = 1")
                 .await
@@ -226,10 +194,9 @@ impl NativeConnection {
     /// instead of using the native binary format. This is recommended by ClickHouse
     /// for non-C++ clients due to TypeId instability.
     ///
-    /// **Note**: This setting is automatically applied when connecting via
-    /// `NativeClientBuilder` with the `json` feature enabled. You only need
-    /// to call this method if you're getting new handles from the pool that
-    /// weren't created through the builder.
+    /// **Note**: When the `json` feature is enabled, this setting is automatically
+    /// applied on every `get_handle()` call. This method is only needed if you
+    /// want to explicitly enable it on a raw handle outside of `get_handle()`.
     ///
     /// # Example
     ///
@@ -239,7 +206,6 @@ impl NativeConnection {
     /// ```
     #[cfg(feature = "json")]
     pub async fn enable_json_support(&self) -> QueryResult<()> {
-        self.json_initialized.store(true, Ordering::Relaxed);
         self.execute_raw("SET output_format_native_write_json_as_string = 1").await
     }
 
@@ -449,7 +415,7 @@ impl NativeConnection {
         // Append LIMIT 1 to avoid loading all rows
         // Pre-allocate string to avoid format! overhead
         let base_sql = build_sql_interpolated(&query)?;
-        let sql = append_limit_1(base_sql);
+        let sql = insert_limit_1(base_sql);
         let mut results: Vec<T> = self.load_raw(&sql).await?;
         results.pop().ok_or(Error::NotFound)
     }
@@ -476,7 +442,7 @@ impl NativeConnection {
         // Append LIMIT 1 to avoid loading all rows
         // Pre-allocate string to avoid format! overhead
         let base_sql = build_sql_interpolated(&query)?;
-        let sql = append_limit_1(base_sql);
+        let sql = insert_limit_1(base_sql);
         let mut results: Vec<T> = self.load_raw(&sql).await?;
         Ok(results.pop())
     }
@@ -725,14 +691,38 @@ pub fn build_sql_interpolated<T: QueryFragment<ClickHouse> + ?Sized>(fragment: &
     compile_query(fragment)?.to_interpolated_sql()
 }
 
-/// Append " LIMIT 1" to a SQL string with pre-allocated capacity.
+/// Insert " LIMIT 1" into a SQL string at the correct position.
 ///
-/// This avoids the overhead of `format!` by reusing the existing String
-/// allocation and extending it in-place.
+/// - Returns SQL unchanged if it already contains ` LIMIT `
+/// - Inserts ` LIMIT 1` before ` FORMAT ` or ` SETTINGS ` (whichever comes first)
+/// - Appends at end if neither is present
 #[inline]
-fn append_limit_1(mut sql: String) -> String {
-    sql.push_str(" LIMIT 1");
-    sql
+fn insert_limit_1(sql: String) -> String {
+    // Already has a LIMIT clause — don't add another
+    if sql.contains(" LIMIT ") {
+        return sql;
+    }
+
+    // Find the earliest position of FORMAT or SETTINGS
+    let insert_pos = [" FORMAT ", " SETTINGS "]
+        .iter()
+        .filter_map(|kw| sql.find(kw))
+        .min();
+
+    match insert_pos {
+        Some(pos) => {
+            let mut result = String::with_capacity(sql.len() + 8);
+            result.push_str(&sql[..pos]);
+            result.push_str(" LIMIT 1");
+            result.push_str(&sql[pos..]);
+            result
+        }
+        None => {
+            let mut s = sql;
+            s.push_str(" LIMIT 1");
+            s
+        }
+    }
 }
 
 // =============================================================================
@@ -812,5 +802,35 @@ mod tests {
         let query = SelectStatement::new(RawTable("test_table"));
         let result = build_sql(&query).expect("failed to build SQL");
         assert_eq!(result, "SELECT * FROM test_table");
+    }
+
+    #[test]
+    fn test_insert_limit_1_plain_query() {
+        let sql = "SELECT * FROM users".to_string();
+        assert_eq!(insert_limit_1(sql), "SELECT * FROM users LIMIT 1");
+    }
+
+    #[test]
+    fn test_insert_limit_1_existing_limit() {
+        let sql = "SELECT * FROM users LIMIT 100".to_string();
+        assert_eq!(insert_limit_1(sql), "SELECT * FROM users LIMIT 100");
+    }
+
+    #[test]
+    fn test_insert_limit_1_with_format() {
+        let sql = "SELECT * FROM users FORMAT JSONEachRow".to_string();
+        assert_eq!(insert_limit_1(sql), "SELECT * FROM users LIMIT 1 FORMAT JSONEachRow");
+    }
+
+    #[test]
+    fn test_insert_limit_1_with_settings() {
+        let sql = "SELECT * FROM users SETTINGS max_threads=4".to_string();
+        assert_eq!(insert_limit_1(sql), "SELECT * FROM users LIMIT 1 SETTINGS max_threads=4");
+    }
+
+    #[test]
+    fn test_insert_limit_1_with_format_and_settings() {
+        let sql = "SELECT * FROM users FORMAT JSON SETTINGS max_threads=4".to_string();
+        assert_eq!(insert_limit_1(sql), "SELECT * FROM users LIMIT 1 FORMAT JSON SETTINGS max_threads=4");
     }
 }

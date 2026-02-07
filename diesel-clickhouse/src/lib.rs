@@ -46,7 +46,7 @@
 //! }
 //!
 //! #[derive(Insertable)]
-//! #[diesel_clickhouse(table = events)]
+//! #[diesel_clickhouse(table_name = events)]
 //! struct NewEvent {
 //!     id: u64,
 //!     user_id: u32,
@@ -115,7 +115,7 @@ pub use diesel_clickhouse_core as core;
 pub use diesel_clickhouse_types as types;
 
 // Re-export derive macros
-pub use diesel_clickhouse_derive::{table, Queryable, Insertable, Selectable, Row, row, typed_row};
+pub use diesel_clickhouse_derive::{table, clickhouse_row, Queryable, Insertable, Selectable};
 
 // Re-export clickhouse crate for Row derive to use
 #[cfg(feature = "http")]
@@ -146,7 +146,7 @@ pub mod prelude {
     pub use crate::core::row::{ClickHouseRow, InsertableRow, QueryableRow};
 
     // Derive macros
-    pub use crate::{table, Queryable, Insertable, Selectable, Row, row, typed_row};
+    pub use crate::{table, clickhouse_row, Queryable, Insertable, Selectable};
 
     // Common functions
     pub use crate::core::expression::functions::{
