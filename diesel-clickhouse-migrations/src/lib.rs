@@ -80,6 +80,9 @@ pub const DEFAULT_MIGRATIONS_TABLE: &str = "__diesel_schema_migrations";
 #[macro_export]
 macro_rules! embed_migrations {
     ($dir:tt) => {
+        #[allow(unused_imports)]
+        use $crate::include_dir;
+
         /// Embedded migrations from compile time.
         pub static MIGRATIONS: $crate::EmbeddedMigrations = $crate::EmbeddedMigrations::new(
             $crate::include_dir::include_dir!($dir)

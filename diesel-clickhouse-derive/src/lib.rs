@@ -387,11 +387,11 @@ pub fn derive_insertable(input: TokenStream) -> TokenStream {
         if i > 0 {
             quote! {
                 pass.push_sql(", ");
-                diesel_clickhouse::serialize::write_sql_value(&self.#field_name, pass);
+                diesel_clickhouse::serialize::write_sql_value(&self.#field_name, pass)?;
             }
         } else {
             quote! {
-                diesel_clickhouse::serialize::write_sql_value(&self.#field_name, pass);
+                diesel_clickhouse::serialize::write_sql_value(&self.#field_name, pass)?;
             }
         }
     });
