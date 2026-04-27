@@ -117,8 +117,8 @@ pub fn table_impl(input: TokenStream) -> TokenStream {
             // For JSON columns, emit CAST(column AS String) AS column to work around client limitations
             // The alias ensures the column name is preserved for deserialization
             quote! {
-                impl<DB: diesel_clickhouse_core::backend::Backend> diesel_clickhouse_core::query_builder::QueryFragment<DB> for #col_name {
-                    fn walk_ast<'b>(&'b self, mut pass: diesel_clickhouse_core::query_builder::AstPass<'_, 'b, DB>) -> diesel_clickhouse_core::result::QueryResult<()> {
+                impl<DB: ::diesel_clickhouse::core::backend::Backend> ::diesel_clickhouse::core::query_builder::QueryFragment<DB> for #col_name {
+                    fn walk_ast<'b>(&'b self, mut pass: ::diesel_clickhouse::core::query_builder::AstPass<'_, 'b, DB>) -> ::diesel_clickhouse::core::result::QueryResult<()> {
                         pass.push_sql("CAST(");
                         pass.push_identifier(#col_name_str);
                         pass.push_sql(" AS String) AS ");
@@ -129,8 +129,8 @@ pub fn table_impl(input: TokenStream) -> TokenStream {
             }
         } else {
             quote! {
-                impl<DB: diesel_clickhouse_core::backend::Backend> diesel_clickhouse_core::query_builder::QueryFragment<DB> for #col_name {
-                    fn walk_ast<'b>(&'b self, mut pass: diesel_clickhouse_core::query_builder::AstPass<'_, 'b, DB>) -> diesel_clickhouse_core::result::QueryResult<()> {
+                impl<DB: ::diesel_clickhouse::core::backend::Backend> ::diesel_clickhouse::core::query_builder::QueryFragment<DB> for #col_name {
+                    fn walk_ast<'b>(&'b self, mut pass: ::diesel_clickhouse::core::query_builder::AstPass<'_, 'b, DB>) -> ::diesel_clickhouse::core::result::QueryResult<()> {
                         pass.push_identifier(#col_name_str);
                         Ok(())
                     }
@@ -144,11 +144,11 @@ pub fn table_impl(input: TokenStream) -> TokenStream {
             #[derive(Debug, Clone, Copy, Default)]
             pub struct #col_name;
 
-            impl diesel_clickhouse_core::expression::Expression for #col_name {
+            impl ::diesel_clickhouse::core::expression::Expression for #col_name {
                 type SqlType = #sql_type;
             }
 
-            impl diesel_clickhouse_core::query_source::Column for #col_name {
+            impl ::diesel_clickhouse::core::query_source::Column for #col_name {
                 type Table = table;
 
                 fn column_name() -> &'static str {
@@ -156,8 +156,8 @@ pub fn table_impl(input: TokenStream) -> TokenStream {
                 }
             }
 
-            impl diesel_clickhouse_core::expression::SelectableExpression<table> for #col_name {}
-            impl diesel_clickhouse_core::expression::AppearsOnTable<table> for #col_name {}
+            impl ::diesel_clickhouse::core::expression::SelectableExpression<table> for #col_name {}
+            impl ::diesel_clickhouse::core::expression::AppearsOnTable<table> for #col_name {}
 
             #query_fragment_impl
 
@@ -183,13 +183,13 @@ pub fn table_impl(input: TokenStream) -> TokenStream {
         #[allow(non_snake_case, dead_code, unused_imports)]
         pub mod #table_name {
             use super::*;
-            use diesel_clickhouse_core::prelude::*;
+            use ::diesel_clickhouse::prelude::*;
 
             /// The table struct.
             #[derive(Debug, Clone, Copy, Default)]
             pub struct table;
 
-            impl diesel_clickhouse_core::query_source::Table for table {
+            impl ::diesel_clickhouse::core::query_source::Table for table {
                 type PrimaryKey = #pk_tuple;
                 type AllColumns = (#(#column_names,)*);
                 type AllColumnsSqlType = (#(#column_types,)*);
@@ -207,9 +207,9 @@ pub fn table_impl(input: TokenStream) -> TokenStream {
                 }
             }
 
-            impl diesel_clickhouse_core::query_source::QuerySource for table {
+            impl ::diesel_clickhouse::core::query_source::QuerySource for table {
                 type FromClause = Self;
-                type DefaultSelection = <Self as diesel_clickhouse_core::query_source::Table>::AllColumns;
+                type DefaultSelection = <Self as ::diesel_clickhouse::core::query_source::Table>::AllColumns;
 
                 fn from_clause(&self) -> Self::FromClause {
                     *self
@@ -220,8 +220,8 @@ pub fn table_impl(input: TokenStream) -> TokenStream {
                 }
             }
 
-            impl<DB: diesel_clickhouse_core::backend::Backend> diesel_clickhouse_core::query_builder::QueryFragment<DB> for table {
-                fn walk_ast<'b>(&'b self, mut pass: diesel_clickhouse_core::query_builder::AstPass<'_, 'b, DB>) -> diesel_clickhouse_core::result::QueryResult<()> {
+            impl<DB: ::diesel_clickhouse::core::backend::Backend> ::diesel_clickhouse::core::query_builder::QueryFragment<DB> for table {
+                fn walk_ast<'b>(&'b self, mut pass: ::diesel_clickhouse::core::query_builder::AstPass<'_, 'b, DB>) -> ::diesel_clickhouse::core::result::QueryResult<()> {
                     pass.push_identifier(#table_name_str);
                     Ok(())
                 }
@@ -236,7 +236,7 @@ pub fn table_impl(input: TokenStream) -> TokenStream {
             pub const all_columns: (#(#column_names,)*) = (#(#column_names,)*);
 
             /// The star (*) expression.
-            pub const star: diesel_clickhouse_core::expression::Star<table> = diesel_clickhouse_core::expression::Star::new();
+            pub const star: ::diesel_clickhouse::core::expression::Star<table> = ::diesel_clickhouse::core::expression::Star::new();
 
             /// DSL re-exports for convenient imports.
             pub mod dsl {
