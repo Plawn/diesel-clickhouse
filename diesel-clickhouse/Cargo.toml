@@ -12,8 +12,8 @@ categories.workspace = true
 default = ["http", "chrono", "arrow", "native"]
 
 # Backends
-http = ["dep:clickhouse"]
-native = ["dep:clickhouse-rs", "dep:percent-encoding", "dep:async-stream"]
+http = ["dep:clickhouse", "diesel-clickhouse-derive/http"]
+native = ["dep:clickhouse-rs", "dep:percent-encoding", "dep:async-stream", "diesel-clickhouse-derive/native"]
 
 # Migrations support
 migrations = ["dep:diesel-clickhouse-migrations"]

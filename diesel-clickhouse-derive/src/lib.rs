@@ -177,22 +177,33 @@ pub fn derive_clickhouse_row(input: TokenStream) -> TokenStream {
     // Parse field information (now includes serde_with paths)
     let field_info = RowFieldInfo::from_fields(fields);
 
-    // Generate HTTP backend impls (clickhouse::Row + Serialize + Deserialize)
-    let clickhouse_row_impl = generate_clickhouse_row_impl(name, &field_info);
-    let serialize_impl = generate_manual_serialize(name, &field_info);
-    let deserialize_impl = generate_manual_deserialize(name, &field_info);
+    // Feature gating happens at the derive crate's compile time so the emitted
+    // code is unconditional for the consumer — they only need to enable the
+    // matching feature on `diesel-clickhouse`, not mirror it in their own crate.
+    let http_block = if cfg!(feature = "http") {
+        let clickhouse_row_impl = generate_clickhouse_row_impl(name, &field_info);
+        let serialize_impl = generate_manual_serialize(name, &field_info);
+        let deserialize_impl = generate_manual_deserialize(name, &field_info);
+        quote! {
+            const _: () = {
+                #clickhouse_row_impl
+                #serialize_impl
+                #deserialize_impl
+            };
+        }
+    } else {
+        quote! {}
+    };
 
-    // Generate Native backend impls (FromNativeBlock, FromAnyBlock, ToNativeBlock)
-    let native_impls = generate_native_block_impls(name, &field_info);
+    let native_block = if cfg!(feature = "native") {
+        generate_native_block_impls(name, &field_info)
+    } else {
+        quote! {}
+    };
 
     let expanded = quote! {
-        #[cfg(feature = "http")]
-        const _: () = {
-            #clickhouse_row_impl
-            #serialize_impl
-            #deserialize_impl
-        };
-        #native_impls
+        #http_block
+        #native_block
     };
 
     TokenStream::from(expanded)
@@ -844,13 +855,28 @@ pub fn clickhouse_row(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse field information
     let field_info = RowFieldInfo::from_fields(fields);
 
-    // Generate HTTP backend impls
-    let clickhouse_row_impl = generate_clickhouse_row_impl(name, &field_info);
-    let serialize_impl = generate_manual_serialize(name, &field_info);
-    let deserialize_impl = generate_manual_deserialize(name, &field_info);
+    // Feature gating happens at the derive crate's compile time — see
+    // `derive_clickhouse_row` for rationale.
+    let http_block = if cfg!(feature = "http") {
+        let clickhouse_row_impl = generate_clickhouse_row_impl(name, &field_info);
+        let serialize_impl = generate_manual_serialize(name, &field_info);
+        let deserialize_impl = generate_manual_deserialize(name, &field_info);
+        quote! {
+            const _: () = {
+                #clickhouse_row_impl
+                #serialize_impl
+                #deserialize_impl
+            };
+        }
+    } else {
+        quote! {}
+    };
 
-    // Generate Native backend impls
-    let native_impls = generate_native_block_impls(name, &field_info);
+    let native_block = if cfg!(feature = "native") {
+        generate_native_block_impls(name, &field_info)
+    } else {
+        quote! {}
+    };
 
     // Re-emit struct with marker attribute
     let marker_attr = if let Some(ref table) = table_path {
@@ -874,13 +900,8 @@ pub fn clickhouse_row(attr: TokenStream, item: TokenStream) -> TokenStream {
             )*
         }
 
-        #[cfg(feature = "http")]
-        const _: () = {
-            #clickhouse_row_impl
-            #serialize_impl
-            #deserialize_impl
-        };
-        #native_impls
+        #http_block
+        #native_block
     };
 
     TokenStream::from(expanded)
@@ -913,8 +934,6 @@ fn generate_from_native_impls(name: &Ident, field_info: &RowFieldInfo<'_>) -> To
     let column_names = &field_info.column_names;
 
     quote! {
-        // Generate FromNativeBlock for Native backend
-        #[cfg(feature = "native")]
         impl ::diesel_clickhouse::native::FromNativeBlock for #name {
             fn from_block_row(
                 block: &::diesel_clickhouse::native::ComplexBlock,
@@ -928,8 +947,6 @@ fn generate_from_native_impls(name: &Ident, field_info: &RowFieldInfo<'_>) -> To
             }
         }
 
-        // Generate FromAnyBlock for Native backend streaming
-        #[cfg(feature = "native")]
         impl ::diesel_clickhouse::native::FromAnyBlock for #name {
             fn from_any_block<K: ::diesel_clickhouse::native::types::ColumnType>(
                 block: &::diesel_clickhouse::native::NativeBlock<K>,
@@ -953,8 +970,6 @@ fn generate_to_native_impl(name: &Ident, field_info: &RowFieldInfo<'_>) -> Token
     let col_var_names = &field_info.col_var_names;
 
     quote! {
-        // Generate ToNativeBlock for Native backend (optimized INSERT)
-        #[cfg(feature = "native")]
         impl ::diesel_clickhouse::native::ToNativeBlock for #name {
             fn column_names() -> &'static [&'static str] {
                 &[#(#column_names),*]

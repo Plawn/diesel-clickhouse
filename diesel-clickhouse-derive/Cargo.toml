@@ -11,6 +11,10 @@ categories = ["database"]
 [lib]
 proc-macro = true
 
+[features]
+http = []
+native = []
+
 [dependencies]
 syn.workspace = true
 quote.workspace = true
