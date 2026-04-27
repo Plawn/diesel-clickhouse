@@ -62,12 +62,15 @@ pub const DEFAULT_MIGRATIONS_TABLE: &str = "__diesel_schema_migrations";
 /// This macro embeds all migrations from the specified directory into your binary,
 /// allowing you to run migrations without needing the migration files at runtime.
 ///
+/// The path must include `$CARGO_MANIFEST_DIR` for reliable resolution across
+/// workspace layouts.
+///
 /// # Example
 ///
 /// ```rust,ignore
 /// use diesel_clickhouse_migrations::embed_migrations;
 ///
-/// embed_migrations!("migrations");
+/// embed_migrations!("$CARGO_MANIFEST_DIR/migrations");
 ///
 /// // MIGRATIONS is now available as a static
 /// async fn setup(conn: &mut impl MigrationConnection) {
@@ -76,7 +79,7 @@ pub const DEFAULT_MIGRATIONS_TABLE: &str = "__diesel_schema_migrations";
 /// ```
 #[macro_export]
 macro_rules! embed_migrations {
-    ($dir:literal) => {
+    ($dir:tt) => {
         /// Embedded migrations from compile time.
         pub static MIGRATIONS: $crate::EmbeddedMigrations = $crate::EmbeddedMigrations::new(
             $crate::include_dir::include_dir!($dir)

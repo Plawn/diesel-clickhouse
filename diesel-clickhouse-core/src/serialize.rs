@@ -126,6 +126,24 @@ impl<T: WriteSqlValue> WriteSqlValue for &T {
 }
 
 // =============================================================================
+// Chrono type support (feature-gated)
+// =============================================================================
+
+#[cfg(feature = "chrono")]
+impl WriteSqlValue for chrono::NaiveDate {
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
+        pass.push_bindable(self)
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl WriteSqlValue for chrono::NaiveDateTime {
+    fn write_sql<DB: Backend>(&self, pass: &mut AstPass<'_, '_, DB>) -> QueryResult<()> {
+        pass.push_bindable(self)
+    }
+}
+
+// =============================================================================
 // JSON type support (ClickHouse 24.10+)
 // =============================================================================
 
@@ -450,5 +468,21 @@ impl<T: serde::Serialize> ToSqlLiteral for diesel_clickhouse_types::JsonTyped<T>
             Ok(json_str) => Cow::Owned(format_sql_string(&json_str)),
             Err(_) => Cow::Borrowed("NULL"),
         }
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl ToSqlLiteral for chrono::NaiveDate {
+    #[inline]
+    fn to_sql_literal(&self) -> Cow<'static, str> {
+        Cow::Owned(format_sql_string(&self.format("%Y-%m-%d").to_string()))
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl ToSqlLiteral for chrono::NaiveDateTime {
+    #[inline]
+    fn to_sql_literal(&self) -> Cow<'static, str> {
+        Cow::Owned(format_sql_string(&self.format("%Y-%m-%d %H:%M:%S").to_string()))
     }
 }
