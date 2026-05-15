@@ -291,6 +291,14 @@ impl_expression_tuple!(A, B, C, D, E);
 impl_expression_tuple!(A, B, C, D, E, F);
 impl_expression_tuple!(A, B, C, D, E, F, G);
 impl_expression_tuple!(A, B, C, D, E, F, G, H);
+impl_expression_tuple!(A, B, C, D, E, F, G, H, I);
+impl_expression_tuple!(A, B, C, D, E, F, G, H, I, J);
+impl_expression_tuple!(A, B, C, D, E, F, G, H, I, J, K);
+impl_expression_tuple!(A, B, C, D, E, F, G, H, I, J, K, L);
+impl_expression_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M);
+impl_expression_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N);
+impl_expression_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O);
+impl_expression_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
 
 // =============================================================================
 // Star expression (SELECT *)

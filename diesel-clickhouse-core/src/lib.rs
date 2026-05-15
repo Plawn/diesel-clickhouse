@@ -28,6 +28,9 @@ pub mod deserialize;
 pub mod serialize;
 pub mod row;
 
+/// Compile-time type safety for ClickHouseRow fields.
+pub mod field_type;
+
 /// SQL escaping utilities for preventing SQL injection.
 pub mod escape;
 
@@ -64,6 +67,7 @@ pub use serialize::{ToRow, ToSqlValues, ToSqlLiteral};
 pub use row::{SerdeRow, InsertableRow, QueryableRow};
 pub use type_parser::{parse_type, ClickHouseSqlType, ColumnInfo, TableInfo};
 pub use sql_builder::{build_sql, build_sql_with_bindings, ToSqlString, BindableValue};
+pub use field_type::ClickHouseFieldType;
 
 /// Prelude for common imports.
 pub mod prelude {

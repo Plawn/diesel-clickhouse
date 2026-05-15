@@ -227,6 +227,10 @@ pub mod backend {
     pub use crate::core::backend::*;
 }
 
+/// Serde helpers for automatic chrono type serialization in ClickHouseRow.
+#[cfg(all(feature = "http", feature = "chrono"))]
+pub mod serde_helpers;
+
 /// Common utilities shared between backends.
 pub mod common;
 

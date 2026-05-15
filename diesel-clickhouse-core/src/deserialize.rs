@@ -136,6 +136,14 @@ impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E));
 impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F));
 impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G));
 impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H));
+impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I));
+impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J));
+impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K));
+impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K), (11, L));
+impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K), (11, L), (12, M));
+impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K), (11, L), (12, M), (13, N));
+impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K), (11, L), (12, M), (13, N), (14, O));
+impl_from_row_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K), (11, L), (12, M), (13, N), (14, O), (15, P));
 
 // =============================================================================
 // Option FromRow
@@ -278,6 +286,14 @@ impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE));
 impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF));
 impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG));
 impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG), (H, SH));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG), (H, SH), (I, SI));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG), (H, SH), (I, SI), (J, SJ));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG), (H, SH), (I, SI), (J, SJ), (K, SK));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG), (H, SH), (I, SI), (J, SJ), (K, SK), (L, SL));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG), (H, SH), (I, SI), (J, SJ), (K, SK), (L, SL), (M, SM));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG), (H, SH), (I, SI), (J, SJ), (K, SK), (L, SL), (M, SM), (N, SN));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG), (H, SH), (I, SI), (J, SJ), (K, SK), (L, SL), (M, SM), (N, SN), (O, SO));
+impl_queryable_tuple!((A, SA), (B, SB), (C, SC), (D, SD), (E, SE), (F, SF), (G, SG), (H, SH), (I, SI), (J, SJ), (K, SK), (L, SL), (M, SM), (N, SN), (O, SO), (P, SP));
 
 // =============================================================================
 // Queryable<Nullable<ST>> for Option<T>

@@ -154,6 +154,14 @@ impl_as_changeset_tuple!(A, B, C, D, E);
 impl_as_changeset_tuple!(A, B, C, D, E, F);
 impl_as_changeset_tuple!(A, B, C, D, E, F, G);
 impl_as_changeset_tuple!(A, B, C, D, E, F, G, H);
+impl_as_changeset_tuple!(A, B, C, D, E, F, G, H, I);
+impl_as_changeset_tuple!(A, B, C, D, E, F, G, H, I, J);
+impl_as_changeset_tuple!(A, B, C, D, E, F, G, H, I, J, K);
+impl_as_changeset_tuple!(A, B, C, D, E, F, G, H, I, J, K, L);
+impl_as_changeset_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M);
+impl_as_changeset_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N);
+impl_as_changeset_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O);
+impl_as_changeset_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
 
 /// A single column assignment.
 #[derive(Debug, Clone)]
@@ -215,6 +223,14 @@ impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E));
 impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F));
 impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G));
 impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H));
+impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I));
+impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J));
+impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K));
+impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K), (11, L));
+impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K), (11, L), (12, M));
+impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K), (11, L), (12, M), (13, N));
+impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K), (11, L), (12, M), (13, N), (14, O));
+impl_assignments_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H), (8, I), (9, J), (10, K), (11, L), (12, M), (13, N), (14, O), (15, P));
 
 // Also implement for Vec-like structures for optional updates
 impl<DB: Backend, T: QueryFragment<DB>> QueryFragment<DB> for Option<T> {

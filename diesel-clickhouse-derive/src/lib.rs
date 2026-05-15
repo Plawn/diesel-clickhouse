@@ -48,6 +48,8 @@ use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 
+mod chrono_detect;
+
 mod table;
 
 // =============================================================================
@@ -201,12 +203,50 @@ pub fn derive_clickhouse_row(input: TokenStream) -> TokenStream {
         quote! {}
     };
 
+    let type_check = generate_field_type_assertions(name, &field_info);
+
     let expanded = quote! {
         #http_block
         #native_block
+        #type_check
     };
 
     TokenStream::from(expanded)
+}
+
+/// Generate const assertions that each field type implements `ClickHouseFieldType`.
+///
+/// Fields with explicit `#[serde(with = "...")]` are skipped since the user
+/// takes responsibility for serialization compatibility.
+fn generate_field_type_assertions(name: &Ident, field_info: &RowFieldInfo<'_>) -> TokenStream2 {
+    let assertions: Vec<_> = field_info.types.iter()
+        .zip(field_info.serde_with_paths.iter())
+        .filter_map(|(ty, serde_with)| {
+            if serde_with.is_some() {
+                return None;
+            }
+            Some(quote! {
+                __assert_clickhouse_field_type::<#ty>();
+            })
+        })
+        .collect();
+
+    if assertions.is_empty() {
+        return quote! {};
+    }
+
+    let name_str = format!("_assert_{}_field_types", name);
+    let fn_name = format_ident!("{}", name_str);
+
+    quote! {
+        const _: () = {
+            fn __assert_clickhouse_field_type<T: ::diesel_clickhouse::core::ClickHouseFieldType>() {}
+            #[allow(dead_code)]
+            fn #fn_name() {
+                #(#assertions)*
+            }
+        };
+    }
 }
 
 /// Derive `Queryable` for deserializing query results with compile-time type verification.
@@ -649,7 +689,12 @@ impl<'a> RowFieldInfo<'a> {
             .collect();
 
         let serde_with_paths: Vec<_> = fields.iter()
-            .map(get_serde_with_path)
+            .map(|f| {
+                if let Some(path) = get_serde_with_path(f) {
+                    return Some(path);
+                }
+                chrono_detect::detect_chrono_serde_path(&f.ty)
+            })
             .collect();
 
         Self { names, types, vis, attrs, column_names, col_var_names, serde_with_paths }
