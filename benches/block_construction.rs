@@ -2,7 +2,9 @@
 //! - N-pass with collect() (vectorizable)
 //! - 1-pass with push() (better cache locality for rows)
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use clickhouse_rs::Block;
 
 // =============================================================================

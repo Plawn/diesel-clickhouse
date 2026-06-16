@@ -114,7 +114,7 @@ impl HttpClientBuilder {
             .with_password(&validated.password);
 
         for (key, value) in &self.options {
-            base_client = base_client.with_option(key, value);
+            base_client = base_client.with_setting(key, value);
         }
 
         // Enable JSON-as-string mode for ClickHouse 24.10+ JSON type support
@@ -122,8 +122,8 @@ impl HttpClientBuilder {
         #[cfg(feature = "json")]
         {
             base_client = base_client
-                .with_option("output_format_binary_write_json_as_string", "1")
-                .with_option("input_format_binary_read_json_as_string", "1");
+                .with_setting("output_format_binary_write_json_as_string", "1")
+                .with_setting("input_format_binary_read_json_as_string", "1");
         }
 
         // Test connection (using base client; compression not needed for SELECT 1)

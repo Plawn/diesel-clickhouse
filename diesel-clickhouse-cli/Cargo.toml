@@ -28,11 +28,11 @@ thiserror.workspace = true
 anyhow = "1"
 
 # Configuration
-toml = "0.8"
+toml = "1"
 serde.workspace = true
 
 # Colored output
-colored = "2"
+colored = "3"
 
 # Date/time
 chrono.workspace = true

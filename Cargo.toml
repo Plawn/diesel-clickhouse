@@ -63,7 +63,7 @@ diesel-clickhouse-migrations = { path = "diesel-clickhouse-migrations" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.8", features = ["serde"] }
-clickhouse = { version = "0.14", features = ["lz4", "time", "chrono"] }
+clickhouse = { version = "0.15", features = ["lz4", "time", "chrono"] }
 clickhouse-rs = { version = "1.1.0-alpha.1", default-features = false, features = ["tokio_io"], optional = true }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
@@ -72,7 +72,7 @@ anyhow = "1"
 url = "2"
 time = { version = "0.3", features = ["formatting", "macros"] }
 include_dir = "0.7"
-criterion = "0.5"
+criterion = "0.8"
 
 [workspace.package]
 version = "0.1.0"
@@ -97,7 +97,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 async-trait = "0.1"
 
 # Error handling
-thiserror = "1"
+thiserror = "2"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -115,7 +115,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # ClickHouse client
-clickhouse = { version = "0.14", default-features = false, features = ["lz4"] }
+clickhouse = { version = "0.15", default-features = false, features = ["lz4"] }
 
 # Fast numeric formatting
 itoa = "1"
@@ -123,7 +123,7 @@ ryu = "1"
 
 # Performance optimizations
 smallvec = "1.13"
-compact_str = "0.8"
+compact_str = "0.9"
 bumpalo = { version = "3.16", features = ["collections"] }
 lasso = { version = "0.7", features = ["multi-threaded", "ahasher"] }
 ahash = "0.8"
@@ -132,14 +132,14 @@ parking_lot = "0.12"
 memchr = "2.7"
 
 # Apache Arrow (optional, for zero-copy columnar data)
-arrow = { version = "57", default-features = false, features = ["ipc", "ipc_compression"] }
+arrow = { version = "59", default-features = false, features = ["ipc", "ipc_compression"] }
 
 # Test dependencies (for integration tests)
 tempfile = "3"
-reqwest = { version = "0.11", features = ["blocking"] }
+reqwest = { version = "0.13", features = ["blocking"] }
 
 # Benchmarking
-criterion = "0.5"
+criterion = "0.8"
 
 [[bench]]
 name = "block_construction"

@@ -190,20 +190,20 @@ impl AsyncInsertConfig {
         mut insert: clickhouse::insert::Insert<R>,
     ) -> clickhouse::insert::Insert<R> {
         insert = insert
-            .with_option("async_insert", "1")
-            .with_option("wait_for_async_insert", if self.wait { "1" } else { "0" });
+            .with_setting("async_insert", "1")
+            .with_setting("wait_for_async_insert", if self.wait { "1" } else { "0" });
 
         if let Some(ms) = self.busy_timeout_ms {
-            insert = insert.with_option("async_insert_busy_timeout_ms", ms.to_string());
+            insert = insert.with_setting("async_insert_busy_timeout_ms", ms.to_string());
         }
         if let Some(size) = self.max_data_size {
-            insert = insert.with_option("async_insert_max_data_size", size.to_string());
+            insert = insert.with_setting("async_insert_max_data_size", size.to_string());
         }
         if let Some(count) = self.max_query_number {
-            insert = insert.with_option("async_insert_max_query_number", count.to_string());
+            insert = insert.with_setting("async_insert_max_query_number", count.to_string());
         }
         if let Some(dedup) = self.deduplicate_materialized_views {
-            insert = insert.with_option("async_insert_deduplicate", if dedup { "1" } else { "0" });
+            insert = insert.with_setting("async_insert_deduplicate", if dedup { "1" } else { "0" });
         }
         insert
     }
